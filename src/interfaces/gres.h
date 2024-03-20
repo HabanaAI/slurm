@@ -151,6 +151,7 @@ typedef struct {
 #define GRES_CONF_AUTODETECT SLURM_BIT(15) /* Conf was made with Autodetect */
 #define GRES_CONF_UPDATE_CONFIG SLURM_BIT(16) /* Flag to update gres config */
 #define GRES_CONF_MIG SLURM_BIT(17) /* GRES configuration is for NVIDIA MIG */
+#define GRES_CONF_ENV_HLML   SLURM_BIT(18) /* HabanaLabs ltd. hlml environment variables */
 
 #define GRES_CONF_ENV_SET    0x000008E0   /* Easy check if any of
 					   * GRES_CONF_ENV_* are set. */
@@ -164,6 +165,7 @@ typedef struct {
 #define GRES_AUTODETECT_GPU_NRT 0x00000010
 #define GRES_AUTODETECT_GPU_NVIDIA 0x00000020
 #define GRES_AUTODETECT_GPU_FULL 0x00000040 /* try all gpu plugins in order */
+#define GRES_AUTODETECT_GPU_HLML 0x00000080
 
 #define GRES_AUTODETECT_GPU_FLAGS 0x000000ff /* reserve first 8 bits for gpu
 					      * flags */
