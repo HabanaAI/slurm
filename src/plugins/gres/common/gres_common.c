@@ -444,9 +444,5 @@ extern int gres_common_set_env_types_on_node_flags(void *x, void *arg)
 	if (gres_slurmd_conf->config_flags & GRES_CONF_ENV_HLML)
 		*node_flags |= GRES_CONF_ENV_HLML;
 
-	/* No need to continue if all are set */
-	if ((*node_flags & GRES_CONF_ENV_SET) == GRES_CONF_ENV_SET)
-		return -1;
-
 	return 0;
 }
