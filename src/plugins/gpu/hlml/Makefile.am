@@ -12,4 +12,3 @@ pkglib_LTLIBRARIES = gpu_hlml.la
 gpu_hlml_la_SOURCES = $(HLML_SOURCES)
 gpu_hlml_la_LDFLAGS = $(NUMA_LIBS) $(PLUGIN_FLAGS)
 gpu_hlml_la_LIBADD = ../common/libgpu_common.la
-
