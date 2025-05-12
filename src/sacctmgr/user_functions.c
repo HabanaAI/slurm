@@ -743,7 +743,7 @@ static int _check_uid(void *x, void *arg)
 	char *name = x;
 	uid_t pw_uid;
 
-	if (uid_from_string(name, &pw_uid) < 0) {
+	if (uid_from_string(name, &pw_uid) != SLURM_SUCCESS) {
 		char *warning = xstrdup_printf(
 			"There is no uid for user '%s'\nAre you sure you want to continue?",
 			name);
@@ -823,10 +823,16 @@ extern int sacctmgr_add_user(int argc, char **argv)
 			}
 		}
 		if (commit_check("Would you like to commit changes?")) {
-			slurmdb_connection_commit(db_conn, 1);
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
 		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else if (rc == SLURM_NO_CHANGE_IN_DATA) {
 		if (ret_str) {
@@ -836,8 +842,8 @@ extern int sacctmgr_add_user(int argc, char **argv)
 	} else {
 		exit_code=1;
 		fprintf(stderr,
-			" error: Problem adding user associations: %s\n",
-			slurm_strerror(rc));
+			" error: Problem adding user associations: %s (%s)\n",
+			slurm_strerror(rc), ret_str);
 		rc = SLURM_ERROR;
 	}
 
@@ -910,13 +916,19 @@ extern int sacctmgr_add_coord(int argc, char **argv)
 
 	if (rc == SLURM_SUCCESS) {
 		if (commit_check("Would you like to commit changes?")) {
-			slurmdb_connection_commit(db_conn, 1);
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
 		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else {
-		exit_code=1;
+		exit_code = 1;
 		fprintf(stderr, " Problem adding coordinator: %s\n",
 			slurm_strerror(rc));
 		rc = SLURM_ERROR;
@@ -1306,7 +1318,6 @@ extern int sacctmgr_modify_user(int argc, char **argv)
 
 	_check_and_set_cluster_list(user_cond->assoc_cond->cluster_list);
 
-	notice_thread_init();
 	if (rec_set & SA_SET_USER) { // process the account changes
 		if (cond_set == SA_SET_ASSOC) {
 			rc = SLURM_ERROR;
@@ -1316,7 +1327,7 @@ extern int sacctmgr_modify_user(int argc, char **argv)
 				"'where' options.\n");
 			goto assoc_start;
 		}
-
+		notice_thread_init();
 		if (user_cond->assoc_cond->acct_list
 		    && list_count(user_cond->assoc_cond->acct_list)) {
 			notice_thread_fini();
@@ -1335,6 +1346,7 @@ extern int sacctmgr_modify_user(int argc, char **argv)
 
 		ret_list = slurmdb_users_modify(
 			db_conn, user_cond, user);
+		printf(" Modified users...\n");
 		if (ret_list && list_count(ret_list)) {
 			set = 1;
 			if (user->default_acct && user->default_acct[0]
@@ -1357,14 +1369,13 @@ extern int sacctmgr_modify_user(int argc, char **argv)
 				char *object;
 				list_itr_t *itr =
 					list_iterator_create(ret_list);
-				printf(" Modified users...\n");
 				while ((object = list_next(itr))) {
 					printf("  %s\n", object);
 				}
 				list_iterator_destroy(itr);
 			}
-		} else if (ret_list) {
-			printf(" Nothing modified\n");
+		} else if (ret_list || errno == SLURM_NO_CHANGE_IN_DATA) {
+			printf("  Nothing modified\n");
 			rc = SLURM_ERROR;
 		} else {
 			exit_code=1;
@@ -1376,8 +1387,23 @@ extern int sacctmgr_modify_user(int argc, char **argv)
 					"at a time.\n");
 			rc = SLURM_ERROR;
 		}
-
 		FREE_NULL_LIST(ret_list);
+		notice_thread_fini();
+		if (set) {
+			if (commit_check("Would you like to commit changes?")) {
+				rc = slurmdb_connection_commit(db_conn, 1);
+				if (rc != SLURM_SUCCESS)
+					fprintf(stderr, " Error committing changes: %s\n",
+						slurm_strerror(rc));
+			} else {
+				printf(" Changes Discarded\n");
+				rc = slurmdb_connection_commit(db_conn, 0);
+				if (rc != SLURM_SUCCESS)
+					fprintf(stderr, " Error rolling back changes: %s\n",
+						slurm_strerror(rc));
+			}
+			set = 0;
+		}
 	}
 
 assoc_start:
@@ -1392,20 +1418,21 @@ assoc_start:
 			goto assoc_end;
 		}
 
+		notice_thread_init();
 		ret_list = slurmdb_associations_modify(
 			db_conn, user_cond->assoc_cond, assoc);
 
+		printf(" Modified user associations...\n");
 		if (ret_list && list_count(ret_list)) {
 			char *object = NULL;
 			list_itr_t *itr = list_iterator_create(ret_list);
-			printf(" Modified user associations...\n");
 			while((object = list_next(itr))) {
 				printf("  %s\n", object);
 			}
 			list_iterator_destroy(itr);
 			set = 1;
-		} else if (ret_list) {
-			printf(" Nothing modified\n");
+		} else if (ret_list || errno == SLURM_NO_CHANGE_IN_DATA) {
+			printf("  Nothing modified\n");
 			rc = SLURM_ERROR;
 		} else {
 			exit_code=1;
@@ -1415,18 +1442,23 @@ assoc_start:
 		}
 
 		FREE_NULL_LIST(ret_list);
-	}
-assoc_end:
-
-	notice_thread_fini();
-	if (set) {
-		if (commit_check("Would you like to commit changes?"))
-			slurmdb_connection_commit(db_conn, 1);
-		else {
-			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+		notice_thread_fini();
+		if (set) {
+			if (commit_check("Would you like to commit changes?")) {
+				rc = slurmdb_connection_commit(db_conn, 1);
+				if (rc != SLURM_SUCCESS)
+					fprintf(stderr, " Error committing changes: %s\n",
+						slurm_strerror(rc));
+			} else {
+				printf(" Changes Discarded\n");
+				rc = slurmdb_connection_commit(db_conn, 0);
+				if (rc != SLURM_SUCCESS)
+					fprintf(stderr, " Error rolling back changes: %s\n",
+						slurm_strerror(rc));
+			}
 		}
 	}
+assoc_end:
 
 	slurmdb_destroy_user_cond(user_cond);
 	slurmdb_destroy_user_rec(user);
@@ -1690,10 +1722,16 @@ extern int sacctmgr_delete_user(int argc, char **argv)
 		}
 
 		if (commit_check("Would you like to commit changes?")) {
-			slurmdb_connection_commit(db_conn, 1);
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
 		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else if (ret_list) {
 		printf(" Nothing deleted\n");
@@ -1814,11 +1852,18 @@ extern int sacctmgr_delete_coord(int argc, char **argv)
 	FREE_NULL_LIST(ret_list);
 	notice_thread_fini();
 	if (set) {
-		if (commit_check("Would you like to commit changes?"))
-			slurmdb_connection_commit(db_conn, 1);
-		else {
+		if (commit_check("Would you like to commit changes?")) {
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
+
+		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	}
 

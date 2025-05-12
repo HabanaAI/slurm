@@ -63,11 +63,11 @@ scontrol [<OPTION>] [<COMMAND>]
      oneliner                 report output one record per line.
      pidinfo <pid>            return slurm job information for given pid.
      ping                     print status of slurmctld daemons.
-     power down [ASAP|FORCE] <nodelist>
+     power down [ASAP|FORCE] <nodelist> [Reason=<reason>]
            up <nodelist>
                               Control power state(s) for provided nodelist.
                               For power down optionally provide ASAP or
-                              FORCE.
+                              FORCE and optionally set node Reason field.
      quiet                    print no messages other than error messages.
      quit                     terminate this command.
      reboot [ASAP] [nextstate=] [reason=] <ALL|nodelist>
@@ -108,11 +108,10 @@ scontrol [<OPTION>] [<COMMAND>]
                               with a .<datetime> suffix is created.
      !!                       Repeat the last command entered.
 
-  <ENTITY> may be "aliases", "assoc_mgr", "bbstat", "burstBuffer",
-       "config", "daemons", "dwstat", "federation", "frontend",
-       "hostlist", "hostlistsorted", "hostnames", "job",
-       "licenses", "node", "partition", "reservation", "slurmd",
-       "step", or "topology"
+  <ENTITY> may be "aliases", "assoc_mgr", "bbstat", "burstBuffer", "config",
+       "daemons", "dwstat", "federation", "hostlist", "hostlistsorted",
+       "hostnames", "job", "licenses", "node", "partition", "reservation",
+       "slurmd", "step", or "topology"
 
   <ID> may be a configuration parameter name, job id, node name, partition
        name, reservation name, job step id, license name or hostlist or

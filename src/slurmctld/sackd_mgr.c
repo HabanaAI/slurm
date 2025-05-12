@@ -41,6 +41,8 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/tls.h"
+
 #include "src/slurmctld/agent.h"
 #include "src/slurmctld/slurmctld.h"
 
@@ -48,6 +50,7 @@ typedef struct {
 	char *hostname;
 	char *nodeaddr;
 	time_t last_update;
+	uint16_t port;
 	uint16_t protocol_version;
 } sackd_node_t;
 
@@ -66,14 +69,21 @@ static void _destroy_sackd_node(void *x)
 	xfree(node);
 }
 
+/*
+ * protocol_version is only here because of pack_list().
+ * There's no need to ever pack an old version though.
+ */
 static void _pack_node(void *x, uint16_t protocol_version, buf_t *buffer)
 {
 	sackd_node_t *node = x;
+
+	xassert(protocol_version == SLURM_PROTOCOL_VERSION);
 
 	pack16(node->protocol_version, buffer);
 	pack64(node->last_update, buffer);
 	packstr(node->hostname, buffer);
 	packstr(node->nodeaddr, buffer);
+	pack16(node->port, buffer);
 }
 
 static int _unpack_node(void **x, uint16_t protocol_version, buf_t *buffer)
@@ -81,11 +91,20 @@ static int _unpack_node(void **x, uint16_t protocol_version, buf_t *buffer)
 	uint64_t time_tmp;
 	sackd_node_t *node = xmalloc(sizeof(*node));
 
-	safe_unpack16(&node->protocol_version, buffer);
-	safe_unpack64(&time_tmp, buffer);
-	node->last_update = time_tmp;
-	safe_unpackstr(&node->hostname, buffer);
-	safe_unpackstr(&node->nodeaddr, buffer);
+	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		safe_unpack16(&node->protocol_version, buffer);
+		safe_unpack64(&time_tmp, buffer);
+		node->last_update = time_tmp;
+		safe_unpackstr(&node->hostname, buffer);
+		safe_unpackstr(&node->nodeaddr, buffer);
+		safe_unpack16(&node->port, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+		safe_unpack16(&node->protocol_version, buffer);
+		safe_unpack64(&time_tmp, buffer);
+		node->last_update = time_tmp;
+		safe_unpackstr(&node->hostname, buffer);
+		safe_unpackstr(&node->nodeaddr, buffer);
+	}
 
 	*x = node;
 	return SLURM_SUCCESS;
@@ -111,8 +130,10 @@ static void _update_sackd_node(sackd_node_t *node, slurm_msg_t *msg)
 
 	/* Resolve IP of slurmd if needed */
 	xfree(node->nodeaddr);
-	if ((addr->ss_family == AF_UNSPEC) && (msg->conn_fd >= 0))
-		(void) slurm_get_peer_addr(msg->conn_fd, addr);
+	if (addr->ss_family == AF_UNSPEC) {
+		int fd = tls_g_get_conn_fd(msg->tls_conn);
+		(void) slurm_get_peer_addr(fd, addr);
+	}
 
 	if (addr->ss_family != AF_UNSPEC) {
 		node->nodeaddr = xmalloc(INET6_ADDRSTRLEN);
@@ -154,10 +175,13 @@ extern void sackd_mgr_fini(void)
 	slurm_mutex_unlock(&sackd_lock);
 }
 
-extern void sackd_mgr_add_node(slurm_msg_t *msg)
+extern void sackd_mgr_add_node(slurm_msg_t *msg, uint16_t port)
 {
 	sackd_node_t *node = NULL;
 	char *auth_host = auth_g_get_host(msg);
+
+	if (!port)
+		port = slurm_conf.slurmd_port;
 
 	slurm_mutex_lock(&sackd_lock);
 	if (!sackd_nodes)
@@ -165,15 +189,17 @@ extern void sackd_mgr_add_node(slurm_msg_t *msg)
 
 	if ((node = list_find_first(sackd_nodes, _find_sackd_node,
 				    auth_host))) {
-		debug("%s: updating existing record for %s",
-		      __func__, auth_host);
+		debug("%s: updating existing record for %s:%hu",
+		      __func__, auth_host, port);
+		node->port = port;
 		_update_sackd_node(node, msg);
 		xfree(auth_host);
 	} else {
-		debug("%s: adding record for %s",
-		      __func__, auth_host);
+		debug("%s: adding record for %s:%hu",
+		      __func__, auth_host, port);
 		node = xmalloc(sizeof(*node));
 		node->hostname = auth_host;
+		node->port = port;
 		_update_sackd_node(node, msg);
 		list_append(sackd_nodes, node);
 	}
@@ -186,7 +212,7 @@ static int _each_sackd_node(void *x, void *arg)
 	agent_arg_t *args = xmalloc(sizeof(*args));
 
 	args->addr = xmalloc(sizeof(slurm_addr_t));
-	slurm_set_addr(args->addr, slurm_conf.slurmd_port, node->nodeaddr);
+	slurm_set_addr(args->addr, node->port, node->nodeaddr);
 	args->msg_args = new_config_response(false);
 	args->msg_type = REQUEST_RECONFIGURE_SACKD;
 	args->hostlist = hostlist_create(node->hostname);

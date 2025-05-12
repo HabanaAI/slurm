@@ -670,6 +670,7 @@ WITH_SYSTEMD_UNITS_TRUE
 systemdsystemunitdir
 SYSTEMD_TASKSMAX_OPTION
 READLINE_LIBS
+bashcompdir
 HAVE_MAN2HTML
 HAVE_MAN2HTML_FALSE
 HAVE_MAN2HTML_TRUE
@@ -1040,7 +1041,6 @@ enable_optimizations
 enable_developer
 enable_debug
 enable_memory_leak_debug
-enable_front_end
 enable_partial_attach
 enable_salloc_kill_cmd
 with_slurmctld_port
@@ -1087,7 +1087,8 @@ GOBJECT_QUERY
 GLIB_MKENUMS
 GLIB_COMPILE_RESOURCES
 lua_CFLAGS
-lua_LIBS'
+lua_LIBS
+bashcompdir'
 
 
 # Initialize some variables set by options.
@@ -1749,7 +1750,6 @@ Optional Features:
                           optimizations
   --enable-memory-leak-debug
                           enable memory leak debugging code for development
-  --enable-front-end      enable slurmd operation on a front-end
   --disable-partial-attach
                           disable debugger partial task attach support
   --enable-salloc-kill-cmd
@@ -1858,6 +1858,8 @@ Some influential environment variables:
               pkg-config
   lua_CFLAGS  C compiler flags for lua, overriding pkg-config
   lua_LIBS    linker flags for lua, overriding pkg-config
+  bashcompdir value of completionsdir for bash-completion, overriding
+              pkg-config
 
 Use these variables to override the choices made by 'configure' or to help
 it to find libraries and programs with nonstandard names/locations.
@@ -25732,38 +25734,56 @@ else case e in #(
           for bit in $_x_ac_s2n_libs; do
             test -d "$d/$bit" || continue
             _x_ac_s2n_libs_save="$LIBS"
-            LIBS="-L$d/$bit -ls2n $LIBS"
-            cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+            _x_ac_s2n_cppflags_save="$CPPFLAGS"
+	    S2N_DIR="$d"
+	    S2N_LIBS="-ls2n"
+	    S2N_CPPFLAGS="-I$d/include"
+	    if test "$ac_with_rpath" = "yes"; then
+	      S2N_LDFLAGS="-Wl,-rpath -Wl,$d/$bit "
+	    fi
+	    S2N_LDFLAGS+="-L$d/$bit"
+            LIBS="$S2N_LDFLAGS $S2N_LIBS"
+            CPPFLAGS="$S2N_CPPFLAGS $CPPFLAGS"
+	    if test "$cross_compiling" = yes
+then :
+  { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: error: in '$ac_pwd':" >&5
+printf "%s\n" "$as_me: error: in '$ac_pwd':" >&2;}
+as_fn_error $? "cannot run test program while cross compiling
+See 'config.log' for more details" "$LINENO" 5; }
+else case e in #(
+  e) cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
-
-/* Override any GCC internal prototype to avoid an error.
-   Use char because int might match the return type of a GCC
-   builtin and then its argument prototype would still apply.
-   The 'extern "C"' is for builds by C++ compilers;
-   although this is not generally supported in C code supporting it here
-   has little cost and some practical benefit (sr 110532).  */
-#ifdef __cplusplus
-extern "C"
-#endif
-char s2n_init (void);
+#include <s2n.h>
 int
 main (void)
 {
-return s2n_init ();
+
+		 s2n_init();
+		 s2n_cleanup_final();
+
   ;
   return 0;
 }
 _ACEOF
-if ac_fn_c_try_link "$LINENO"
+if ac_fn_c_try_run "$LINENO"
 then :
-  x_ac_cv_s2n_dir=$d
+  s2n_run_ok=yes
 fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam \
-    conftest$ac_exeext conftest.$ac_ext
+rm -f core *.core core.conftest.* gmon.out bb.out conftest$ac_exeext \
+  conftest.$ac_objext conftest.beam conftest.$ac_ext ;;
+esac
+fi
+
             LIBS="$_x_ac_s2n_libs_save"
-            test -n "$x_ac_cv_s2n_dir" && break
+            CPPFLAGS="$_x_ac_s2n_cppflags_save"
+
+            if test "$s2n_run_ok" = "yes"; then
+	      break
+	    fi
           done
-          test -n "$x_ac_cv_s2n_dir" && break
+          if test "$s2n_run_ok" = "yes"; then
+	    break
+	  fi
         done
        ;;
 esac
@@ -25771,34 +25791,24 @@ fi
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $x_ac_cv_s2n_dir" >&5
 printf "%s\n" "$x_ac_cv_s2n_dir" >&6; }
 
-    if test -z "$x_ac_cv_s2n_dir"; then
-      if test -z "$with_s2n" ; then
-        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: unable to locate s2n library" >&5
-printf "%s\n" "$as_me: WARNING: unable to locate s2n library" >&2;}
-      else
-        as_fn_error $? "unable to locate s2n library" "$LINENO" 5
-      fi
-    else
+    if test "$s2n_run_ok" = "yes"; then
 
 printf "%s\n" "#define HAVE_S2N 1" >>confdefs.h
 
-      S2N_LIBS="-ls2n"
-      S2N_CPPFLAGS="-I$x_ac_cv_s2n_dir/include"
-      S2N_DIR="$x_ac_cv_s2n_dir"
-      if test "$ac_with_rpath" = "yes"; then
-        S2N_LDFLAGS="-Wl,-rpath -Wl,$x_ac_cv_s2n_dir/$bit -L$x_ac_cv_s2n_dir/$bit"
+
+
+
+
+    else
+      if test -z "$with_s2n" ; then
+        { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: unable to locate 1.5.7+ s2n library" >&5
+printf "%s\n" "$as_me: WARNING: unable to locate 1.5.7+ s2n library" >&2;}
       else
-        S2N_LDFLAGS="-L$x_ac_cv_s2n_dir/$bit"
+        as_fn_error $? "unable to locate 1.5.7+ s2n library" "$LINENO" 5
       fi
     fi
-
-
-
-
-
   fi
-
-   if test -n "$x_ac_cv_s2n_dir"; then
+   if test "$s2n_run_ok" = "yes"; then
   WITH_S2N_TRUE=
   WITH_S2N_FALSE='#'
 else
@@ -27404,30 +27414,6 @@ printf "%s\n" "#define MEMORY_LEAK_DEBUG 1" >>confdefs.h
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: ${x_ac_memory_debug=no}" >&5
 printf "%s\n" "${x_ac_memory_debug=no}" >&6; }
 
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether to enable slurmd operation on a front-end" >&5
-printf %s "checking whether to enable slurmd operation on a front-end... " >&6; }
-  # Check whether --enable-front-end was given.
-if test ${enable_front_end+y}
-then :
-  enableval=$enable_front_end;  case "$enableval" in
-        yes) x_ac_front_end=yes ;;
-         no) x_ac_front_end=no ;;
-          *) { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: doh!" >&5
-printf "%s\n" "doh!" >&6; }
-             as_fn_error $? "bad value \"$enableval\" for --enable-front-end" "$LINENO" 5 ;;
-      esac
-
-
-fi
-
-  if test "$x_ac_front_end" = yes; then
-
-printf "%s\n" "#define HAVE_FRONT_END 1" >>confdefs.h
-
-  fi
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: ${x_ac_front_end=no}" >&5
-printf "%s\n" "${x_ac_front_end=no}" >&6; }
-
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking whether debugger partial attach enabled" >&5
 printf %s "checking whether debugger partial attach enabled... " >&6; }
   # Check whether --enable-partial-attach was given.
@@ -27986,6 +27972,73 @@ else
   HAVE_MAN2HTML_FALSE=
 fi
 
+
+
+
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for bash-completion package" >&5
+printf %s "checking for bash-completion package... " >&6; }
+
+if test -n "$bashcompdir"; then
+    pkg_cv_bashcompdir="$bashcompdir"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"bash-completion\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "bash-completion") 2>&5
+  ac_status=$?
+  printf "%s\n" "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_bashcompdir=`$PKG_CONFIG --variable="completionsdir" "bash-completion" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+bashcompdir=$pkg_cv_bashcompdir
+
+if test "x$bashcompdir" = x""
+then :
+  ac_have_bash_completion=no
+else case e in #(
+  e) ac_have_bash_completion=yes ;;
+esac
+fi
+
+	if test "x$ac_have_bash_completion" != "xyes" ; then
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: unable to locate bash-completion package" >&5
+printf "%s\n" "$as_me: WARNING: unable to locate bash-completion package" >&2;}
+	fi
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_have_bash_completion" >&5
+printf "%s\n" "$ac_have_bash_completion" >&6; }
+
+	# Ref: https://github.com/scop/bash-completion/blob/main/README.md#faq
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for bash-completion completionsdir path" >&5
+printf %s "checking for bash-completion completionsdir path... " >&6; }
+	if  $PKG_CONFIG --atleast-version=2.12 bash-completion ; then
+		# For 'bash-completion >= 2.12':
+		#   When the real location of the command is in the directory
+		#   `<prefix>/bin` or `<prefix>/sbin`, the directory
+		#   `<prefix>/share/bash-completion/completions` is considered.
+		completionsdir="${datadir}/bash-completion/completions"
+	elif test "x$prefix" = "xNONE" || test "x$prefix" = "x/usr/local"; then
+		# PREFIX is default value; use a known supported directory.
+		if test "x$ac_have_bash_completion" = "xyes"; then
+			# PKG_CHECK_VAR:
+			# pkg-config --variable=completionsdir bash-completion
+			completionsdir="$bashcompdir"
+		else
+			# Default to known directory path.
+			completionsdir="/usr/share/bash-completion/completions"
+		fi
+	else
+		# Default to a permission safe directory.
+		completionsdir="${datadir}/bash-completion/completions"
+	fi
+	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $completionsdir" >&5
+printf "%s\n" "$completionsdir" >&6; }
+
+	bashcompdir=$completionsdir
 
 
 
@@ -28854,7 +28907,7 @@ printf "%s\n" "${x_ac_deprecated=no}" >&6; }
 
 
 
-ac_config_files="$ac_config_files Makefile auxdir/Makefile contribs/Makefile contribs/lua/Makefile contribs/nss_slurm/Makefile contribs/openlava/Makefile contribs/pam/Makefile contribs/pam_slurm_adopt/Makefile contribs/perlapi/Makefile contribs/perlapi/libslurm/Makefile contribs/perlapi/libslurm/perl/Makefile.PL contribs/perlapi/libslurmdb/Makefile contribs/perlapi/libslurmdb/perl/Makefile.PL contribs/pmi/Makefile contribs/pmi2/Makefile contribs/seff/Makefile contribs/sgather/Makefile contribs/sjobexit/Makefile contribs/slurm_completion_help/Makefile contribs/torque/Makefile doc/Makefile doc/html/Makefile doc/html/configurator.easy.html doc/html/configurator.html doc/man/Makefile doc/man/man1/Makefile doc/man/man5/Makefile doc/man/man8/Makefile etc/Makefile src/Makefile src/api/Makefile src/bcast/Makefile src/common/Makefile src/conmgr/Makefile src/curl/Makefile src/database/Makefile src/interfaces/Makefile src/lua/Makefile src/plugins/Makefile src/plugins/accounting_storage/Makefile src/plugins/accounting_storage/common/Makefile src/plugins/accounting_storage/ctld_relay/Makefile src/plugins/accounting_storage/mysql/Makefile src/plugins/accounting_storage/slurmdbd/Makefile src/plugins/acct_gather_energy/Makefile src/plugins/acct_gather_energy/gpu/Makefile src/plugins/acct_gather_energy/ibmaem/Makefile src/plugins/acct_gather_energy/ipmi/Makefile src/plugins/acct_gather_energy/pm_counters/Makefile src/plugins/acct_gather_energy/rapl/Makefile src/plugins/acct_gather_energy/xcc/Makefile src/plugins/acct_gather_filesystem/Makefile src/plugins/acct_gather_filesystem/lustre/Makefile src/plugins/acct_gather_interconnect/Makefile src/plugins/acct_gather_interconnect/ofed/Makefile src/plugins/acct_gather_interconnect/sysfs/Makefile src/plugins/acct_gather_profile/Makefile src/plugins/acct_gather_profile/hdf5/Makefile src/plugins/acct_gather_profile/hdf5/sh5util/Makefile src/plugins/acct_gather_profile/influxdb/Makefile src/plugins/auth/Makefile src/plugins/auth/jwt/Makefile src/plugins/auth/munge/Makefile src/plugins/auth/none/Makefile src/plugins/auth/slurm/Makefile src/plugins/burst_buffer/Makefile src/plugins/burst_buffer/common/Makefile src/plugins/burst_buffer/datawarp/Makefile src/plugins/burst_buffer/lua/Makefile src/plugins/certmgr/Makefile src/plugins/certmgr/script/Makefile src/plugins/cgroup/Makefile src/plugins/cgroup/common/Makefile src/plugins/cgroup/v1/Makefile src/plugins/cgroup/v2/Makefile src/plugins/cli_filter/Makefile src/plugins/cli_filter/common/Makefile src/plugins/cli_filter/lua/Makefile src/plugins/cli_filter/syslog/Makefile src/plugins/cli_filter/user_defaults/Makefile src/plugins/cred/Makefile src/plugins/cred/common/Makefile src/plugins/cred/munge/Makefile src/plugins/cred/none/Makefile src/plugins/data_parser/Makefile src/plugins/data_parser/v0.0.40/Makefile src/plugins/data_parser/v0.0.41/Makefile src/plugins/data_parser/v0.0.42/Makefile src/plugins/data_parser/v0.0.43/Makefile src/plugins/gpu/Makefile src/plugins/gpu/common/Makefile src/plugins/gpu/generic/Makefile src/plugins/gpu/nrt/Makefile src/plugins/gpu/nvidia/Makefile src/plugins/gpu/nvml/Makefile src/plugins/gpu/oneapi/Makefile src/plugins/gpu/rsmi/Makefile src/plugins/gres/Makefile src/plugins/gres/common/Makefile src/plugins/gres/gpu/Makefile src/plugins/gres/mps/Makefile src/plugins/gres/nic/Makefile src/plugins/gres/shard/Makefile src/plugins/hash/Makefile src/plugins/hash/common_xkcp/Makefile src/plugins/hash/k12/Makefile src/plugins/hash/sha3/Makefile src/plugins/job_container/Makefile src/plugins/job_container/tmpfs/Makefile src/plugins/job_submit/Makefile src/plugins/job_submit/all_partitions/Makefile src/plugins/job_submit/defaults/Makefile src/plugins/job_submit/logging/Makefile src/plugins/job_submit/lua/Makefile src/plugins/job_submit/partition/Makefile src/plugins/job_submit/pbs/Makefile src/plugins/job_submit/require_timelimit/Makefile src/plugins/job_submit/throttle/Makefile src/plugins/jobacct_gather/Makefile src/plugins/jobacct_gather/cgroup/Makefile src/plugins/jobacct_gather/common/Makefile src/plugins/jobacct_gather/linux/Makefile src/plugins/jobcomp/Makefile src/plugins/jobcomp/common/Makefile src/plugins/jobcomp/elasticsearch/Makefile src/plugins/jobcomp/filetxt/Makefile src/plugins/jobcomp/kafka/Makefile src/plugins/jobcomp/lua/Makefile src/plugins/jobcomp/mysql/Makefile src/plugins/jobcomp/script/Makefile src/plugins/mcs/Makefile src/plugins/mcs/account/Makefile src/plugins/mcs/group/Makefile src/plugins/mcs/label/Makefile src/plugins/mcs/user/Makefile src/plugins/mpi/Makefile src/plugins/mpi/cray_shasta/Makefile src/plugins/mpi/pmi2/Makefile src/plugins/mpi/pmix/Makefile src/plugins/node_features/Makefile src/plugins/node_features/helpers/Makefile src/plugins/node_features/knl_generic/Makefile src/plugins/preempt/Makefile src/plugins/preempt/partition_prio/Makefile src/plugins/preempt/qos/Makefile src/plugins/prep/Makefile src/plugins/prep/script/Makefile src/plugins/priority/Makefile src/plugins/priority/basic/Makefile src/plugins/priority/multifactor/Makefile src/plugins/proctrack/Makefile src/plugins/proctrack/cgroup/Makefile src/plugins/proctrack/linuxproc/Makefile src/plugins/proctrack/pgid/Makefile src/plugins/sched/Makefile src/plugins/sched/backfill/Makefile src/plugins/sched/builtin/Makefile src/plugins/select/Makefile src/plugins/select/cons_tres/Makefile src/plugins/select/linear/Makefile src/plugins/serializer/Makefile src/plugins/serializer/json/Makefile src/plugins/serializer/url-encoded/Makefile src/plugins/serializer/yaml/Makefile src/plugins/site_factor/Makefile src/plugins/site_factor/example/Makefile src/plugins/switch/Makefile src/plugins/switch/hpe_slingshot/Makefile src/plugins/switch/nvidia_imex/Makefile src/plugins/task/Makefile src/plugins/task/affinity/Makefile src/plugins/task/cgroup/Makefile src/plugins/tls/Makefile src/plugins/tls/none/Makefile src/plugins/tls/s2n/Makefile src/plugins/topology/Makefile src/plugins/topology/block/Makefile src/plugins/topology/common/Makefile src/plugins/topology/default/Makefile src/plugins/topology/tree/Makefile src/sacct/Makefile src/sackd/Makefile src/sacctmgr/Makefile src/salloc/Makefile src/sattach/Makefile src/scrun/Makefile src/sbatch/Makefile src/sbcast/Makefile src/scancel/Makefile src/scontrol/Makefile src/scrontab/Makefile src/sdiag/Makefile src/sinfo/Makefile src/slurmctld/Makefile src/slurmd/Makefile src/slurmd/common/Makefile src/slurmd/slurmd/Makefile src/slurmd/slurmstepd/Makefile src/slurmdbd/Makefile src/slurmrestd/Makefile src/slurmrestd/plugins/Makefile src/slurmrestd/plugins/auth/Makefile src/slurmrestd/plugins/auth/jwt/Makefile src/slurmrestd/plugins/auth/local/Makefile src/slurmrestd/plugins/openapi/Makefile src/slurmrestd/plugins/openapi/slurmctld/Makefile src/slurmrestd/plugins/openapi/slurmdbd/Makefile src/sprio/Makefile src/squeue/Makefile src/sreport/Makefile src/srun/Makefile src/sshare/Makefile src/sstat/Makefile src/stepmgr/Makefile src/strigger/Makefile src/sview/Makefile testsuite/Makefile testsuite/testsuite.conf.sample testsuite/expect/Makefile testsuite/slurm_unit/Makefile testsuite/slurm_unit/backfill/Makefile testsuite/slurm_unit/common/Makefile testsuite/slurm_unit/common/bitstring/Makefile testsuite/slurm_unit/common/hostlist/Makefile testsuite/slurm_unit/common/slurm_protocol_defs/Makefile testsuite/slurm_unit/common/slurm_protocol_pack/Makefile testsuite/slurm_unit/common/slurmdb_defs/Makefile testsuite/slurm_unit/common/slurmdb_pack/Makefile testsuite/slurm_unit/topology/Makefile"
+ac_config_files="$ac_config_files Makefile auxdir/Makefile contribs/Makefile contribs/lua/Makefile contribs/nss_slurm/Makefile contribs/openlava/Makefile contribs/pam/Makefile contribs/pam_slurm_adopt/Makefile contribs/perlapi/Makefile contribs/perlapi/libslurm/Makefile contribs/perlapi/libslurm/perl/Makefile.PL contribs/perlapi/libslurmdb/Makefile contribs/perlapi/libslurmdb/perl/Makefile.PL contribs/pmi/Makefile contribs/pmi2/Makefile contribs/seff/Makefile contribs/sgather/Makefile contribs/sjobexit/Makefile contribs/slurm_completion_help/Makefile contribs/torque/Makefile doc/Makefile doc/html/Makefile doc/html/configurator.easy.html doc/html/configurator.html doc/man/Makefile doc/man/man1/Makefile doc/man/man5/Makefile doc/man/man8/Makefile etc/Makefile src/Makefile src/api/Makefile src/bcast/Makefile src/common/Makefile src/conmgr/Makefile src/curl/Makefile src/database/Makefile src/interfaces/Makefile src/lua/Makefile src/plugins/Makefile src/plugins/accounting_storage/Makefile src/plugins/accounting_storage/common/Makefile src/plugins/accounting_storage/ctld_relay/Makefile src/plugins/accounting_storage/mysql/Makefile src/plugins/accounting_storage/slurmdbd/Makefile src/plugins/acct_gather_energy/Makefile src/plugins/acct_gather_energy/gpu/Makefile src/plugins/acct_gather_energy/ibmaem/Makefile src/plugins/acct_gather_energy/ipmi/Makefile src/plugins/acct_gather_energy/pm_counters/Makefile src/plugins/acct_gather_energy/rapl/Makefile src/plugins/acct_gather_energy/xcc/Makefile src/plugins/acct_gather_filesystem/Makefile src/plugins/acct_gather_filesystem/lustre/Makefile src/plugins/acct_gather_interconnect/Makefile src/plugins/acct_gather_interconnect/ofed/Makefile src/plugins/acct_gather_interconnect/sysfs/Makefile src/plugins/acct_gather_profile/Makefile src/plugins/acct_gather_profile/hdf5/Makefile src/plugins/acct_gather_profile/hdf5/sh5util/Makefile src/plugins/acct_gather_profile/influxdb/Makefile src/plugins/auth/Makefile src/plugins/auth/jwt/Makefile src/plugins/auth/munge/Makefile src/plugins/auth/none/Makefile src/plugins/auth/slurm/Makefile src/plugins/burst_buffer/Makefile src/plugins/burst_buffer/common/Makefile src/plugins/burst_buffer/datawarp/Makefile src/plugins/burst_buffer/lua/Makefile src/plugins/certgen/Makefile src/plugins/certgen/script/Makefile src/plugins/certmgr/Makefile src/plugins/certmgr/script/Makefile src/plugins/cgroup/Makefile src/plugins/cgroup/common/Makefile src/plugins/cgroup/v1/Makefile src/plugins/cgroup/v2/Makefile src/plugins/cli_filter/Makefile src/plugins/cli_filter/common/Makefile src/plugins/cli_filter/lua/Makefile src/plugins/cli_filter/syslog/Makefile src/plugins/cli_filter/user_defaults/Makefile src/plugins/cred/Makefile src/plugins/cred/common/Makefile src/plugins/cred/munge/Makefile src/plugins/cred/none/Makefile src/plugins/data_parser/Makefile src/plugins/data_parser/v0.0.40/Makefile src/plugins/data_parser/v0.0.41/Makefile src/plugins/data_parser/v0.0.42/Makefile src/plugins/data_parser/v0.0.43/Makefile src/plugins/gpu/Makefile src/plugins/gpu/common/Makefile src/plugins/gpu/generic/Makefile src/plugins/gpu/nrt/Makefile src/plugins/gpu/nvidia/Makefile src/plugins/gpu/nvml/Makefile src/plugins/gpu/oneapi/Makefile src/plugins/gpu/rsmi/Makefile src/plugins/gres/Makefile src/plugins/gres/common/Makefile src/plugins/gres/gpu/Makefile src/plugins/gres/mps/Makefile src/plugins/gres/nic/Makefile src/plugins/gres/shard/Makefile src/plugins/hash/Makefile src/plugins/hash/common_xkcp/Makefile src/plugins/hash/k12/Makefile src/plugins/hash/sha3/Makefile src/plugins/job_container/Makefile src/plugins/job_container/tmpfs/Makefile src/plugins/job_submit/Makefile src/plugins/job_submit/all_partitions/Makefile src/plugins/job_submit/defaults/Makefile src/plugins/job_submit/logging/Makefile src/plugins/job_submit/lua/Makefile src/plugins/job_submit/partition/Makefile src/plugins/job_submit/pbs/Makefile src/plugins/job_submit/require_timelimit/Makefile src/plugins/job_submit/throttle/Makefile src/plugins/jobacct_gather/Makefile src/plugins/jobacct_gather/cgroup/Makefile src/plugins/jobacct_gather/common/Makefile src/plugins/jobacct_gather/linux/Makefile src/plugins/jobcomp/Makefile src/plugins/jobcomp/common/Makefile src/plugins/jobcomp/elasticsearch/Makefile src/plugins/jobcomp/filetxt/Makefile src/plugins/jobcomp/kafka/Makefile src/plugins/jobcomp/lua/Makefile src/plugins/jobcomp/mysql/Makefile src/plugins/jobcomp/script/Makefile src/plugins/mcs/Makefile src/plugins/mcs/account/Makefile src/plugins/mcs/group/Makefile src/plugins/mcs/label/Makefile src/plugins/mcs/user/Makefile src/plugins/mpi/Makefile src/plugins/mpi/cray_shasta/Makefile src/plugins/mpi/pmi2/Makefile src/plugins/mpi/pmix/Makefile src/plugins/node_features/Makefile src/plugins/node_features/helpers/Makefile src/plugins/node_features/knl_generic/Makefile src/plugins/preempt/Makefile src/plugins/preempt/partition_prio/Makefile src/plugins/preempt/qos/Makefile src/plugins/prep/Makefile src/plugins/prep/script/Makefile src/plugins/priority/Makefile src/plugins/priority/basic/Makefile src/plugins/priority/multifactor/Makefile src/plugins/proctrack/Makefile src/plugins/proctrack/cgroup/Makefile src/plugins/proctrack/linuxproc/Makefile src/plugins/proctrack/pgid/Makefile src/plugins/sched/Makefile src/plugins/sched/backfill/Makefile src/plugins/sched/builtin/Makefile src/plugins/select/Makefile src/plugins/select/cons_tres/Makefile src/plugins/select/linear/Makefile src/plugins/serializer/Makefile src/plugins/serializer/json/Makefile src/plugins/serializer/url-encoded/Makefile src/plugins/serializer/yaml/Makefile src/plugins/site_factor/Makefile src/plugins/site_factor/example/Makefile src/plugins/switch/Makefile src/plugins/switch/hpe_slingshot/Makefile src/plugins/switch/nvidia_imex/Makefile src/plugins/task/Makefile src/plugins/task/affinity/Makefile src/plugins/task/cgroup/Makefile src/plugins/tls/Makefile src/plugins/tls/none/Makefile src/plugins/tls/s2n/Makefile src/plugins/topology/Makefile src/plugins/topology/block/Makefile src/plugins/topology/common/Makefile src/plugins/topology/flat/Makefile src/plugins/topology/tree/Makefile src/sacct/Makefile src/sackd/Makefile src/sacctmgr/Makefile src/salloc/Makefile src/sattach/Makefile src/scrun/Makefile src/sbatch/Makefile src/sbcast/Makefile src/scancel/Makefile src/scontrol/Makefile src/scrontab/Makefile src/sdiag/Makefile src/sinfo/Makefile src/slurmctld/Makefile src/slurmd/Makefile src/slurmd/common/Makefile src/slurmd/slurmd/Makefile src/slurmd/slurmstepd/Makefile src/slurmdbd/Makefile src/slurmrestd/Makefile src/slurmrestd/plugins/Makefile src/slurmrestd/plugins/auth/Makefile src/slurmrestd/plugins/auth/jwt/Makefile src/slurmrestd/plugins/auth/local/Makefile src/slurmrestd/plugins/openapi/Makefile src/slurmrestd/plugins/openapi/slurmctld/Makefile src/slurmrestd/plugins/openapi/slurmdbd/Makefile src/sprio/Makefile src/squeue/Makefile src/sreport/Makefile src/srun/Makefile src/sshare/Makefile src/sstat/Makefile src/stepmgr/Makefile src/strigger/Makefile src/sview/Makefile testsuite/Makefile testsuite/testsuite.conf.sample testsuite/expect/Makefile testsuite/slurm_unit/Makefile testsuite/slurm_unit/backfill/Makefile testsuite/slurm_unit/common/Makefile testsuite/slurm_unit/common/bitstring/Makefile testsuite/slurm_unit/common/hostlist/Makefile testsuite/slurm_unit/common/slurm_protocol_defs/Makefile testsuite/slurm_unit/common/slurm_protocol_pack/Makefile testsuite/slurm_unit/common/slurmdb_defs/Makefile testsuite/slurm_unit/common/slurmdb_pack/Makefile testsuite/slurm_unit/topology/Makefile"
 
 
 cat >confcache <<\_ACEOF
@@ -30218,6 +30271,8 @@ do
     "src/plugins/burst_buffer/common/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/burst_buffer/common/Makefile" ;;
     "src/plugins/burst_buffer/datawarp/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/burst_buffer/datawarp/Makefile" ;;
     "src/plugins/burst_buffer/lua/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/burst_buffer/lua/Makefile" ;;
+    "src/plugins/certgen/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/certgen/Makefile" ;;
+    "src/plugins/certgen/script/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/certgen/script/Makefile" ;;
     "src/plugins/certmgr/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/certmgr/Makefile" ;;
     "src/plugins/certmgr/script/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/certmgr/script/Makefile" ;;
     "src/plugins/cgroup/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/cgroup/Makefile" ;;
@@ -30327,7 +30382,7 @@ do
     "src/plugins/topology/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/Makefile" ;;
     "src/plugins/topology/block/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/block/Makefile" ;;
     "src/plugins/topology/common/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/common/Makefile" ;;
-    "src/plugins/topology/default/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/default/Makefile" ;;
+    "src/plugins/topology/flat/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/flat/Makefile" ;;
     "src/plugins/topology/tree/Makefile") CONFIG_FILES="$CONFIG_FILES src/plugins/topology/tree/Makefile" ;;
     "src/sacct/Makefile") CONFIG_FILES="$CONFIG_FILES src/sacct/Makefile" ;;
     "src/sackd/Makefile") CONFIG_FILES="$CONFIG_FILES src/sackd/Makefile" ;;

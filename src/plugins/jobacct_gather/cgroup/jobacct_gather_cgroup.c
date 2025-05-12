@@ -171,18 +171,12 @@ extern int init (void)
 	if (running_in_slurmstepd()) {
 		jag_common_init(cgroup_g_get_acct_units());
 
-		if (xcpuinfo_init() != SLURM_SUCCESS) {
-			return SLURM_ERROR;
-		}
-
 		/* Initialize the controllers which we want accounting for. */
 		if (cgroup_g_initialize(CG_MEMORY) != SLURM_SUCCESS) {
-			xcpuinfo_fini();
 			return SLURM_ERROR;
 		}
 
 		if (cgroup_g_initialize(CG_CPUACCT) != SLURM_SUCCESS) {
-			xcpuinfo_fini();
 			return SLURM_ERROR;
 		}
 	}
@@ -252,6 +246,14 @@ extern int jobacct_gather_p_endpoll(void)
 extern int jobacct_gather_p_add_task(pid_t pid, jobacct_id_t *jobacct_id)
 {
 	int rc = SLURM_SUCCESS;
+
+	/*
+	 * If we are the extern step, then our PID is 0. In that case, we want
+	 * to return and not create any cgroups, as we do not exist as a real
+	 * process.
+	 */
+	if (!pid)
+		return rc;
 
 	if (is_first_task) {
 		/* Only do once in this plugin */

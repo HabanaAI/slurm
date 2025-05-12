@@ -44,6 +44,7 @@ typedef enum {
 	SER_FLAGS_COMPACT = SLURM_BIT(0),
 	SER_FLAGS_PRETTY = SLURM_BIT(1),
 	SER_FLAGS_COMPLEX = SLURM_BIT(2), /* Dump Infinity and NaN */
+	SER_FLAGS_NO_TAG = SLURM_BIT(3), /* don't dump YAML tags */
 } serializer_flags_t;
 
 /*
@@ -54,8 +55,10 @@ typedef enum {
  */
 #define MIME_TYPE_YAML "application/x-yaml"
 #define MIME_TYPE_YAML_PLUGIN "serializer/yaml"
+#define ENV_CONFIG_YAML "SLURM_YAML"
 #define MIME_TYPE_JSON "application/json"
 #define MIME_TYPE_JSON_PLUGIN "serializer/json"
+#define ENV_CONFIG_JSON "SLURM_JSON"
 #define MIME_TYPE_URL_ENCODED "application/x-www-form-urlencoded"
 #define MIME_TYPE_URL_ENCODED_PLUGIN "serializer/url-encoded"
 
@@ -105,10 +108,10 @@ extern const char **get_mime_type_array(void);
  * IN plugins - comma delimited list of plugins or "list"
  * 	pass NULL to load all found or "" to load none of them
  *
- * IN listf - function to call if plugins="list" (may be NULL)
+ * IN config - string with configuration to parse or NULL
  * RET SLURM_SUCCESS or error
  */
-extern int serializer_g_init(const char *plugin_list, plugrack_foreach_t listf);
+extern int serializer_g_init(const char *plugin_list, const char *config);
 
 /*
  * Unload all serializer plugins

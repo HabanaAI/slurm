@@ -93,6 +93,7 @@ typedef struct {
 				   data_t *schemas);
 	void (*release_refs)(void *arg, void **references_ptr);
 	bool (*is_complex)(void *arg);
+	int (*dump_flags)(void *arg, data_t *dst);
 } parse_funcs_t;
 
 typedef struct {
@@ -117,6 +118,7 @@ static const char *parse_syms[] = {
 	"data_parser_p_populate_parameters",
 	"data_parser_p_release_references",
 	"data_parser_p_is_complex",
+	"data_parser_p_dump_flags",
 };
 
 static plugins_t *plugins = NULL;
@@ -209,6 +211,8 @@ static data_parser_t *_new_parser(data_parser_on_error_t on_parse_error,
 	parser->arg = funcs->new(on_parse_error, on_dump_error, on_query_error,
 				 error_arg, on_parse_warn, on_dump_warn,
 				 on_query_warn, warn_arg, params);
+	xstrfmtcat(parser->plugin_string, "%s%s", parser->plugin_type,
+		   (parser->params ? parser->params : ""));
 	END_TIMER2(__func__);
 
 	slurm_mutex_lock(&init_mutex);
@@ -479,14 +483,6 @@ extern const char *data_parser_get_plugin(data_parser_t *parser)
 		return NULL;
 
 	xassert(parser->magic == PARSE_MAGIC);
-
-	/*
-	 * Generate string as requested using full plugin type where the
-	 * original request may not having included data_parser/
-	 */
-	if (!parser->plugin_string)
-		xstrfmtcat(parser->plugin_string, "%s%s", parser->plugin_type,
-			   (parser->params ? parser->params : ""));
 
 	return parser->plugin_string;
 }
@@ -791,7 +787,7 @@ extern int data_parser_dump_cli_stdout(data_parser_type_t type, void *obj,
 
 	if (!data_parser_g_dump(parser, type, obj, obj_bytes, dresp) &&
 	    (data_get_type(dresp) != DATA_TYPE_NULL)) {
-		serializer_flags_t sflags = SER_FLAGS_PRETTY;
+		serializer_flags_t sflags = SER_FLAGS_NONE;
 
 		if (data_parser_g_is_complex(parser))
 			sflags |= SER_FLAGS_COMPLEX;
@@ -976,4 +972,22 @@ extern bool data_parser_g_is_complex(data_parser_t *parser)
 	xassert(parser->plugin_offset < plugins->count);
 
 	return funcs->is_complex(parser->arg);
+}
+
+extern int data_parser_g_dump_flags(data_parser_t *parser, data_t *dst)
+{
+	const parse_funcs_t *funcs;
+
+	if (!parser)
+		return EINVAL;
+
+	xassert(data_get_type(dst));
+	xassert(parser->magic == PARSE_MAGIC);
+	xassert(plugins && (plugins->magic == PLUGINS_MAGIC));
+	xassert(parser->plugin_offset < plugins->count);
+	xassert(plugins->functions[parser->plugin_offset]);
+
+	funcs = plugins->functions[parser->plugin_offset];
+
+	return funcs->dump_flags(parser->arg, dst);
 }

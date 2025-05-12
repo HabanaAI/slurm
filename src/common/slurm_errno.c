@@ -95,7 +95,7 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Unexpected missing socket error"			},
 	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_INVALID_INCOMING_FD),
 	  "Unable to process incoming file descriptor" },
-	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR),
+	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_INVALID_OUTGOING_FD),
 	  "Unable to process outgoing file descriptor" },
 	{ ERRTAB_ENTRY(SLURM_COMMUNICATIONS_INVALID_FD),
 	  "Unable to process incoming and outgoing file descriptors" },
@@ -506,6 +506,10 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Item not available from this callback"		},
 	{ ERRTAB_ENTRY(ESPANK_NOT_LOCAL),
 	  "Valid only in local or allocator context"		},
+	{ ERRTAB_ENTRY(ESPANK_NODE_FAILURE),
+	  "Spank plugin failure, node failed" },
+	{ ERRTAB_ENTRY(ESPANK_JOB_FAILURE),
+	  "Spank plugin failure, job failed" },
 
 	/* slurmd error codes */
 	{ ERRTAB_ENTRY(ESLURMD_KILL_TASK_FAILED),
@@ -538,7 +542,7 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Too many job steps on node"		        	},
 	{ ERRTAB_ENTRY(ESLURMD_STEP_EXISTS),
 	  "Job step already exists"		        	},
-	{ ERRTAB_ENTRY(ESLURMD_JOB_NOTRUNNING),
+	{ ERRTAB_ENTRY(ESLURMD_STEP_NOTRUNNING),
 	  "Job step not running"	        	        },
 	{ ERRTAB_ENTRY(ESLURMD_STEP_SUSPENDED),
 	  "Job step is suspended"                               },
@@ -552,6 +556,8 @@ slurm_errtab_t slurm_errtab[] = {
 	  "Unable to satisfy cpu bind request"			},
 	{ ERRTAB_ENTRY(ESLURMD_CPU_LAYOUT_ERROR),
 	  "Unable to layout tasks on given cpus"		},
+	{ ERRTAB_ENTRY(ESLURMD_STEPD_PROXY_FAILED),
+	  "Unable to proxy slurmstepd message"			},
 
 	/* socket specific Slurm communications error */
 
@@ -697,6 +703,12 @@ slurm_errtab_t slurm_errtab[] = {
 	/* container  errors */
 	{ ERRTAB_ENTRY(ESLURM_CONTAINER_NOT_CONFIGURED),
 	  "Container support is not configured"},
+
+	/* http and url errors */
+	{ ERRTAB_ENTRY(ESLURM_URL_UNKNOWN_SCHEME),
+	  "Unknown URL scheme"},
+	{ ERRTAB_ENTRY(ESLURM_URL_EMPTY),
+	  "URL string is empty"},
 };
 
 unsigned int slurm_errtab_size = sizeof(slurm_errtab) / sizeof(slurm_errtab_t);

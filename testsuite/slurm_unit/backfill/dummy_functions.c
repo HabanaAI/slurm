@@ -14,6 +14,7 @@
 #include "src/common/log.h"
 #include "src/common/macros.h"
 #include "src/common/read_config.h"
+#include "src/common/run_in_daemon.h"
 #include "src/common/timers.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -24,6 +25,8 @@
 
 #include "src/slurmctld/locks.h"
 #include "src/slurmctld/slurmctld.h"
+
+uint32_t slurm_daemon = IS_SLURMCTLD;
 
 bool avail_front_end(job_record_t *job_ptr)
 {
@@ -57,6 +60,13 @@ int job_test_resv(job_record_t *job_ptr, time_t *when, bool move_time,
 {
 	debug("%s %pJ", __func__, job_ptr);
 	*node_bitmap = node_conf_get_active_bitmap();
+	return SLURM_SUCCESS;
+}
+
+int job_test_lic_resv(job_record_t *job_ptr, char *lic_name, time_t when,
+		      bool reboot)
+{
+	debug("%s %pJ", __func__, job_ptr);
 	return SLURM_SUCCESS;
 }
 
@@ -118,6 +128,12 @@ void gres_stepmgr_set_job_tres_cnt(list_t *gres_list, uint32_t node_cnt,
 	;
 }
 
+extern void gres_stepmgr_set_node_tres_cnt(list_t *gres_list,
+					   uint64_t *tres_cnt, bool locked)
+{
+	;
+}
+
 void gres_stepmgr_job_clear_alloc(list_t *job_gres_list)
 {
 	;
@@ -127,6 +143,17 @@ int gres_stepmgr_job_alloc(list_t *job_gres_list, list_t **job_gres_list_alloc,
 			   list_t *node_gres_list, int node_cnt, int node_index,
 			   int node_offset, uint32_t job_id, char *node_name,
 			   bitstr_t *core_bitmap, bool new_alloc)
+{
+	debug("%s job_id:%u", __func__, job_id);
+	return SLURM_SUCCESS;
+}
+
+int gres_stepmgr_job_alloc_whole_node(list_t *job_gres_list,
+				      list_t **job_gres_list_alloc,
+				      list_t *node_gres_list, int node_cnt,
+				      int node_index, int node_offset,
+				      uint32_t job_id, char *node_name,
+				      bitstr_t *core_bitmap, bool new_alloc)
 {
 	debug("%s job_id:%u", __func__, job_id);
 	return SLURM_SUCCESS;
@@ -266,64 +293,15 @@ void reservation_delete_resv_exc_parts(resv_exc_t *resv_exc)
 	debug("%s", __func__);
 }
 
-int license_job_test(job_record_t *job_ptr, time_t when, bool reboot)
-{
-	debug("%s %pJ", __func__, job_ptr);
-	return SLURM_SUCCESS;
-}
-
-int license_job_get(job_record_t *job_ptr, bool restore)
-{
-	debug("%s %pJ", __func__, job_ptr);
-	return SLURM_SUCCESS;
-}
-
-list_t *license_copy(list_t *license_list_src)
-{
-	return NULL;
-}
-
-list_t *bf_licenses_initial(bool bf_running_job_reserve)
-{
-	return NULL;
-}
-
-char *bf_licenses_to_string(bf_licenses_t *licenses_list)
-{
-	return NULL;
-}
-
-bf_licenses_t *slurm_bf_licenses_copy(bf_licenses_t *licenses_src)
-{
-	return NULL;
-}
-
-void slurm_bf_licenses_deduct(bf_licenses_t *licenses, job_record_t *job_ptr)
-{
-	debug("%s %pJ", __func__, job_ptr);
-}
-
-void slurm_bf_licenses_transfer(bf_licenses_t *licenses, job_record_t *job_ptr)
-{
-	debug("%s %pJ", __func__, job_ptr);
-	return;
-}
-
-bool slurm_bf_licenses_avail(bf_licenses_t *licenses, job_record_t *job_ptr)
-{
-	debug("%s %pJ", __func__, job_ptr);
-	return true;
-}
-
-bool slurm_bf_licenses_equal(bf_licenses_t *a, bf_licenses_t *b)
-{
-	return true;
-}
-
 list_t *slurm_find_preemptable_jobs(job_record_t *job_ptr)
 {
 	debug("%s %pJ", __func__, job_ptr);
 	return NULL;
+}
+
+uint16_t slurm_job_preempt_mode(job_record_t *job_ptr)
+{
+	return PREEMPT_MODE_OFF;
 }
 
 bool slurm_preemption_enabled(void)
@@ -435,11 +413,6 @@ job_record_t *job_array_post_sched(job_record_t *job_ptr, bool list_add)
 uint16_t job_mgr_determine_cpus_per_core(job_details_t *details, int node_inx)
 {
 	return 1;
-}
-
-bool running_in_slurmctld(void)
-{
-	return true;
 }
 
 void prolog_slurmctld(job_record_t *job_ptr)

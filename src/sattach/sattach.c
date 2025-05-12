@@ -59,6 +59,10 @@
 #include "src/common/xstring.h"
 #include "src/common/xmalloc.h"
 
+#include "src/interfaces/certgen.h"
+#include "src/interfaces/certmgr.h"
+#include "src/interfaces/tls.h"
+
 #include "src/sattach/attach.h"
 #include "src/sattach/opt.h"
 
@@ -361,8 +365,7 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 	slurm_msg_t msg;
 	list_t *nodes_resp = NULL;
 	int timeout = slurm_conf.msg_timeout * 1000; /* sec to msec */
-	reattach_tasks_request_msg_t reattach_msg;
-	char *hosts;
+	reattach_tasks_request_msg_t reattach_msg = { 0 };
 
 	slurm_msg_t_init(&msg);
 
@@ -372,6 +375,12 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 	reattach_msg.num_io_port = num_io_ports;
 	reattach_msg.io_key = xstrdup(io_key);
 	reattach_msg.io_port = io_ports;
+	if (tls_enabled()) {
+		if (!(reattach_msg.tls_cert = tls_g_get_own_public_cert())) {
+			error("Could not get self signed certificate for step IO");
+			return SLURM_ERROR;
+		}
+	}
 
 	slurm_msg_set_r_uid(&msg, SLURM_AUTH_UID_ANY);
 	msg.msg_type = REQUEST_REATTACH_TASKS;
@@ -379,12 +388,8 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 	msg.protocol_version = MIN(SLURM_PROTOCOL_VERSION,
 				   layout->start_protocol_ver);
 
-	if (layout->front_end)
-		hosts = layout->front_end;
-	else
-		hosts = layout->node_list;
 	fwd_set_alias_addrs(layout->alias_addrs);
-	nodes_resp = slurm_send_recv_msgs(hosts, &msg, timeout);
+	nodes_resp = slurm_send_recv_msgs(layout->node_list, &msg, timeout);
 	if (nodes_resp == NULL) {
 		error("slurm_send_recv_msgs failed: %m");
 		return SLURM_ERROR;
@@ -393,6 +398,7 @@ static int _attach_to_tasks(slurm_step_id_t stepid,
 	_handle_response_msg_list(nodes_resp, tasks_started);
 	FREE_NULL_LIST(nodes_resp);
 	xfree(reattach_msg.io_key);
+	xfree(reattach_msg.tls_cert);
 
 	return SLURM_SUCCESS;
 }

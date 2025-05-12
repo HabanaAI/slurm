@@ -43,9 +43,10 @@
 #include "src/interfaces/certmgr.h"
 
 typedef struct {
+	char *(*get_node_cert_key)(char *node_name);
 	char *(*get_node_token)(char *node_name);
 	char *(*generate_csr)(char *node_name);
-	char *(*sign_csr)(char *csr, char *token, node_record_t *node);
+	char *(*sign_csr)(char *csr, char *token, char *name);
 } certmgr_ops_t;
 
 /*
@@ -53,6 +54,7 @@ typedef struct {
  * declared for certmgr_ops_t.
  */
 static const char *syms[] = {
+	"certmgr_p_get_node_cert_key",
 	"certmgr_p_get_node_token",
 	"certmgr_p_generate_csr",
 	"certmgr_p_sign_csr",
@@ -101,11 +103,6 @@ extern int certmgr_g_init(void)
 {
 	int rc = SLURM_SUCCESS;
 	char *plugin_type = "certmgr";
-
-	if (!running_in_slurmctld() && !running_in_slurmd()) {
-		error("certmgr plugin only allowed on slurmctld and slurmd");
-		return SLURM_ERROR;
-	}
 
 	slurm_rwlock_wrlock(&context_lock);
 
@@ -159,35 +156,46 @@ extern int certmgr_g_fini(void)
 	return rc;
 }
 
-extern char *certmgr_g_get_node_token(char *node_name)
+extern char *certmgr_g_get_node_cert_key(char *node_name)
 {
-	xassert(running_in_slurmd());
+	xassert(running_in_slurmd() || running_in_sackd());
 	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return SLURM_SUCCESS;
+
+	return (*(ops.get_node_cert_key))(node_name);
+}
+
+extern char *certmgr_g_get_node_token(char *node_name)
+{
+	xassert(running_in_slurmd() || running_in_sackd());
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return NULL;
 
 	return (*(ops.get_node_token))(node_name);
 }
 
 extern char *certmgr_g_generate_csr(char *node_name)
 {
-	xassert(running_in_slurmd());
+	xassert(running_in_slurmd() || running_in_sackd());
 	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
-		return SLURM_SUCCESS;
+		return NULL;
 
 	return (*(ops.generate_csr))(node_name);
 }
 
-extern char *certmgr_g_sign_csr(char *csr, char *token, node_record_t *node)
+extern char *certmgr_g_sign_csr(char *csr, char *token, char *name)
 {
 	xassert(running_in_slurmctld());
 	xassert(plugin_inited != PLUGIN_NOT_INITED);
 
 	if (plugin_inited == PLUGIN_NOOP)
-		return SLURM_SUCCESS;
+		return NULL;
 
-	return (*(ops.sign_csr))(csr, token, node);
+	return (*(ops.sign_csr))(csr, token, name);
 }

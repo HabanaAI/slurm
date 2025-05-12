@@ -59,6 +59,7 @@
 #include "src/common/log.h"
 #include "src/common/proc_args.h"
 #include "src/common/read_config.h"
+#include "src/common/run_in_daemon.h"
 #include "src/common/sluid.h"
 #include "src/common/slurm_rlimits_info.h"
 #include "src/common/slurm_time.h"
@@ -77,6 +78,8 @@
 #include "src/slurmdbd/proc_req.h"
 #include "src/slurmdbd/read_config.h"
 #include "src/slurmdbd/rpc_mgr.h"
+
+uint32_t slurm_daemon = IS_SLURMDBD;
 
 /* Global variables */
 time_t shutdown_time = 0;		/* when shutdown request arrived */
@@ -139,11 +142,6 @@ static void _on_sigquit(conmgr_callback_args_t conmgr_args, void *arg)
 	shutdown_threads();
 }
 
-static void _on_sigtstp(conmgr_callback_args_t conmgr_args, void *arg)
-{
-	debug5("Caught SIGTSTP. Ignoring");
-}
-
 static void _on_sighup(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	info("Reconfigure signal (SIGHUP) received");
@@ -166,14 +164,14 @@ static void _on_sigpipe(conmgr_callback_args_t conmgr_args, void *arg)
 	debug5("Caught SIGPIPE. Ignoring.");
 }
 
-static void _on_sigttin(conmgr_callback_args_t conmgr_args, void *arg)
-{
-	debug5("Caught SIGTTIN. Ignoring.");
-}
-
 static void _on_sigxcpu(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	debug5("Caught SIGXCPU. Ignoring.");
+}
+
+static void _on_sigalrm(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	debug5("Caught SIGALRM. Ignoring");
 }
 
 static void _register_signal_handlers(void)
@@ -182,13 +180,12 @@ static void _register_signal_handlers(void)
 	conmgr_add_work_signal(SIGTERM, _on_sigterm, NULL);
 	conmgr_add_work_signal(SIGCHLD, _on_sigchld, NULL);
 	conmgr_add_work_signal(SIGQUIT, _on_sigquit, NULL);
-	conmgr_add_work_signal(SIGTSTP, _on_sigtstp, NULL);
 	conmgr_add_work_signal(SIGHUP, _on_sighup, NULL);
 	conmgr_add_work_signal(SIGUSR1, _on_sigusr1, NULL);
 	conmgr_add_work_signal(SIGUSR2, _on_sigusr2, NULL);
 	conmgr_add_work_signal(SIGPIPE, _on_sigpipe, NULL);
-	conmgr_add_work_signal(SIGTTIN, _on_sigttin, NULL);
 	conmgr_add_work_signal(SIGXCPU, _on_sigxcpu, NULL);
+	conmgr_add_work_signal(SIGALRM, _on_sigalrm, NULL);
 }
 
 /* main - slurmctld main function, start various threads and process RPCs */
@@ -399,7 +396,7 @@ extern void *reconfig(void *arg)
 	conmgr_quiesce(__func__);
 
 	read_slurmdbd_conf();
-	assoc_mgr_set_missing_uids();
+	assoc_mgr_set_missing_uids(NULL);
 	acct_storage_g_reconfig(NULL, 0);
 	_update_logging(false);
 
@@ -848,7 +845,7 @@ static void *_rollup_handler(void *db_conn)
 			 * Just in case some new uids were added to the system
 			 * pick them up here. Only run this if we ran before.
 			 */
-			assoc_mgr_set_missing_uids();
+			assoc_mgr_set_missing_uids(NULL);
 		}
 
 		/* run the roll up */
@@ -935,33 +932,31 @@ static void *_commit_handler(void *db_conn)
  */
 static int _send_slurmctld_register_req(slurmdb_cluster_rec_t *cluster_rec)
 {
-	slurm_addr_t ctld_address;
-	int fd;
-	int rc = SLURM_SUCCESS;
+	slurm_msg_t req_msg;
+	void *tls_conn = NULL;
 
-	memset(&ctld_address, 0, sizeof(ctld_address));
-	slurm_set_addr(&ctld_address, cluster_rec->control_port,
+	slurm_msg_t_init(&req_msg);
+
+	slurm_set_addr(&req_msg.address, cluster_rec->control_port,
 		       cluster_rec->control_host);
-	fd = slurm_open_msg_conn(&ctld_address);
-	if (fd < 0) {
+
+	if (!(tls_conn = slurm_open_msg_conn(&req_msg.address, NULL))) {
 		log_flag(NET, "%s: slurm_open_msg_conn(%pA): %m",
-			 __func__, &ctld_address);
-		rc = SLURM_ERROR;
-	} else {
-		slurm_msg_t out_msg;
-		slurm_msg_t_init(&out_msg);
-		slurm_msg_set_r_uid(&out_msg, SLURM_AUTH_UID_ANY);
-		out_msg.msg_type = ACCOUNTING_REGISTER_CTLD;
-		out_msg.flags = SLURM_GLOBAL_AUTH_KEY;
-		out_msg.protocol_version = cluster_rec->rpc_version;
-		slurm_send_node_msg(fd, &out_msg);
-		/* We probably need to add matching recv_msg function
-		 * for an arbitrary fd or should these be fire
-		 * and forget?  For this, that we can probably
-		 * forget about it */
-		close(fd);
+			 __func__, &req_msg.address);
+		return SLURM_ERROR;
 	}
-	return rc;
+
+	slurm_msg_set_r_uid(&req_msg, SLURM_AUTH_UID_ANY);
+	req_msg.msg_type = ACCOUNTING_REGISTER_CTLD;
+	req_msg.flags = SLURM_GLOBAL_AUTH_KEY;
+	req_msg.protocol_version = cluster_rec->rpc_version;
+	slurm_send_node_msg(tls_conn, &req_msg);
+
+	/* response is ignored */
+
+	tls_g_destroy_conn(tls_conn, true);
+
+	return SLURM_SUCCESS;
 }
 
 static void _restart_self(int argc, char **argv)

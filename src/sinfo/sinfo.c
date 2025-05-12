@@ -654,6 +654,55 @@ static int _build_sinfo_data(list_t *sinfo_list,
 	return SLURM_SUCCESS;
 }
 
+static bool _filter_node_state(uint32_t node_state, node_info_t *node_ptr)
+{
+	bool match = false;
+	uint32_t base_state;
+	node_info_t tmp_node, *tmp_node_ptr = &tmp_node;
+	tmp_node_ptr->node_state = node_state;
+
+	if (node_state == NODE_STATE_DRAIN) {
+		/*
+		 * We search for anything that has the
+		 * drain flag set
+		 */
+		if (IS_NODE_DRAIN(node_ptr)) {
+			match = true;
+		}
+	} else if (IS_NODE_DRAINING(tmp_node_ptr)) {
+		/*
+		 * We search for anything that gets mapped to
+		 * DRAINING in node_state_string
+		 */
+		if (IS_NODE_DRAINING(node_ptr)) {
+			match = true;
+		}
+	} else if (IS_NODE_DRAINED(tmp_node_ptr)) {
+		/*
+		 * We search for anything that gets mapped to
+		 * DRAINED in node_state_string
+		 */
+		if (IS_NODE_DRAINED(node_ptr)) {
+			match = true;
+		}
+	} else if (node_state & NODE_STATE_FLAGS) {
+		if (node_state & node_ptr->node_state) {
+			match = true;
+		}
+	} else if (node_state == NODE_STATE_ALLOCATED) {
+		if (node_ptr->alloc_cpus) {
+			match = true;
+		}
+	} else {
+		base_state = node_ptr->node_state & NODE_STATE_BASE;
+		if (base_state == node_state) {
+			match = true;
+		}
+	}
+
+	return match;
+}
+
 /*
  * _filter_out - Determine if the specified node should be filtered out or
  *	reported.
@@ -678,56 +727,15 @@ static bool _filter_out(node_info_t *node_ptr)
 		return true;
 
 	if (params.state_list) {
-		int *node_state;
+		sinfo_state_t *node_state;
 		bool match = false;
-		uint32_t base_state;
 		list_itr_t *iterator;
-		uint16_t cpus = 0;
-		node_info_t tmp_node, *tmp_node_ptr = &tmp_node;
 
 		iterator = list_iterator_create(params.state_list);
 		while ((node_state = list_next(iterator))) {
-			match = false;
-			tmp_node_ptr->node_state = *node_state;
-			if (*node_state == NODE_STATE_DRAIN) {
-				/* We search for anything that has the
-				 * drain flag set */
-				if (IS_NODE_DRAIN(node_ptr)) {
-					match = true;
-				}
-			} else if (IS_NODE_DRAINING(tmp_node_ptr)) {
-				/* We search for anything that gets mapped to
-				 * DRAINING in node_state_string */
-				if (IS_NODE_DRAINING(node_ptr)) {
-					match = true;
-				}
-			} else if (IS_NODE_DRAINED(tmp_node_ptr)) {
-				/* We search for anything that gets mapped to
-				 * DRAINED in node_state_string */
-				if (IS_NODE_DRAINED(node_ptr)) {
-					match = true;
-				}
-			} else if (*node_state & NODE_STATE_FLAGS) {
-				if (*node_state & node_ptr->node_state) {
-					match = true;
-				}
-			} else if (*node_state == NODE_STATE_ALLOCATED) {
-				slurm_get_select_nodeinfo(
-					node_ptr->select_nodeinfo,
-					SELECT_NODEDATA_SUBCNT,
-					NODE_STATE_ALLOCATED,
-					&cpus);
-				if (cpus) {
-					match = true;
-				}
-			} else {
-				base_state =
-					node_ptr->node_state & NODE_STATE_BASE;
-				if (base_state == *node_state) {
-					match = true;
-				}
-			}
-
+			match = _filter_node_state(node_state->state, node_ptr);
+			if (node_state->op == SINFO_STATE_OP_NOT)
+				match = !match;
 			if (!params.state_list_and && match)
 				break;
 			if (params.state_list_and && !match)
@@ -756,8 +764,6 @@ static void _sort_hostlist(list_t *sinfo_list)
  * data to print. Return true if it is duplicate/redundant data. */
 static bool _match_node_data(sinfo_data_t *sinfo_ptr, node_info_t *node_ptr)
 {
-	uint64_t tmp = 0;
-
 	if (params.node_flag)
 		return false;
 
@@ -842,12 +848,8 @@ static bool _match_node_data(sinfo_data_t *sinfo_ptr, node_info_t *node_ptr)
 			return false;
 	}
 
-	select_g_select_nodeinfo_get(node_ptr->select_nodeinfo,
-				     SELECT_NODEDATA_MEM_ALLOC,
-				     NODE_STATE_ALLOCATED,
-				     &tmp);
 	if ((params.match_flags & MATCH_FLAG_ALLOC_MEM) &&
-	    (tmp != sinfo_ptr->alloc_memory))
+	    (node_ptr->alloc_memory != sinfo_ptr->alloc_memory))
 		return false;
 
 	/* If no need to exactly match sizes, just return here
@@ -983,7 +985,6 @@ static bool _match_part_data(sinfo_data_t *sinfo_ptr,
 static void _update_sinfo(sinfo_data_t *sinfo_ptr, node_info_t *node_ptr)
 {
 	uint32_t base_state;
-	uint64_t alloc_mem = 0;
 	uint16_t used_cpus = 0;
 	int total_cpus = 0;
 
@@ -1086,15 +1087,7 @@ static void _update_sinfo(sinfo_data_t *sinfo_ptr, node_info_t *node_ptr)
 		hostlist_push_host(sinfo_ptr->hostnames, node_ptr->node_hostname);
 
 	total_cpus = node_ptr->cpus;
-
-	select_g_select_nodeinfo_get(node_ptr->select_nodeinfo,
-				     SELECT_NODEDATA_SUBCNT,
-				     NODE_STATE_ALLOCATED,
-				     &used_cpus);
-	select_g_select_nodeinfo_get(node_ptr->select_nodeinfo,
-				     SELECT_NODEDATA_MEM_ALLOC,
-				     NODE_STATE_ALLOCATED,
-				     &alloc_mem);
+	used_cpus = node_ptr->alloc_cpus;
 
 	if ((base_state == NODE_STATE_ALLOCATED) ||
 	    (base_state == NODE_STATE_MIXED) ||
@@ -1111,7 +1104,7 @@ static void _update_sinfo(sinfo_data_t *sinfo_ptr, node_info_t *node_ptr)
 	sinfo_ptr->cpus_alloc += used_cpus;
 	sinfo_ptr->cpus_total += total_cpus;
 	total_cpus -= used_cpus;
-	sinfo_ptr->alloc_memory = alloc_mem;
+	sinfo_ptr->alloc_memory = node_ptr->alloc_memory;
 
 	if (IS_NODE_DRAIN(node_ptr) || (base_state == NODE_STATE_DOWN)) {
 		sinfo_ptr->cpus_other += total_cpus;

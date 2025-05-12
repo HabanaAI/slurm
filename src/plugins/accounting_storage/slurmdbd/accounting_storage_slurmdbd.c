@@ -1425,7 +1425,9 @@ extern list_t *acct_storage_p_remove_qos(
 		got_msg = (dbd_list_msg_t *) resp.data;
 		ret_list = got_msg->my_list;
 		got_msg->my_list = NULL;
+		rc = got_msg->return_code;
 		slurmdbd_free_list_msg(got_msg);
+		errno = rc;
 	}
 
 	return ret_list;
@@ -1513,7 +1515,9 @@ extern list_t *acct_storage_p_remove_wckeys(
 		got_msg = (dbd_list_msg_t *) resp.data;
 		ret_list = got_msg->my_list;
 		got_msg->my_list = NULL;
+		rc = got_msg->return_code;
 		slurmdbd_free_list_msg(got_msg);
+		errno = rc;
 	}
 
 	return ret_list;
@@ -2696,6 +2700,7 @@ extern int jobacct_storage_p_job_start(void *db_conn, job_record_t *job_ptr)
 	req.qos_id = job_ptr->qos_id;
 	req.gres_used = job_ptr->gres_used;
 	req.segment_size = job_ptr->details->segment_size;
+	req.resv_req = job_ptr->details->resv_req;
 
 	if (slurmdbd_agent_send(SLURM_PROTOCOL_VERSION, &msg) < 0)
 		return SLURM_ERROR;

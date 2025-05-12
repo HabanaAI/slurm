@@ -72,6 +72,8 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/tls.h"
+
 #include "src/slurmd/common/fname.h"
 #include "src/slurmd/slurmd/slurmd.h"
 #include "src/slurmd/slurmstepd/io.h"
@@ -199,7 +201,7 @@ struct task_read_info {
 struct window_info {
 	stepd_step_task_info_t *task;
 	stepd_step_rec_t *step;
-	int pty_fd;
+	void *tls_conn;
 };
 #ifdef HAVE_PTY_H
 static void  _spawn_window_manager(stepd_step_task_info_t *task, stepd_step_rec_t *step);
@@ -210,8 +212,8 @@ static void *_window_manager(void *arg);
  * General declarations
  **********************************************************************/
 static void *_io_thr(void *);
-static int _send_io_init_msg(int sock, srun_info_t *srun, stepd_step_rec_t *step,
-			     bool init);
+static int _send_io_init_msg(int sock, void *tls_conn, srun_info_t *srun,
+			     stepd_step_rec_t *step, bool init);
 static void _send_eof_msg(struct task_read_info *out);
 static struct io_buf *_task_build_message(struct task_read_info *out,
 					  stepd_step_rec_t *step, cbuf_t *cbuf);
@@ -327,7 +329,7 @@ static int _client_read(eio_obj_t *obj, list_t *objs)
 			debug5("  _client_read free_incoming is empty");
 			return SLURM_SUCCESS;
 		}
-		n = io_hdr_read_fd(obj->fd, &client->header);
+		n = io_hdr_read_fd(obj->fd, obj->tls_conn, &client->header);
 		if (n <= 0) { /* got eof or fatal error */
 			debug5("  got eof or error _client_read header, n=%d", n);
 			client->in_eof = true;
@@ -374,7 +376,12 @@ static int _client_read(eio_obj_t *obj, list_t *objs)
 		buf = client->in_msg->data +
 			(client->in_msg->length - client->in_remaining);
 	again:
-		if ((n = read(obj->fd, buf, client->in_remaining)) < 0) {
+		if (obj->tls_conn) {
+			n = tls_g_recv(obj->tls_conn, buf, client->in_remaining);
+		} else {
+			n = read(obj->fd, buf, client->in_remaining);
+		}
+		if (n < 0) {
 			if (errno == EINTR)
 				goto again;
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -476,7 +483,12 @@ static int _client_write(eio_obj_t *obj, list_t *objs)
 	buf = client->out_msg->data +
 		(client->out_msg->length - client->out_remaining);
 again:
-	if ((n = write(obj->fd, buf, client->out_remaining)) < 0) {
+	if (obj->tls_conn) {
+		n = tls_g_send(obj->tls_conn, buf, client->out_remaining);
+	} else {
+		n = write(obj->fd, buf, client->out_remaining);
+	}
+	if (n < 0) {
 		if (errno == EINTR) {
 			goto again;
 		} else if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
@@ -821,7 +833,7 @@ static void *_window_manager(void *arg)
 	struct pollfd ufds;
 	char buf[4];
 
-	ufds.fd = win_info->pty_fd;
+	ufds.fd = tls_g_get_conn_fd(win_info->tls_conn);
 	ufds.events = POLLIN;
 
 	while (1) {
@@ -836,7 +848,7 @@ static void *_window_manager(void *arg)
 			 *  (ufds.revents & POLLERR)) */
 			break;
 		}
-		len = slurm_read_stream(win_info->pty_fd, buf, 4);
+		len = slurm_read_stream(win_info->tls_conn, buf, 4);
 		if ((len == -1) && ((errno == EINTR) || (errno == EAGAIN)))
 			continue;
 		if (len < 4) {
@@ -866,8 +878,9 @@ static void *_window_manager(void *arg)
 static void
 _spawn_window_manager(stepd_step_task_info_t *task, stepd_step_rec_t *step)
 {
+	void *tls_conn = NULL;
+	char *tls_cert = NULL;
 	char *host, *port, *rows, *cols;
-	int pty_fd;
 	slurm_addr_t pty_addr;
 	uint16_t port_u;
 	struct window_info *win_info;
@@ -903,9 +916,15 @@ _spawn_window_manager(stepd_step_task_info_t *task, stepd_step_rec_t *step)
 
 	port_u = atoi(port);
 	slurm_set_addr(&pty_addr, port_u, host);
-	pty_fd = slurm_open_msg_conn(&pty_addr);
-	if (pty_fd < 0) {
-		error("slurm_open_msg_conn(pty_conn) %s,%u: %m",
+
+	if (tls_enabled()) {
+		srun_info_t *srun = list_peek(step->sruns);
+		if (srun)
+			tls_cert = srun->tls_cert;
+	}
+
+	if (!(tls_conn = slurm_open_msg_conn(&pty_addr, tls_cert))) {
+		error("slurm_open_stream(pty_conn) %s,%u: %m",
 			host, port_u);
 		return;
 	}
@@ -913,7 +932,7 @@ _spawn_window_manager(stepd_step_task_info_t *task, stepd_step_rec_t *step)
 	win_info = xmalloc(sizeof(struct window_info));
 	win_info->task   = task;
 	win_info->step    = step;
-	win_info->pty_fd = pty_fd;
+	win_info->tls_conn = tls_conn;
 	slurm_thread_create_detached(_window_manager, win_info);
 }
 #endif
@@ -1637,6 +1656,7 @@ io_initial_client_connect(srun_info_t *srun, stepd_step_rec_t *step,
 	int sock = -1;
 	struct client_io_info *client;
 	eio_obj_t *obj;
+	void *tls_conn = NULL;
 
 	debug4 ("adding IO connection (logical node rank %d)", step->nodeid);
 
@@ -1648,7 +1668,7 @@ io_initial_client_connect(srun_info_t *srun, stepd_step_rec_t *step,
 		debug4("connecting IO back to %pA", &srun->ioaddr);
 	}
 
-	if ((sock = (int) slurm_open_stream(&srun->ioaddr, true)) < 0) {
+	if (!(tls_conn = slurm_open_msg_conn(&srun->ioaddr, srun->tls_cert))) {
 		error("connect io: %m");
 		/* XXX retry or silently fail?
 		 *     fail for now.
@@ -1656,8 +1676,10 @@ io_initial_client_connect(srun_info_t *srun, stepd_step_rec_t *step,
 		return SLURM_ERROR;
 	}
 
+	sock = tls_g_get_conn_fd(tls_conn);
+
 	fd_set_blocking(sock);  /* just in case... */
-	_send_io_init_msg(sock, srun, step, true);
+	_send_io_init_msg(sock, tls_conn, srun, step, true);
 
 	debug5("  back from _send_io_init_msg");
 	fd_set_nonblocking(sock);
@@ -1675,6 +1697,7 @@ io_initial_client_connect(srun_info_t *srun, stepd_step_rec_t *step,
 	client->is_local_file = false;
 
 	obj = eio_obj_create(sock, &client_ops, (void *)client);
+	obj->tls_conn = tls_conn;
 	list_append(step->clients, (void *)obj);
 	eio_new_initial_obj(step->eio, (void *)obj);
 	debug5("Now handling %d IO Client object(s)",
@@ -1695,6 +1718,7 @@ io_client_connect(srun_info_t *srun, stepd_step_rec_t *step)
 	int sock = -1;
 	struct client_io_info *client;
 	eio_obj_t *obj;
+	void *tls_conn = NULL;
 
 	debug4 ("adding IO connection (logical node rank %d)", step->nodeid);
 
@@ -1710,8 +1734,22 @@ io_client_connect(srun_info_t *srun, stepd_step_rec_t *step)
 		return SLURM_ERROR;
 	}
 
+	if (tls_enabled()) {
+		tls_conn_args_t tls_args = {
+			.input_fd = sock,
+			.output_fd = sock,
+			.mode = TLS_CONN_CLIENT,
+			.cert = srun->tls_cert,
+		};
+
+		if (!(tls_conn = tls_g_create_conn(&tls_args))) {
+			error("Could not create client TLS connection for step IO");
+			return SLURM_ERROR;
+		}
+	}
+
 	fd_set_blocking(sock);  /* just in case... */
-	_send_io_init_msg(sock, srun, step, false);
+	_send_io_init_msg(sock, tls_conn, srun, step, false);
 
 	debug5("  back from _send_io_init_msg");
 	fd_set_nonblocking(sock);
@@ -1731,6 +1769,7 @@ io_client_connect(srun_info_t *srun, stepd_step_rec_t *step)
 	/* client object adds itself to step->clients in _client_writable */
 
 	obj = eio_obj_create(sock, &client_ops, (void *)client);
+	obj->tls_conn = tls_conn;
 	eio_new_obj(step->eio, (void *)obj);
 
 	debug5("New IO Client object added");
@@ -1738,8 +1777,8 @@ io_client_connect(srun_info_t *srun, stepd_step_rec_t *step)
 	return SLURM_SUCCESS;
 }
 
-static int
-_send_io_init_msg(int sock, srun_info_t *srun, stepd_step_rec_t *step, bool init)
+static int _send_io_init_msg(int sock, void *tls_conn, srun_info_t *srun,
+			     stepd_step_rec_t *step, bool init)
 {
 	io_init_msg_t msg;
 
@@ -1763,7 +1802,7 @@ _send_io_init_msg(int sock, srun_info_t *srun, stepd_step_rec_t *step, bool init
 	else
 		msg.stderr_objs = list_count(step->stderr_eio_objs);
 
-	if (io_init_msg_write_to_fd(sock, &msg) != SLURM_SUCCESS) {
+	if (io_init_msg_write_to_fd(sock, tls_conn, &msg) != SLURM_SUCCESS) {
 		error("Couldn't sent slurm_io_init_msg");
 		xfree(msg.io_key);
 		return SLURM_ERROR;

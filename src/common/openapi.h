@@ -141,6 +141,12 @@ extern data_t *openapi_fork_rel_path_list(data_t *relative_path, int index);
  */
 extern int openapi_append_rel_path(data_t *relative_path, const char *sub_path);
 
+/* For list_for_each() to emit error() message for openapi_resp_error_t */
+extern int openapi_error_log_foreach(void *x, void *arg);
+
+/* For list_for_each() to emit warning() message for openapi_resp_warning_t */
+extern int openapi_warn_log_foreach(void *x, void *arg);
+
 typedef struct {
 	struct {
 		char *type;
@@ -406,6 +412,11 @@ typedef struct {
 	reserve_info_msg_t *reservations;
 	time_t last_update;
 } openapi_resp_reserve_info_msg_t;
+
+/* Struct required to wrap list in an object */
+typedef struct {
+	list_t *reservations;
+} openapi_reservation_mod_request_t;
 
 /* mirrors license_info_msg_t */
 typedef struct {

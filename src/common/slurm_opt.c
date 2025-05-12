@@ -205,6 +205,35 @@ static char *arg_get_##field(slurm_opt_t *opt)			\
 }								\
 COMMON_OPTION_RESET(field, false)
 
+#define COMMON_SBATCH_BOOL_OPTION(field)			\
+static int arg_set_##field(slurm_opt_t *opt, const char *arg)	\
+__attribute__((nonnull (1)));					\
+static int arg_set_##field(slurm_opt_t *opt, const char *arg)	\
+{								\
+	if (!opt->sbatch_opt)					\
+		return SLURM_ERROR;				\
+								\
+	opt->sbatch_opt->field = true;				\
+								\
+	return SLURM_SUCCESS;					\
+}								\
+static char *arg_get_##field(slurm_opt_t *opt)			\
+__attribute__((nonnull));					\
+static char *arg_get_##field(slurm_opt_t *opt)			\
+{								\
+	if (!opt->sbatch_opt)					\
+		return xstrdup("invalid-context");		\
+								\
+	return xstrdup(opt->sbatch_opt->field ? "set" : "unset");\
+}								\
+static void arg_reset_##field(slurm_opt_t *opt)			\
+__attribute__((nonnull));					\
+static void arg_reset_##field(slurm_opt_t *opt)			\
+{								\
+	if (opt->sbatch_opt)					\
+		opt->sbatch_opt->field = false;			\
+}
+
 #define COMMON_SRUN_BOOL_OPTION(field)				\
 static int arg_set_##field(slurm_opt_t *opt, const char *arg)	\
 __attribute__((nonnull (1)));					\
@@ -1366,6 +1395,31 @@ static slurm_cli_opt_t slurm_opt_export_file = {
 	.reset_func = arg_reset_export_file,
 };
 
+static int arg_set_external(slurm_opt_t *opt, const char *arg)
+{
+	opt->job_flags |= EXTERNAL_JOB;
+
+	return SLURM_SUCCESS;
+}
+static char *arg_get_external(slurm_opt_t *opt)
+{
+	if (opt->job_flags & EXTERNAL_JOB)
+		return xstrdup("set");
+	return xstrdup("unset");
+}
+static void arg_reset_external(slurm_opt_t *opt)
+{
+	opt->job_flags &= ~EXTERNAL_JOB;
+}
+static slurm_cli_opt_t slurm_opt_external = {
+	.name = "external",
+	.has_arg = no_argument,
+	.val = LONG_OPT_EXTERNAL,
+	.set_func_sbatch = arg_set_external,
+	.get_func = arg_get_external,
+	.reset_func = arg_reset_external,
+};
+
 COMMON_SRUN_BOOL_OPTION(external_launcher);
 static slurm_cli_opt_t slurm_opt_external_launcher = {
 	.name = "external-launcher",
@@ -1436,49 +1490,10 @@ static slurm_cli_opt_t slurm_opt_extra_node_info = {
 	.reset_each_pass = true,
 };
 
-static int arg_set_get_user_env(slurm_opt_t *opt, const char *arg)
-{
-	char *end_ptr;
-
-	if (!arg) {
-		opt->get_user_env_time = 0;
-		return SLURM_SUCCESS;
-	}
-
-	opt->get_user_env_time = strtol(arg, &end_ptr, 10);
-
-	if (!end_ptr || (end_ptr[0] == '\0'))
-		return SLURM_SUCCESS;
-
-	if ((end_ptr[0] == 's') || (end_ptr[0] == 'S'))
-		opt->get_user_env_mode = 1;
-	else if ((end_ptr[0] == 'l') || (end_ptr[0] == 'L'))
-		opt->get_user_env_mode = 2;
-	else {
-		error("Invalid --get-user-env specification");
-		return SLURM_ERROR;
-	}
-
-	return SLURM_SUCCESS;
-}
-static char *arg_get_get_user_env(slurm_opt_t *opt)
-{
-	if (opt->get_user_env_mode == 1)
-		return xstrdup_printf("%dS", opt->get_user_env_time);
-	else if (opt->get_user_env_mode == 2)
-		return xstrdup_printf("%dL", opt->get_user_env_time);
-	else if (opt->get_user_env_time != -1)
-		return xstrdup_printf("%d", opt->get_user_env_time);
-	return NULL;
-}
-static void arg_reset_get_user_env(slurm_opt_t *opt)
-{
-	opt->get_user_env_mode = -1;
-	opt->get_user_env_time = -1;
-}
+COMMON_BOOL_OPTION(get_user_env, "get-user-env");
 static slurm_cli_opt_t slurm_opt_get_user_env = {
 	.name = "get-user-env",
-	.has_arg = optional_argument,
+	.has_arg = no_argument,
 	.val = LONG_OPT_GET_USER_ENV,
 	.set_func_sbatch = arg_set_get_user_env,
 	.get_func = arg_get_get_user_env,
@@ -2131,7 +2146,8 @@ static slurm_cli_opt_t slurm_opt_licenses = {
 
 static int arg_set_mail_type(slurm_opt_t *opt, const char *arg)
 {
-	opt->mail_type |= parse_mail_type(arg);
+	opt->mail_type = parse_mail_type(arg);
+
 	if (opt->mail_type == INFINITE16) {
 		error("Invalid --mail-type specification");
 		return SLURM_ERROR;
@@ -3712,7 +3728,7 @@ static int arg_set_uid(slurm_opt_t *opt, const char *arg)
 		return SLURM_ERROR;
 	}
 
-	if (uid_from_string(arg, &opt->uid) < 0) {
+	if (uid_from_string(arg, &opt->uid) != SLURM_SUCCESS) {
 		error("Invalid --uid specification");
 		return SLURM_ERROR;
 	}
@@ -4014,6 +4030,44 @@ static slurm_cli_opt_t slurm_opt_wait_all_nodes = {
 	.reset_func = arg_reset_wait_all_nodes,
 };
 
+static int arg_set_wait_for_children(slurm_opt_t *opt, const char *arg)
+{
+	if (!opt->srun_opt)
+		return SLURM_ERROR;
+
+	if (!xstrstr(slurm_conf.proctrack_type, "proctrack/cgroup")) {
+		fatal("--wait-for-children only compatible with proctrack/cgroup plugin");
+		return SLURM_ERROR;
+	}
+
+	opt->srun_opt->wait_for_children = true;
+
+	return SLURM_SUCCESS;
+}
+
+static char *arg_get_wait_for_children(slurm_opt_t *opt)
+{
+	if (!opt->srun_opt)
+		return xstrdup("invalid-context");
+
+	return xstrdup(opt->srun_opt->wait_for_children ? "set" : "unset");
+}
+
+static void arg_reset_wait_for_children(slurm_opt_t *opt)
+{
+	if (opt->srun_opt)
+		opt->srun_opt->wait_for_children = false;
+}
+
+static slurm_cli_opt_t slurm_opt_wait_for_children = {
+	.name = "wait-for-children",
+	.has_arg = no_argument,
+	.val = LONG_OPT_WAIT_FOR_CHILDREN,
+	.set_func_srun = arg_set_wait_for_children,
+	.get_func = arg_get_wait_for_children,
+	.reset_func = arg_reset_wait_for_children,
+};
+
 COMMON_STRING_OPTION(wckey);
 static slurm_cli_opt_t slurm_opt_wckey = {
 	.name = "wckey",
@@ -4125,6 +4179,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_exclusive,
 	&slurm_opt_export,
 	&slurm_opt_export_file,
+	&slurm_opt_external,
 	&slurm_opt_external_launcher,
 	&slurm_opt_extra,
 	&slurm_opt_extra_node_info,
@@ -4237,6 +4292,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_wait,
 	&slurm_opt_wait_all_nodes,
 	&slurm_opt_wait_srun,
+	&slurm_opt_wait_for_children,
 	&slurm_opt_wckey,
 	&slurm_opt_whole,
 	&slurm_opt_wrap,
@@ -5844,7 +5900,6 @@ extern job_desc_msg_t *slurm_opt_create_job_desc(slurm_opt_t *opt_local,
 	if (opt_local->req_switch >= 0)
 		job_desc->req_switch = opt_local->req_switch;
 
-	/* select_jobinfo not filled in here */
 	/* desc->std_[err|in|out] not filled in here */
 	/* tres_req_cnt not filled in here */
 

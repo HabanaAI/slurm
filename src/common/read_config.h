@@ -80,10 +80,11 @@ typedef struct node_record node_record_t;
 #define DEFAULT_BATCH_START_TIMEOUT 10
 #define DEFAULT_BCAST_EXCLUDE       "/lib,/usr/lib,/lib64,/usr/lib64"
 #define DEFAULT_COMPLETE_WAIT       0
+#define DEFAULT_CERTGEN_TYPE "certgen/script"
 #define DEFAULT_CRED_TYPE           "cred/munge"
 #define DEFAULT_EPILOG_MSG_TIME     2000
 #define DEFAULT_FIRST_JOB_ID        1
-#define DEFAULT_GET_ENV_TIMEOUT     2
+#define DEFAULT_GET_ENV_TIMEOUT     120
 #define DEFAULT_GETNAMEINFO_CACHE_TIMEOUT 60
 #define DEFAULT_GROUP_TIME          600
 #define DEFAULT_GROUP_FORCE         1	/* if set, update group membership
@@ -152,7 +153,7 @@ typedef struct node_record node_record_t;
 #define DEFAULT_TCP_TIMEOUT         2
 #define DEFAULT_TLS_TYPE "tls/none"
 #define DEFAULT_TMP_FS              "/tmp"
-#define DEFAULT_TOPOLOGY_PLUGIN     "topology/none"
+#define DEFAULT_TOPOLOGY_PLUGIN "topology/flat"
 #define DEFAULT_WAIT_TIME           0
 #define DEFAULT_TREE_WIDTH	    16
 #define DEFAULT_UNKILLABLE_TIMEOUT  60 /* seconds */
@@ -164,20 +165,6 @@ typedef struct node_record node_record_t;
 /* MAX_TASKS_PER_NODE is defined in slurm.h
  */
 #define DEFAULT_MAX_TASKS_PER_NODE  MAX_TASKS_PER_NODE
-
-typedef struct slurm_conf_frontend {
-	char *allow_groups;		/* allowed group string */
-	char *allow_users;		/* allowed user string */
-	char *deny_groups;		/* denied group string */
-	char *deny_users;		/* denied user string */
-	char *frontends;		/* frontend node name */
-	char *addresses;		/* frontend node address */
-	uint16_t port;			/* frontend specific port */
-	char *reason;			/* reason for down frontend node */
-	uint16_t node_state;		/* enum node_states, ORed with
-					 * NODE_STATE_NO_RESPOND if not
-					 * responding */
-} slurm_conf_frontend_t;
 
 typedef struct slurm_conf_node {
 	char *nodenames;
@@ -202,6 +189,7 @@ typedef struct slurm_conf_node {
 				     * to only GPU jobs */
 	char *state;
 	uint32_t tmp_disk;	/* MB total storage in TMP_FS file system */
+	char *topology_str; /* topology address string */
 	char *tres_weights_str;	/* per TRES billing weight string */
 	uint32_t weight;	/* arbitrary priority of node for
 				 * scheduling work on */
@@ -265,6 +253,7 @@ typedef struct slurm_conf_partition {
 				 * mode */
 	uint16_t suspend_timeout; /* time required in order to perform a node
 				   * suspend operation */
+	char *topology_name;
 	uint32_t total_nodes;	/* total number of nodes in the partition */
 	uint32_t total_cpus;	/* total number of cpus in the partition */
 } slurm_conf_partition_t;
@@ -290,9 +279,6 @@ typedef struct {
 	char *name;
 	list_t *key_pairs;
 } config_plugin_params_t;
-
-/* Destroy a front_end record built by slurm_conf_frontend_array() */
-extern void destroy_frontend(void *ptr);
 
 /* Copy list of job_defaults_t elements */
 extern list_t *job_defaults_copy(list_t *in_list);
@@ -421,13 +407,6 @@ extern void slurm_conf_unlock(void);
 
 
 extern int slurm_conf_check_addr(const char *node_name, bool *dynamic);
-/*
- * Set "ptr_array" with the pointer to an array of pointers to
- * slurm_conf_frontend_t structures.
- *
- * Return value is the length of the array.
- */
-extern int slurm_conf_frontend_array(slurm_conf_frontend_t **ptr_array[]);
 
 /*
  * Set "ptr_array" with the pointer to an array of pointers to
@@ -682,13 +661,6 @@ extern void slurm_conf_add_node(node_record_t *node_ptr);
  * Remove node from node conf hash tables.
  */
 extern void slurm_conf_remove_node(char *node_name);
-
-#ifdef HAVE_FRONT_END
-/*
- * Return the frontend port for the given hostname.
- */
-extern uint16_t slurm_conf_get_frontend_port(char *node_hostname);
-#endif
 
 /*
  * Get substring from a csv-style string.

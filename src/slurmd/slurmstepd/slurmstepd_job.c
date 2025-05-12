@@ -275,13 +275,9 @@ extern stepd_step_rec_t *stepd_step_rec_create(launch_tasks_request_msg_t *msg,
 
 	step = xmalloc(sizeof(stepd_step_rec_t));
 	step->msg = msg;
-#ifndef HAVE_FRONT_END
 	nodeid = nodelist_find(msg->complete_nodelist, conf->node_name);
 	step->node_name = xstrdup(conf->node_name);
-#else
-	nodeid = 0;
-	step->node_name = xstrdup(msg->complete_nodelist);
-#endif
+
 	if (nodeid < 0) {
 		error("couldn't find node %s in %s",
 		      step->node_name, msg->complete_nodelist);
@@ -342,6 +338,13 @@ extern stepd_step_rec_t *stepd_step_rec_create(launch_tasks_request_msg_t *msg,
 	/* Used for env vars */
 	step->het_job_node_offset = msg->het_job_node_offset;
 	step->het_job_step_cnt = msg->het_job_step_cnt;
+	if (msg->het_job_step_task_cnts) {
+		step->het_job_step_task_cnts =
+			xcalloc(sizeof(uint32_t), msg->het_job_step_cnt);
+		memcpy(step->het_job_step_task_cnts,
+		       msg->het_job_step_task_cnts,
+		       (msg->het_job_step_cnt * sizeof(uint32_t)));
+	}
 	step->het_job_id  = msg->het_job_id;	/* Used for env vars */
 	step->het_job_nnodes = msg->het_job_nnodes;	/* Used for env vars */
 	if (msg->het_job_nnodes && msg->het_job_ntasks &&
@@ -433,8 +436,8 @@ extern stepd_step_rec_t *stepd_step_rec_create(launch_tasks_request_msg_t *msg,
 		memset(&io_addr, 0, sizeof(slurm_addr_t));
 	}
 
-	srun = srun_info_create(msg->cred, &resp_addr, &io_addr, step->uid,
-				protocol_version);
+	srun = srun_info_create(msg->cred, msg->alloc_tls_cert, &resp_addr,
+				&io_addr, step->uid, protocol_version);
 
 	step->profile     = msg->profile;
 	step->task_prolog = xstrdup(msg->task_prolog);
@@ -610,7 +613,7 @@ batch_stepd_step_rec_create(batch_job_launch_msg_t *msg)
 	get_cred_gres(msg->cred, conf->node_name,
 		      &step->job_gres_list, &step->step_gres_list);
 
-	srun = srun_info_create(NULL, NULL, NULL, step->uid, NO_VAL16);
+	srun = srun_info_create(NULL, NULL, NULL, NULL, step->uid, NO_VAL16);
 
 	list_append(step->sruns, (void *) srun);
 
@@ -697,6 +700,7 @@ stepd_step_rec_destroy(stepd_step_rec_t *step)
 	}
 	xfree(step->node_name);
 	xfree(step->het_job_task_cnts);
+	xfree(step->het_job_step_task_cnts);
 	if (step->het_job_nnodes != NO_VAL) {
 		for (i = 0; i < step->het_job_nnodes; i++)
 			xfree(step->het_job_tids[i]);
@@ -713,10 +717,14 @@ stepd_step_rec_destroy(stepd_step_rec_t *step)
 	xfree(step->tres_freq);
 	xfree(step->user_name);
 	xfree(step->x11_xauthority);
+
+	if (step->switch_step)
+		switch_g_free_stepinfo(step->switch_step);
+
 	xfree(step);
 }
 
-extern srun_info_t *srun_info_create(slurm_cred_t *cred,
+extern srun_info_t *srun_info_create(slurm_cred_t *cred, char *alloc_tls_cert,
 				     slurm_addr_t *resp_addr,
 				     slurm_addr_t *ioaddr, uid_t uid,
 				     uint16_t protocol_version)
@@ -735,6 +743,7 @@ extern srun_info_t *srun_info_create(slurm_cred_t *cred,
 	if (!cred) return srun;
 
 	srun->key = slurm_cred_get_signature(cred);
+	srun->tls_cert = xstrdup(alloc_tls_cert);
 
 	if (ioaddr != NULL)
 		srun->ioaddr    = *ioaddr;
@@ -747,6 +756,7 @@ extern void
 srun_info_destroy(srun_info_t *srun)
 {
 	xfree(srun->key);
+	xfree(srun->tls_cert);
 	xfree(srun);
 }
 

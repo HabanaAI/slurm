@@ -40,10 +40,6 @@
 
 extern int get_procs(uint16_t *procs);
 
-/* read or load topology and write if needed
- * init and destroy topology must be outside this function */
-extern int xcpuinfo_hwloc_topo_load(
-	void *topology_in, char *topo_file, bool full);
 /*
  * Get the node's cpu info.
  *
@@ -63,26 +59,6 @@ extern int xcpuinfo_hwloc_topo_get(
 	uint16_t *sockets, uint16_t *cores, uint16_t *threads,
 	uint16_t *block_map_size,
 	uint16_t **block_map, uint16_t **block_map_inv);
-
-/*
- * Initialize xcpuinfo internal data
- *
- * returned values:
- *  - SLURM_ERROR
- *  - SLURM_SUCCESS
- */
-int xcpuinfo_init(void);
-
-extern void xcpuinfo_refresh_hwloc(bool refresh);
-
-/*
- * Destroy xcpuinfo internal data
- *
- * returned values:
- *  - SLURM_ERROR
- *  - SLURM_SUCCESS
- */
-int xcpuinfo_fini(void);
 
 /*
  * Convert an abstract core range string into a machine-specific CPU range
@@ -112,18 +88,11 @@ int xcpuinfo_abs_to_mac(char *lrange,char **prange);
 int xcpuinfo_mac_to_abs(char *in_range, char **out_range);
 
 /*
- * Use xcpuinfo internal data to convert an abstract range
- * of cores (slurm internal format) into the equivalent
- * map of cores
+ * Return an abstract CpuSpecList in string format generated from the allowed
+ * cpus in the node.
  *
- * range is of the form 0-1,4-5
- *
- * on success, the output map must be freed using xfree
- *
- * returned values:
- *  - SLURM_ERROR
- *  - SLURM_SUCCESS
+ * RET: A string representing the allowed abstract cpus, NULL if error.
  */
-int xcpuinfo_abs_to_map(char* lrange,uint16_t **map,uint16_t *map_size);
+extern char *xcpuinfo_get_cpuspec(void);
 
 #endif

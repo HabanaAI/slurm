@@ -121,24 +121,31 @@ typedef enum {
 } slurmdb_update_type_t;
 
 /* Define QOS flags */
-#define	QOS_FLAG_BASE                0x0fffffff
-#define	QOS_FLAG_NOTSET              0x10000000
-#define	QOS_FLAG_ADD                 0x20000000
-#define	QOS_FLAG_REMOVE              0x40000000
+typedef enum {
+	QOS_FLAG_NONE = 0,
+	QOS_FLAG_PART_MIN_NODE = SLURM_BIT(0),
+	QOS_FLAG_PART_MAX_NODE = SLURM_BIT(1),
+	QOS_FLAG_PART_TIME_LIMIT = SLURM_BIT(2),
+	QOS_FLAG_ENFORCE_USAGE_THRES = SLURM_BIT(3),
+	QOS_FLAG_NO_RESERVE = SLURM_BIT(4),
+	QOS_FLAG_REQ_RESV = SLURM_BIT(5),
+	QOS_FLAG_DENY_LIMIT = SLURM_BIT(6),
+	QOS_FLAG_OVER_PART_QOS = SLURM_BIT(7),
+	QOS_FLAG_NO_DECAY = SLURM_BIT(8),
+	QOS_FLAG_USAGE_FACTOR_SAFE = SLURM_BIT(9),
+	QOS_FLAG_RELATIVE = SLURM_BIT(10),
+	QOS_FLAG_RELATIVE_SET = SLURM_BIT(11), // Not stored in the database
+	QOS_FLAG_PART_QOS = SLURM_BIT(12), // Not stored in the database
+	QOS_FLAG_DELETED = SLURM_BIT(13), // Not stored in the database
 
-#define	QOS_FLAG_PART_MIN_NODE       SLURM_BIT(0)
-#define	QOS_FLAG_PART_MAX_NODE       SLURM_BIT(1)
-#define	QOS_FLAG_PART_TIME_LIMIT     SLURM_BIT(2)
-#define	QOS_FLAG_ENFORCE_USAGE_THRES SLURM_BIT(3)
-#define	QOS_FLAG_NO_RESERVE          SLURM_BIT(4)
-#define	QOS_FLAG_REQ_RESV            SLURM_BIT(5)
-#define	QOS_FLAG_DENY_LIMIT          SLURM_BIT(6)
-#define	QOS_FLAG_OVER_PART_QOS       SLURM_BIT(7)
-#define	QOS_FLAG_NO_DECAY            SLURM_BIT(8)
-#define	QOS_FLAG_USAGE_FACTOR_SAFE   SLURM_BIT(9)
-#define	QOS_FLAG_RELATIVE            SLURM_BIT(10)
-#define	QOS_FLAG_RELATIVE_SET        SLURM_BIT(11)
-#define	QOS_FLAG_PART_QOS            SLURM_BIT(12)
+	/* 28+ are operators and will not be on a normal QOS rec. */
+	QOS_FLAG_BASE = 0x0fffffff,
+	QOS_FLAG_NOTSET = SLURM_BIT(28),
+	QOS_FLAG_ADD = SLURM_BIT(29),
+	QOS_FLAG_REMOVE = SLURM_BIT(30),
+
+	QOS_FLAG_INVALID,
+} slurmdb_qos_flags_t;
 
 /* Define QOS Cond flags */
 #define	QOS_COND_FLAG_WITH_DELETED SLURM_BIT(0)
@@ -232,20 +239,23 @@ enum cluster_fed_states {
 #define SLURMDB_CLASS_BASE      0x00ff
 
 /* Cluster flags */
-#define CLUSTER_FLAG_REGISTER SLURM_BIT(0) /* If the cluster is registering
-					    * right now or not */
-#define CLUSTER_FLAG_A2     SLURM_BIT(1) /* UNUSED */
-#define CLUSTER_FLAG_A3     SLURM_BIT(2) /* UNUSED */
-#define CLUSTER_FLAG_A4     SLURM_BIT(3) /* UNUSED */
-#define CLUSTER_FLAG_A5     SLURM_BIT(4) /* UNUSED */
-#define CLUSTER_FLAG_A6     SLURM_BIT(5) /* UNUSED */
-#define CLUSTER_FLAG_A7     SLURM_BIT(6) /* UNUSED */
-#define CLUSTER_FLAG_MULTSD SLURM_BIT(7) /* This cluster is multiple slurmd */
-#define CLUSTER_FLAG_A9     SLURM_BIT(8) /* UNUSED */
-#define CLUSTER_FLAG_FE     SLURM_BIT(9) /* This cluster is a front end system*/
-/*                          SLURM_BIT(10)   UNUSED */
-#define CLUSTER_FLAG_FED    SLURM_BIT(11) /* This cluster is in a federation. */
-#define CLUSTER_FLAG_EXT    SLURM_BIT(12) /* This cluster is external */
+typedef enum {
+	CLUSTER_FLAG_NONE = 0,
+	CLUSTER_FLAG_REGISTER = SLURM_BIT(0), /* Cluster is registering now */
+	CLUSTER_FLAG_DELETED = SLURM_BIT(1), /* Cluster is deleted */
+	/* SLURM_BIT(2) empty */
+	/* SLURM_BIT(3) empty */
+	/* SLURM_BIT(4) empty */
+	/* SLURM_BIT(5) empty */
+	/* SLURM_BIT(6) empty */
+	CLUSTER_FLAG_MULTSD = SLURM_BIT(7), /* Cluster is multiple slurmd */
+	/* SLURM_BIT(8) empty */
+	/* SLURM_BIT(9) empty */
+	/* SLURM_BIT(10) empty */
+	CLUSTER_FLAG_FED = SLURM_BIT(11), /* This cluster is in a federation. */
+	CLUSTER_FLAG_EXT = SLURM_BIT(12), /* This cluster is external */
+	CLUSTER_FLAG_INVALID
+}  slurmdb_cluster_flags_t;
 
 /* Assoc flags */
 typedef enum {
@@ -263,6 +273,7 @@ typedef enum {
 	ASSOC_FLAG_BASE = 0x0000ffff,
 
 	ASSOC_FLAG_USER_COORD = SLURM_BIT(16),
+	ASSOC_FLAG_BLOCK_ADD = SLURM_BIT(17),
 
 	ASSOC_FLAG_INVALID
 } slurmdb_assoc_flags_t;
@@ -276,6 +287,7 @@ typedef enum {
 #define	ASSOC_COND_FLAG_WOPI SLURM_BIT(5)
 #define	ASSOC_COND_FLAG_WOPL SLURM_BIT(6)
 #define	ASSOC_COND_FLAG_QOS_USAGE SLURM_BIT(7)
+#define ASSOC_COND_FLAG_WITH_NG_USAGE SLURM_BIT(8)
 
 /* Event condition flags */
 #define SLURMDB_EVENT_COND_OPEN SLURM_BIT(0) /* Return only open events */
@@ -707,7 +719,7 @@ typedef struct {
 	uint16_t classification; /* how this machine is classified */
 	list_t *cluster_list; /* list of char * */
 	list_t *federation_list; /* list of char */
-	uint32_t flags;
+	slurmdb_cluster_flags_t flags;
 	list_t *format_list; 	/* list of char * */
 	list_t *rpc_version_list; /* list of char * */
 	time_t usage_end;
@@ -745,7 +757,7 @@ struct slurmdb_cluster_rec {
 			* PACKED, is set up in slurmdb_get_info_cluster */
 	uint16_t id; /* unique id */
 	slurmdb_cluster_fed_t fed; /* Federation information */
-	uint32_t flags;      /* set of CLUSTER_FLAG_* */
+	slurmdb_cluster_flags_t flags;
 	pthread_mutex_t lock; /* For convenience only. DOESN"T GET PACKED */
 	char *name;
 	char *nodes;
@@ -777,6 +789,10 @@ typedef struct {
 	uint32_t allowed; /* percentage/count of total resources
 			   * allowed for this cluster */
 } slurmdb_clus_res_rec_t;
+
+#define COORD_SET_INDIRECT 0
+#define COORD_SET_DIRECT 1
+#define COORD_SET_BY_ACCT 2
 
 typedef struct {
 	char *name;
@@ -901,6 +917,7 @@ typedef struct {
 	uint16_t restart_cnt;
 	uint32_t resvid;
 	char *resv_name;
+	char *resv_req; /* original requested reservations */
 	char *script;
 	uint16_t segment_size;
 	uint32_t show_full;
@@ -968,8 +985,8 @@ typedef struct {
 	time_t blocked_until; /* internal use only, DON'T PACK  */
 	char *description;
 	uint32_t id;
-	uint32_t flags; /* flags for various things to enforce or
-			   override other limits */
+	slurmdb_qos_flags_t flags; /* flags for various things to enforce or
+				      override other limits */
 	uint32_t grace_time; /* preemption grace time */
 	uint32_t grp_jobs_accrue; /* max number of jobs this qos can
 				   * have accruing priority time
@@ -1131,6 +1148,7 @@ typedef struct {
 	char *nodes; /* list of nodes in reservation */
 	char *node_inx; /* node index of nodes in reservation */
 	time_t time_end; /* end time of reservation */
+	time_t time_force; /* The actual time the reservation started */
 	time_t time_start; /* start time of reservation */
 	time_t time_start_prev; /* If start time was changed this is
 				 * the previous start time.  Needed
@@ -1143,6 +1161,7 @@ typedef struct {
 
 typedef struct {
 	char *container;
+	char *cwd;
 	uint32_t elapsed;
 	time_t end;
 	int32_t exitcode;
@@ -1160,6 +1179,9 @@ typedef struct {
 	slurmdb_stats_t stats;
 	slurm_step_id_t step_id;	/* job's step number */
 	char *stepname;
+	char *std_err;
+	char *std_in;
+	char *std_out;
 	char *submit_line;
 	uint32_t suspended;
 	uint64_t sys_cpu_sec;
@@ -1365,6 +1387,7 @@ typedef struct {
 	list_t *acct_list; /* list of char *'s */
 	list_t *assoc_list; /* list of slurmdb_report_assoc_rec_t's */
 	char *name;
+	char *partition; /* Optional partition associated with the user */
 	list_t *tres_list; /* list of slurmdb_tres_rec_t *'s */
 	uid_t uid;
 } slurmdb_report_user_rec_t;
@@ -2234,6 +2257,32 @@ extern list_t *slurmdb_wckeys_modify(void *db_conn,
  */
 extern list_t *slurmdb_wckeys_remove(void *db_conn,
 				     slurmdb_wckey_cond_t *wckey_cond);
+
+/*
+ * Take a path and return a string with all the wildcards in the path properly
+ * expanded, based in the values of the passed slurmdb_job_rec_t. This function
+ * is mainly used for batch steps, and the generated path refers to the job
+ * output files.
+ * IN: path - The raw path string which may contain wildcards to expand.
+ * IN: job - A slurmdb_job_rec_t struct used to expand the wildcards.
+ * RET: char * - An allocated string with all the paths expanded. The caller
+ * must xfree it.
+ */
+extern char *slurmdb_expand_job_stdio_fields(char *path,
+					     slurmdb_job_rec_t *job);
+
+/*
+ * Take a path and return a string with all the wildcards in the path properly
+ * expanded, based in the values of the passed slurmdb_step_rec_t. This function
+ * is mainly used for job steps, and the generated path refers to the step
+ * output files.
+ * IN: path - The raw path string which may contain wildcards to expand.
+ * IN: step - A slurmdb_step_rec_t struct used to expand the wildcards.
+ * RET: char * - An allocated string with all the paths expanded. The caller
+ * must xfree it.
+ */
+extern char *slurmdb_expand_step_stdio_fields(char *path,
+					      slurmdb_step_rec_t *step);
 
 #ifdef __cplusplus
 }

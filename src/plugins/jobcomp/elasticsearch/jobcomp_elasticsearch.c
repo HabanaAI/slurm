@@ -200,9 +200,9 @@ static int _index_job(const char *jobcomp)
 		return SLURM_ERROR;
 	}
 
-	rc = slurm_curl_request(jobcomp, log_url, NULL, NULL, slist, 0,
-				&response_str, &response_code,
-				HTTP_REQUEST_POST, false);
+	rc = slurm_curl_request(jobcomp, log_url, NULL, NULL, NULL, NULL, NULL,
+				slist, 0, &response_str, &response_code,
+				HTTP_REQUEST_POST, false, false);
 	/*
 	 * HTTP 200 (OK)	- request succeed.
 	 * HTTP 201 (Created)	- request succeed and resource created.
@@ -249,7 +249,7 @@ static int _save_state(void)
 	return rc;
 }
 
-extern int jobcomp_p_log_record(job_record_t *job_ptr)
+extern int jobcomp_p_record_job_end(job_record_t *job_ptr, uint32_t event)
 {
 	struct job_node *jnode = NULL;
 	data_t *record = NULL;
@@ -261,7 +261,7 @@ extern int jobcomp_p_log_record(job_record_t *job_ptr)
 		return SLURM_ERROR;
 	}
 
-	record = jobcomp_common_job_record_to_data(job_ptr);
+	record = jobcomp_common_job_record_to_data(job_ptr, event);
 	jnode = xmalloc(sizeof(struct job_node));
 	if ((rc = serialize_g_data_to_string(&jnode->serialized_job, NULL,
 					     record, MIME_TYPE_JSON,
@@ -341,6 +341,7 @@ extern int init(void)
 		return rc;
 	}
 
+	jobcomp_common_conf_init();
 	jobslist = list_create(_jobslist_del);
 	slurm_thread_create(&job_handler_thread, _process_jobs, NULL);
 	slurm_mutex_lock(&pend_jobs_lock);
@@ -362,6 +363,7 @@ extern int fini(void)
 	FREE_NULL_LIST(jobslist);
 	xfree(log_url);
 
+	jobcomp_common_conf_fini();
 	slurm_curl_fini();
 
 	return SLURM_SUCCESS;
@@ -400,4 +402,9 @@ extern list_t *jobcomp_p_get_jobs(slurmdb_job_cond_t *job_cond)
 {
 	debug("%s function is not implemented", __func__);
 	return NULL;
+}
+
+extern int jobcomp_p_record_job_start(job_record_t *job_ptr, uint32_t event)
+{
+	return SLURM_SUCCESS;
 }

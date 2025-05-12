@@ -185,13 +185,6 @@ extern int slurm_init_msg_engine_ports(uint16_t *);
  */
 extern int slurm_init_msg_engine(slurm_addr_t *slurm_address, bool permissive);
 
-/* In the bsd implementation maps directly to a accept call
- * IN open_fd		- file descriptor to accept connection on
- * OUT slurm_address 	- slurm_addr_t of the accepted connection
- * RET slurm_fd		- file descriptor of the connection created
- */
-extern int slurm_accept_msg_conn(int open_fd, slurm_addr_t * slurm_address);
-
 /**********************************************************************\
  * receive message functions
 \**********************************************************************/
@@ -215,12 +208,12 @@ extern int slurm_unpack_received_msg(slurm_msg_t *msg, int fd, buf_t *buffer);
  *    Also a slurm_cred is allocated (msg->auth_cred) which must be
  *    freed with auth_g_destroy() if it exists.
  *
- * IN open_fd	- file descriptor to receive msg on
+ * IN tls_conn
  * OUT msg	- a slurm_msg struct to be filled in by the function
  * IN timeout	- how long to wait in milliseconds
  * RET int	- returns 0 on success, -1 on failure and sets errno
  */
-int slurm_receive_msg(int fd, slurm_msg_t *msg, int timeout);
+extern int slurm_receive_msg(void *tls_conn, slurm_msg_t *msg, int timeout);
 
 /*
  *  Receive a slurm message on the open slurm descriptor "fd" waiting
@@ -229,7 +222,7 @@ int slurm_receive_msg(int fd, slurm_msg_t *msg, int timeout);
  *    returned list and must be freed at some point using the
  *    list_destroy function.
  *
- * IN open_fd	- file descriptor to receive msg on
+ * IN tls_conn
  * IN steps	- how many steps down the tree we have to wait for
  * IN timeout	- how long to wait in milliseconds
  * RET list	- list containing the responses of the children (if any) we
@@ -237,24 +230,26 @@ int slurm_receive_msg(int fd, slurm_msg_t *msg, int timeout);
  *                (ret_data_info_t). NULL is returned on failure. and
  *                errno set.
  */
-extern list_t *slurm_receive_msgs(int fd, int steps, int timeout);
-extern list_t *slurm_receive_resp_msgs(int fd, int steps, int timeout);
+extern list_t *slurm_receive_msgs(void *tls_conn, int steps, int timeout);
+extern list_t *slurm_receive_resp_msgs(void *tls_conn, int steps, int timeout);
 
 /*
- *  Receive a slurm message on the open slurm descriptor "fd". This will also
- *  forward the message to the nodes contained in the forward_t structure
- *  inside the header of the message. The 'resp' is the actual message received
- *  and contains the ret_list of it's children and the forward_structure_t
- *  containing information about it's children also. Memory is allocated for
- *  the returned msg and the returned list both must be freed at some point
- *  using the slurm_free_functions and list_destroy function.
+ *  Unpack a Slurm message from the supplied 'buffer' and forward.
+ *  This will forward the message to the nodes contained in the forward_t
+ *  structure inside the header of the message. The 'msg' is the actual message
+ *  received and contains the ret_list of it's children and the
+ *  forward_structure_t containing information about it's children also. Memory
+ *  is allocated for the returned msg and the returned list both must be freed
+ *  at some point using the slurm_free_functions and list_destroy function.
  *
- * IN open_fd	- file descriptor to receive msg on
- * OUT resp	- a slurm_msg struct to be filled in by the function
+ * OUT msg	- a slurm_msg struct to be filled in by the function
+ * IN orig_addr - Original address of the connection msg was received on
+ * IN open_fd	- file descriptor msg was received on
  * RET int	- returns 0 on success, -1 on failure and sets errno
  */
-int slurm_receive_msg_and_forward(int fd, slurm_addr_t *orig_addr,
-				  slurm_msg_t *resp);
+extern int slurm_unpack_msg_and_forward(slurm_msg_t *msg,
+					slurm_addr_t *orig_addr, int fd,
+					buf_t *buffer);
 
 /**********************************************************************\
  * send message functions
@@ -262,11 +257,11 @@ int slurm_receive_msg_and_forward(int fd, slurm_addr_t *orig_addr,
 
 /* sends a message to an arbitrary node
  *
- * IN open_fd		- file descriptor to send msg on
+ * IN tls_conn
  * IN msg		- a slurm msg struct to be sent
  * RET int		- size of msg sent in bytes
  */
-int slurm_send_node_msg(int open_fd, slurm_msg_t *msg);
+extern int slurm_send_node_msg(void *tls_conn, slurm_msg_t *msg);
 
 /**********************************************************************\
  * msg connection establishment functions used by msg clients
@@ -277,19 +272,19 @@ int slurm_send_node_msg(int open_fd, slurm_msg_t *msg);
  *	primary or backup slurmctld message engine
  * IN dest      - controller to contact (0=primary, 1=backup, 2=backup2, etc.)
  * IN comm_cluster_rec	- Communication record (host/port/version)/
- * RET int      - file descriptor of the connection created
+ * RET tls_conn
  */
-extern int slurm_open_controller_conn_spec(int dest,
-				      slurmdb_cluster_rec_t *comm_cluster_rec);
+extern void *slurm_open_controller(int dest,
+				   slurmdb_cluster_rec_t *comm_cluster_rec);
 
-/* In the bsd socket implementation it creates a SOCK_STREAM socket
- *	and calls connect on it a SOCK_DGRAM socket called with connect
- *	is defined to only receive messages from the address/port pair
- *	argument of the connect call slurm_address
- * IN slurm_address 	- slurm_addr_t of the connection destination
- * RET slurm_fd		- file descriptor of the connection created
+/*
+ * Creates a SOCK_STREAM (TCP) socket and calls connect() on it.
+ * Will only receive messages from the address (w/port) argument.
+ * IN addr - slurm_addr_t of the connection destination
+ * IN tls_cert - public certificate for destination if not already trusted
+ * RET tls_conn	- TLS connection to destination
  */
-extern int slurm_open_msg_conn(slurm_addr_t * slurm_address);
+extern void *slurm_open_msg_conn(slurm_addr_t *addr, char *tls_cert);
 
 /**********************************************************************\
  * stream functions
@@ -297,21 +292,21 @@ extern int slurm_open_msg_conn(slurm_addr_t * slurm_address);
 
 /* slurm_write_stream
  * writes a buffer out a stream file descriptor
- * IN open_fd		- file descriptor to write on
+ * IN tls_conn
  * IN buffer		- buffer to send
  * IN size		- size of buffer send
  * RET size_t		- bytes sent , or -1 on error
  */
-extern size_t slurm_write_stream(int open_fd, char *buffer, size_t size);
+extern size_t slurm_write_stream(void *tls_conn, char *buffer, size_t size);
 
 /* slurm_read_stream
  * read into buffer grom a stream file descriptor
- * IN open_fd		- file descriptor to read from
+ * IN tls_conn
  * OUT buffer	- buffer to receive into
  * IN size		- size of buffer
  * RET size_t		- bytes read , or -1 on error
  */
-extern size_t slurm_read_stream(int open_fd, char *buffer, size_t size);
+extern size_t slurm_read_stream(void *tls_conn, char *buffer, size_t size);
 
 /**********************************************************************\
  * address conversion and management functions
@@ -387,6 +382,19 @@ extern int slurm_buffers_pack_msg(slurm_msg_t *msg, msg_bufs_t *buffers,
  * They open a connection do work then close the connection all within
  * the function
 \**********************************************************************/
+
+/*
+ * Initialize response msg
+ *
+ * NOTE: This sets SLURM_NO_AUTH_CRED on resp_msg
+ *
+ * OUT resp_msg - pointer to response message
+ * IN source_msg - create response to this message
+ * IN msg_type - RPC message type
+ * IN data - pointer to message data which corresponds to msg_type
+ */
+extern void slurm_resp_msg_init(slurm_msg_t *resp_msg, slurm_msg_t *msg,
+				uint16_t msg_type, void *data);
 
 /*
  * Send message in response to a source message
@@ -469,6 +477,14 @@ int slurm_send_reroute_msg(slurm_msg_t *msg,
 			   char *stepmgr);
 
 /*
+ * Open a connection to the "address" specified in the slurm msg `req'
+ * Then, immediately close the connection w/out waiting for a reply.
+ * Ignore any errors. This should only be used when you do not care if
+ * the message is ever actually received.
+ */
+extern void slurm_send_msg_maybe(slurm_msg_t *req);
+
+/*
  *  Send a message to msg->address
  *    Then return list containing type (ret_data_info_t).
  * IN msg           - a slurm_msg struct to be sent by the function
@@ -516,13 +532,13 @@ extern int slurm_send_only_node_msg(slurm_msg_t *request_msg);
 
 /* Send and recv a slurm request and response on the open slurm descriptor
  * Doesn't close the connection.
- * IN fd	- file descriptor to receive msg on
+ * IN tls_conn
  * IN req	- a slurm_msg struct to be sent by the function
  * OUT resp	- a slurm_msg struct to be filled in by the function
  * IN timeout	- how long to wait in milliseconds
  * RET int	- returns 0 on success, -1 on failure and sets errno
  */
-extern int slurm_send_recv_msg(int fd, slurm_msg_t *req,
+extern int slurm_send_recv_msg(void *tls_conn, slurm_msg_t *req,
 			       slurm_msg_t *resp, int timeout);
 
 /* Slurm message functions */

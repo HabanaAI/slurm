@@ -33,6 +33,7 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
+#include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
 
@@ -66,6 +67,12 @@ static void _atfork_child(void)
 	enabled_status = false;
 }
 
+static void _at_exit(void)
+{
+	/* Skip locking mgr.mutex to avoid a deadlock */
+	mgr.shutdown_requested = true;
+}
+
 extern void conmgr_init(int thread_count, int max_connections,
 			conmgr_callbacks_t callbacks)
 {
@@ -78,6 +85,7 @@ extern void conmgr_init(int thread_count, int max_connections,
 
 	slurm_mutex_lock(&mgr.mutex);
 
+	enabled_status = true;
 	mgr.shutdown_requested = false;
 
 	if (mgr.workers.conf_threads > 0)
@@ -128,6 +136,9 @@ extern void conmgr_init(int thread_count, int max_connections,
 	if (!mgr.conf_connect_timeout.tv_nsec &&
 	    !mgr.conf_connect_timeout.tv_sec)
 		mgr.conf_connect_timeout.tv_sec = slurm_conf.msg_timeout;
+	if (!mgr.quiesce.conf_timeout.tv_nsec &&
+	    !mgr.quiesce.conf_timeout.tv_sec)
+		mgr.quiesce.conf_timeout.tv_sec = (2 * slurm_conf.msg_timeout);
 
 	mgr.max_connections = max_connections;
 	mgr.connections = list_create(NULL);
@@ -143,7 +154,7 @@ extern void conmgr_init(int thread_count, int max_connections,
 	slurm_mutex_unlock(&mgr.mutex);
 
 	/* Hook into atexit() in always clean shutdown if exit() called */
-	(void) atexit(conmgr_request_shutdown);
+	(void) atexit(_at_exit);
 }
 
 extern void conmgr_fini(void)
@@ -188,6 +199,7 @@ extern void conmgr_fini(void)
 
 	xassert(!mgr.quiesce.requested);
 	xassert(!mgr.quiesce.active);
+	xassert(!mgr.quiesce.start.tv_sec);
 
 	/* work should have been cleared by workers_fini() */
 	xassert(list_is_empty(mgr.work));
@@ -338,6 +350,17 @@ extern int conmgr_set_params(const char *params)
 
 			log_flag(CONMGR, "%s: %s activated with %lu max connections",
 				 __func__, tok, count);
+		} else if (!xstrncasecmp(tok, CONMGR_PARAM_QUIESCE_TIMEOUT,
+				  strlen(CONMGR_PARAM_QUIESCE_TIMEOUT))) {
+			const unsigned long count = slurm_atoul(tok +
+				strlen(CONMGR_PARAM_QUIESCE_TIMEOUT));
+
+			if (count == ULONG_MAX)
+				fatal("%s: Invalid timeout: %m", __func__);
+
+			mgr.quiesce.conf_timeout.tv_sec = count;
+			log_flag(CONMGR, "%s: %s activated with %lu seconds",
+				 __func__, tok, count);
 		} else if (!xstrcasecmp(tok, CONMGR_PARAM_POLL_ONLY)) {
 			log_flag(CONMGR, "%s: %s activated", __func__, tok);
 			pollctl_set_mode(POLL_MODE_POLL);
@@ -386,6 +409,8 @@ extern void conmgr_quiesce(const char *caller)
 
 	xassert(!mgr.quiesce.active);
 	mgr.quiesce.requested = true;
+	xassert(!mgr.quiesce.start.tv_sec);
+	mgr.quiesce.start = timespec_now();
 
 	while (!mgr.quiesce.active) {
 		EVENT_SIGNAL(&mgr.watch_sleep);
@@ -401,11 +426,22 @@ extern void conmgr_unquiesce(const char *caller)
 
 	xassert(mgr.quiesce.requested);
 	xassert(mgr.quiesce.active);
+	xassert(mgr.quiesce.start.tv_sec);
 
 	mgr.quiesce.requested = false;
 	mgr.quiesce.active = false;
+	mgr.quiesce.start.tv_sec = 0;
 
 	EVENT_BROADCAST(&mgr.quiesce.on_stop_quiesced);
+
+	/*
+	 * If watch() never gets to an active quiesce then watch() may not be
+	 * waiting on on_stop_quiesced event before conmgr_unquiesce() is
+	 * called. Then watch() could still be waiting for a watch_sleep event
+	 * and not a on_stop_quiesced event which could result it in never
+	 * waking up.
+	 */
+	EVENT_SIGNAL(&mgr.watch_sleep);
 
 	slurm_mutex_unlock(&mgr.mutex);
 }

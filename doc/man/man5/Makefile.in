@@ -106,6 +106,7 @@ am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/slurm.m4 \
 	$(top_srcdir)/auxdir/slurmrestd.m4 \
 	$(top_srcdir)/auxdir/x_ac_affinity.m4 \
+	$(top_srcdir)/auxdir/x_ac_bashcomp.m4 \
 	$(top_srcdir)/auxdir/x_ac_c99.m4 \
 	$(top_srcdir)/auxdir/x_ac_cgroup.m4 \
 	$(top_srcdir)/auxdir/x_ac_curl.m4 \
@@ -404,6 +405,7 @@ am__quote = @am__quote@
 am__tar = @am__tar@
 am__untar = @am__untar@
 ax_pthread_config = @ax_pthread_config@
+bashcompdir = @bashcompdir@
 bindir = @bindir@
 build = @build@
 build_alias = @build_alias@
@@ -469,7 +471,8 @@ man5_MANS = \
 	oci.conf.5 \
 	slurm.conf.5 \
 	slurmdbd.conf.5 \
-	topology.conf.5
+	topology.conf.5 \
+	topology.yaml.5
 
 @HAVE_MAN2HTML_TRUE@html_DATA = \
 @HAVE_MAN2HTML_TRUE@	acct_gather.conf.html \
@@ -483,7 +486,8 @@ man5_MANS = \
 @HAVE_MAN2HTML_TRUE@	oci.conf.html \
 @HAVE_MAN2HTML_TRUE@	slurm.conf.html \
 @HAVE_MAN2HTML_TRUE@	slurmdbd.conf.html \
-@HAVE_MAN2HTML_TRUE@	topology.conf.html
+@HAVE_MAN2HTML_TRUE@	topology.conf.html \
+@HAVE_MAN2HTML_TRUE@	topology.yaml.html
 
 @HAVE_MAN2HTML_TRUE@MOSTLYCLEANFILES = ${html_DATA}
 @HAVE_MAN2HTML_TRUE@SUFFIXES = .html

@@ -41,7 +41,6 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/un.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -60,6 +59,8 @@
 #include "src/common/slurm_protocol_common.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xsignal.h"
+
+#include "src/interfaces/tls.h"
 
 struct allocation_msg_thread {
 	slurm_allocation_callbacks_t callback;
@@ -236,12 +237,11 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 {
 	net_forward_msg_t *msg = forward_msg->data;
 	int *local, *remote;
-	eio_obj_t *e1, *e2;
 
 	local = xmalloc(sizeof(*local));
 	remote = xmalloc(sizeof(*remote));
 
-	*remote = forward_msg->conn_fd;
+	*remote = tls_g_get_conn_fd(forward_msg->tls_conn);
 	net_set_nodelay(*remote, true, NULL);
 
 	if (msg->port) {
@@ -249,7 +249,8 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 		slurm_addr_t local_addr;
 		memset(&local_addr, 0, sizeof(local_addr));
 		slurm_set_addr(&local_addr, msg->port, msg->target);
-		*local = slurm_open_msg_conn(&local_addr);
+
+		*local = slurm_open_stream(&local_addr, false);
 		if (*local == -1) {
 			error("%s: failed to open x11 port `%s:%d`: %m",
 			      __func__, msg->target, msg->port);
@@ -257,17 +258,12 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 		}
 		net_set_nodelay(*local, true, NULL);
 	} else if (msg->target) {
+		int rc;
+
 		/* connect to local unix socket */
-		struct sockaddr_un addr;
-		socklen_t len;
-		memset(&addr, 0, sizeof(addr));
-		addr.sun_family = AF_UNIX;
-		strlcpy(addr.sun_path, msg->target, sizeof(addr.sun_path));
-		len = strlen(addr.sun_path) + 1 + sizeof(addr.sun_family);
-		if (((*local = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) ||
-		    ((connect(*local, (struct sockaddr *) &addr, len)) < 0)) {
-			error("%s: failed to open x11 display on `%s`: %m",
-			      __func__, msg->target);
+		if ((rc = slurm_open_unix_stream(msg->target, 0, local))) {
+			error("%s: failed to open x11 display on `%s`: %s",
+			      __func__, msg->target, slurm_strerror(rc));
 			goto error;
 		}
 	}
@@ -279,14 +275,12 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 	slurm_send_rc_msg(forward_msg, SLURM_SUCCESS);
 
 	/* prevent the upstream call path from closing the connection */
-	forward_msg->conn_fd = -1;
+	forward_msg->tls_conn = NULL;
 
-	e1 = eio_obj_create(*local, &half_duplex_ops, remote);
-	e2 = eio_obj_create(*remote, &half_duplex_ops, local);
-
-	/* setup eio to handle both sides of the connection now */
-	eio_new_obj(msg_thr->handle, e1);
-	eio_new_obj(msg_thr->handle, e2);
+	if (half_duplex_add_objs_to_handle(msg_thr->handle, local, remote,
+					   forward_msg->tls_conn)) {
+		goto error;
+	}
 
 	return;
 

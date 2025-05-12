@@ -125,6 +125,7 @@
 /* hostlist.[ch] functions */
 #define	hostlist_create_dims	slurm_hostlist_create_dims
 #define	hostlist_create		slurm_hostlist_create
+#define	hostlist_create_client	slurm_hostlist_create_client
 #define	hostlist_copy		slurm_hostlist_copy
 #define	hostlist_count		slurm_hostlist_count
 #define	hostlist_delete		slurm_hostlist_delete
@@ -160,6 +161,8 @@
 #define	hostlist_shift		slurm_hostlist_shift
 #define	hostlist_shift_dims	slurm_hostlist_shift_dims
 #define	hostlist_sort		slurm_hostlist_sort
+#define	hostlist_split_treewidth \
+				slurm_hostlist_split_treewidth
 #define	hostlist_cmp_first	slurm_hostlist_cmp_first
 #define	hostlist_uniq		slurm_hostlist_uniq
 #define	hostset_count		slurm_hostset_count
@@ -343,15 +346,7 @@
 #define add_key_pair_own	slurm_add_key_pair_own
 
 /* run_in_daemon.[ch] functions */
-#define run_in_daemon           slurm_run_in_daemon
-#define running_in_daemon	slurm_running_in_daemon
-#define running_in_sackd        slurm_running_in_sackd
-#define running_in_slurmctld    slurm_running_in_slurmctld
-#define running_in_slurmd       slurm_running_in_slurmd
-#define running_in_slurmdbd     slurm_running_in_slurmdbd
-#define running_in_slurmd_stepd slurm_running_in_slurmd_stepd
-#define running_in_slurmrestd	slurm_running_in_slurmrestd
-#define running_in_slurmstepd   slurm_running_in_slurmstepd
+#define run_in_daemon slurm_run_in_daemon
 
 /* slurm_auth.[ch] functions
  * None exported today.
@@ -540,6 +535,7 @@
 
 /* topology.[ch] functions */
 #define topology_g_build_config slurm_topology_g_build_config
+#define topology_g_destroy_config slurm_topology_g_destroy_config
 
 /* job_state_reason.[ch] functions */
 #define job_state_reason_string	slurm_job_state_reason_string

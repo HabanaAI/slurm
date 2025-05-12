@@ -52,6 +52,11 @@ typedef struct {
 static gboolean control_key_in_effect = false;
 static gboolean enter_key_in_effect = false;
 
+typedef struct topoinfo_tree {
+	uint32_t record_count;
+	topo_info_t *topo_array;
+} topoinfo_tree_t;
+
 static int _find_node_inx (char *name)
 {
 	int i;
@@ -498,9 +503,6 @@ static void _selected_page(GtkMenuItem *menuitem, display_data_t *display_data)
 	case BB_PAGE:
 		each.pfunc = &popup_all_bb;
 		break;
-	case FRONT_END_PAGE:
-		each.pfunc = &popup_all_front_end;
-		break;
 	case ADMIN_PAGE:
 		switch(display_data->id) {
 		case JOB_PAGE:
@@ -512,12 +514,6 @@ static void _selected_page(GtkMenuItem *menuitem, display_data_t *display_data)
 						&treedata->iter,
 						display_data,
 						treedata->treeview);
-			break;
-		case FRONT_END_PAGE:
-			select_admin_front_end(treedata->model,
-					       &treedata->iter,
-					       display_data,
-					       treedata->treeview);
 			break;
 		case RESV_PAGE:
 			select_admin_resv(treedata->model, &treedata->iter,
@@ -578,8 +574,6 @@ extern void free_switch_nodes_maps(
 		if (!sw_nodes_bitmaps_ptr->node_bitmap)
 			break;
 		FREE_NULL_BITMAP(sw_nodes_bitmaps_ptr->node_bitmap);
-		if (sw_nodes_bitmaps_ptr->node_bitmap)
-			xfree(sw_nodes_bitmaps_ptr->nodes);
 	}
 	g_switch_nodes_maps = NULL;
 }
@@ -629,48 +623,66 @@ extern int get_topo_conf(void)
 	int i;
 	switch_record_bitmaps_t sw_nodes_bitmaps;
 	switch_record_bitmaps_t *sw_nodes_bitmaps_ptr;
+	topoinfo_tree_t *topo_info;
 
 	if (TOPO_DEBUG)
 		g_print("get_topo_conf\n");
 
-	if (!g_topo_info_msg_ptr && slurm_load_topo(&g_topo_info_msg_ptr)) {
+	if (!g_topo_info_msg_ptr &&
+	    slurm_load_topo(&g_topo_info_msg_ptr, NULL)) {
 		slurm_perror ("slurm_load_topo error");
 		if (TOPO_DEBUG)
 			g_print("get_topo_conf error !!\n");
 		return SLURM_ERROR;
 	}
 
-	if (g_topo_info_msg_ptr->record_count == 0) {
+	if (!g_topo_info_msg_ptr->topo_info) {
 		slurm_free_topo_info_msg(g_topo_info_msg_ptr);
 		g_topo_info_msg_ptr = NULL;
 		return SLURM_ERROR;
 	}
 
+	if (g_topo_info_msg_ptr->topo_info->plugin_id != TOPOLOGY_PLUGIN_TREE) {
+		slurm_free_topo_info_msg(g_topo_info_msg_ptr);
+		g_topo_info_msg_ptr = NULL;
+		if (TOPO_DEBUG)
+			g_print("get_topo_conf only topology tree supported!!\n");
+		return SLURM_ERROR;
+	}
+
 	if (g_switch_nodes_maps)
 		free_switch_nodes_maps(g_switch_nodes_maps);
+	topo_info = g_topo_info_msg_ptr->topo_info->data;
 
-	g_switch_nodes_maps = xmalloc(sizeof(sw_nodes_bitmaps)
-				      * g_topo_info_msg_ptr->record_count);
+	g_switch_nodes_maps =
+		xmalloc(sizeof(sw_nodes_bitmaps) * topo_info->record_count);
 	sw_nodes_bitmaps_ptr = g_switch_nodes_maps;
+	g_switch_nodes_maps_count = 0;
 
 	if (TOPO_DEBUG)
 		g_print("_display_topology,  record_count = %d\n",
-			g_topo_info_msg_ptr->record_count);
-	for (i = 0; i < g_topo_info_msg_ptr->record_count;
-	     i++, sw_nodes_bitmaps_ptr++) {
-		if (!g_topo_info_msg_ptr->topo_array[i].nodes)
+			topo_info->record_count);
+	for (i = 0; i < topo_info->record_count; i++) {
+		if (!topo_info->topo_array[i].nodes)
+			continue;
+		if (topo_info->topo_array[i].level)
 			continue;
 		if (TOPO_DEBUG)  {
 			g_print("ptr->nodes =  %s \n",
-				g_topo_info_msg_ptr->topo_array[i].nodes);
+				topo_info->topo_array[i].nodes);
 		}
 		if (build_nodes_bitmap(
-			    g_topo_info_msg_ptr->topo_array[i].nodes,
+			    topo_info->topo_array[g_switch_nodes_maps_count]
+				    .nodes,
 			    &sw_nodes_bitmaps_ptr->node_bitmap)) {
 			g_print("Invalid node name (%s) in switch %s\n",
-				g_topo_info_msg_ptr->topo_array[i].nodes,
-				g_topo_info_msg_ptr->topo_array[i].name);
+				topo_info->topo_array[g_switch_nodes_maps_count]
+					.nodes,
+				topo_info->topo_array[g_switch_nodes_maps_count]
+					.name);
 		}
+		sw_nodes_bitmaps_ptr++;
+		g_switch_nodes_maps_count++;
 	}
 
 	if (TOPO_DEBUG)
@@ -1677,9 +1689,6 @@ extern void *popup_thr(popup_info_t *popup_win)
 	case RESV_PAGE:
 		specific_info = specific_info_resv;
 		break;
-	case FRONT_END_PAGE:
-		specific_info = specific_info_front_end;
-		break;
 	case BB_PAGE:
 		specific_info = specific_info_bb;
 		break;
@@ -2112,8 +2121,6 @@ extern char *page_to_str(int page)
 		return "BurstBuffer";
 	case NODE_PAGE:
 		return "Node";
-	case FRONT_END_PAGE:
-		return "Frontend";
 	default:
 		return NULL;
 	}

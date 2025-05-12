@@ -96,7 +96,6 @@
 #include "src/interfaces/select.h"
 
 #include "src/slurmctld/agent.h"
-#include "src/slurmctld/front_end.h"
 #include "src/slurmctld/job_scheduler.h"
 #include "src/slurmctld/locks.h"
 #include "src/slurmctld/ping_nodes.h"
@@ -159,6 +158,7 @@ typedef struct {
 	void **msg_args_pptr;		/* RPC data to be used */
 	uint16_t msg_flags;		/* Flags to be added to msg*/
 	uint16_t protocol_version;	/* if set, use this version */
+	char *tls_cert;
 } agent_info_t;
 
 typedef struct {
@@ -174,6 +174,7 @@ typedef struct {
 	void *msg_args_ptr;		/* ptr to RPC data to be used */
 	uint16_t msg_flags;		/* Flags to be added to msg*/
 	uint16_t protocol_version;	/* if set, use this version */
+	char *tls_cert;
 } task_info_t;
 
 typedef struct {
@@ -468,6 +469,7 @@ static agent_info_t *_make_agent_info(agent_arg_t *agent_arg_ptr)
 	agent_info_ptr->msg_args_pptr  = &agent_arg_ptr->msg_args;
 	agent_info_ptr->msg_flags = agent_arg_ptr->msg_flags;
 	agent_info_ptr->protocol_version = agent_arg_ptr->protocol_version;
+	agent_info_ptr->tls_cert = xstrdup(agent_arg_ptr->tls_cert);
 
 	if (!agent_info_ptr->thread_count)
 		return agent_info_ptr;
@@ -488,14 +490,10 @@ static agent_info_t *_make_agent_info(agent_arg_t *agent_arg_ptr)
 	    (agent_arg_ptr->msg_type != SRUN_STEP_MISSING)	&&
 	    (agent_arg_ptr->msg_type != SRUN_STEP_SIGNAL)	&&
 	    (agent_arg_ptr->msg_type != SRUN_JOB_COMPLETE)) {
-#ifdef HAVE_FRONT_END
-		split = true;
-#else
 		/* Sending message to a possibly large number of slurmd.
 		 * Push all message forwarding to slurmd in order to
 		 * offload as much work from slurmctld as possible. */
 		split = false;
-#endif
 		agent_info_ptr->get_reply = true;
 	} else {
 		/* Message is going to one node (for srun) or we want
@@ -570,6 +568,7 @@ static task_info_t *_make_task_data(agent_info_t *agent_info_ptr, int inx)
 	task_info_ptr->msg_args_ptr      = *agent_info_ptr->msg_args_pptr;
 	task_info_ptr->msg_flags = agent_info_ptr->msg_flags;
 	task_info_ptr->protocol_version  = agent_info_ptr->protocol_version;
+	task_info_ptr->tls_cert = xstrdup(agent_info_ptr->tls_cert);
 
 	return task_info_ptr;
 }
@@ -817,13 +816,9 @@ static void _notify_slurmctld_nodes(agent_info_t *agent_ptr,
 					locked = true;
 					lock_slurmctld(node_write_lock);
 				}
-#ifdef HAVE_FRONT_END
-				down_msg = "";
-#else
 				drain_nodes(*node_names, "Prolog/Epilog failure",
 				            slurm_conf.slurm_user_id);
 				down_msg = ", set to state DRAIN";
-#endif
 				error("Prolog/Epilog failure on nodes %s%s",
 				      *node_names, down_msg);
 				break;
@@ -832,13 +827,9 @@ static void _notify_slurmctld_nodes(agent_info_t *agent_ptr,
 					locked = true;
 					lock_slurmctld(node_write_lock);
 				}
-#ifdef HAVE_FRONT_END
-				down_msg = "";
-#else
 				drain_nodes(*node_names, "Duplicate jobid",
 				            slurm_conf.slurm_user_id);
 				down_msg = ", set to state DRAIN";
-#endif
 				error("Duplicate jobid on nodes %s%s",
 				      *node_names, down_msg);
 				break;
@@ -914,33 +905,6 @@ static int _wif_status(void)
 }
 
 /*
- * slurm_send_msg_maybe
- * opens a connection, sends a message across while ignoring any errors,
- * then closes the connection
- *
- * Open a connection to the "address" specified in the slurm msg `req'
- * Then, immediately close the connection w/out waiting for a reply.
- * Ignore any errors. This should only be used when you do not care if
- * the message is ever received.
- *
- * IN request_msg	- slurm_msg request
- */
-static void _send_msg_maybe(slurm_msg_t *req)
-{
-	int fd = -1;
-
-	if ((fd = slurm_open_msg_conn(&req->address)) < 0) {
-		log_flag(NET, "%s: slurm_open_msg_conn(%pA): %m",
-			 __func__, &req->address);
-		return;
-	}
-
-	(void) slurm_send_node_msg(fd, req);
-
-	(void) close(fd);
-}
-
-/*
  * _thread_per_group_rpc - thread to issue an RPC for a group of nodes
  *                         sending message out to one and forwarding it to
  *                         others if necessary.
@@ -1008,6 +972,8 @@ static void *_thread_per_group_rpc(void *args)
 	msg.data     = task_ptr->msg_args_ptr;
 	slurm_msg_set_r_uid(&msg, task_ptr->r_uid);
 	msg.flags |= task_ptr->msg_flags;
+	msg.tls_cert = task_ptr->tls_cert;
+	task_ptr->tls_cert = NULL;
 
 	if (thread_ptr->nodename)
 		log_flag(AGENT, "%s: sending %s to %s", __func__,
@@ -1071,7 +1037,7 @@ static void *_thread_per_group_rpc(void *args)
 			 * flings the message out and disregards any
 			 * communication problems that may arise.
 			 */
-			_send_msg_maybe(&msg);
+			slurm_send_msg_maybe(&msg);
 			thread_state = DSH_DONE;
 		} else if (slurm_send_only_node_msg(&msg) == SLURM_SUCCESS) {
 			thread_state = DSH_DONE;
@@ -1246,7 +1212,7 @@ static void *_thread_per_group_rpc(void *args)
 			break;
 		case ESLURM_INVALID_JOB_ID:
 			/* Not indicative of a real error */
-		case ESLURMD_JOB_NOTRUNNING:
+		case ESLURMD_STEP_NOTRUNNING:
 			/* Not indicative of a real error */
 			log_flag(AGENT, "%s: RPC to node %s failed, job not running",
 				 __func__, ret_data_info->node_name);
@@ -1314,11 +1280,7 @@ cleanup:
 static int _setup_requeue(agent_arg_t *agent_arg_ptr, thd_t *thread_ptr,
 			  int *count, int *spot)
 {
-#ifdef HAVE_FRONT_END
-	front_end_record_t *node_ptr;
-#else
 	node_record_t *node_ptr;
-#endif
 	ret_data_info_t *ret_data_info = NULL;
 	list_itr_t *itr;
 	int rc = 0;
@@ -1330,11 +1292,7 @@ static int _setup_requeue(agent_arg_t *agent_arg_ptr, thd_t *thread_ptr,
 		if (ret_data_info->err != DSH_NO_RESP)
 			continue;
 
-#ifdef HAVE_FRONT_END
-		node_ptr = find_front_end_record(ret_data_info->node_name);
-#else
 		node_ptr = find_node_record(ret_data_info->node_name);
-#endif
 		if (node_ptr &&
 		    (IS_NODE_DOWN(node_ptr) ||
 		     IS_NODE_POWERING_DOWN(node_ptr) ||
@@ -1365,11 +1323,7 @@ static int _setup_requeue(agent_arg_t *agent_arg_ptr, thd_t *thread_ptr,
  */
 static void _queue_agent_retry(agent_info_t * agent_info_ptr, int count)
 {
-#ifdef HAVE_FRONT_END
-	front_end_record_t *node_ptr;
-#else
 	node_record_t *node_ptr;
-#endif
 	agent_arg_t *agent_arg_ptr;
 	queued_request_t *queued_req_ptr = NULL;
 	thd_t *thread_ptr = agent_info_ptr->thread_struct;
@@ -1397,12 +1351,7 @@ static void _queue_agent_retry(agent_info_t * agent_info_ptr, int count)
 
 			debug("got the name %s to resend",
 			      thread_ptr[i].nodename);
-#ifdef HAVE_FRONT_END
-			node_ptr = find_front_end_record(
-						thread_ptr[i].nodename);
-#else
 			node_ptr = find_node_record(thread_ptr[i].nodename);
-#endif
 			if (node_ptr &&
 			    (IS_NODE_DOWN(node_ptr) ||
 			     IS_NODE_POWERING_DOWN(node_ptr) ||
@@ -2363,9 +2312,6 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 			nodes_ready = 1;
 		}
 	} else {
-#ifdef HAVE_FRONT_END
-		nodes_ready = 1;
-#else
 		node_record_t *node_ptr;
 		char *hostname;
 
@@ -2384,7 +2330,6 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 		    !IS_NODE_NO_RESPOND(node_ptr)) {
 			nodes_ready = 1;
 		}
-#endif
 	}
 
 	if ((slurm_conf.prolog_flags & PROLOG_FLAG_DEFER_BATCH) &&

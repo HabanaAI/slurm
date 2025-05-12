@@ -78,6 +78,8 @@ typedef struct {
 	char *(*get_scope_path)(void);
 	int (*setup_scope)(char *scope_path);
 	int (*signal)(int signal);
+	char *(*get_task_empty_event_path)(uint32_t taskid, bool *on_modify);
+	int (*is_task_empty)(uint32_t taskid);
 } slurm_ops_t;
 
 /*
@@ -108,6 +110,8 @@ static const char *syms[] = {
 	"cgroup_p_get_scope_path",
 	"cgroup_p_setup_scope",
 	"cgroup_p_signal",
+	"cgroup_p_get_task_empty_event_path",
+	"cgroup_p_is_task_empty",
 };
 
 /* Local variables */
@@ -158,6 +162,7 @@ static void _clear_slurm_cgroup_conf(void)
 	xfree(slurm_cgroup_conf.cgroup_mountpoint);
 	xfree(slurm_cgroup_conf.cgroup_plugin);
 	xfree(slurm_cgroup_conf.cgroup_prepend);
+	xfree(slurm_cgroup_conf.enable_extra_controllers);
 
 	memset(&slurm_cgroup_conf, 0, sizeof(slurm_cgroup_conf));
 }
@@ -180,6 +185,7 @@ static void _init_slurm_cgroup_conf(void)
 	slurm_cgroup_conf.constrain_ram_space = false;
 	slurm_cgroup_conf.constrain_swap_space = false;
 	slurm_cgroup_conf.enable_controllers = false;
+	slurm_cgroup_conf.enable_extra_controllers = NULL;
 	slurm_cgroup_conf.ignore_systemd = false;
 	slurm_cgroup_conf.ignore_systemd_on_failure = false;
 	slurm_cgroup_conf.max_ram_percent = 100;
@@ -226,6 +232,7 @@ static void _pack_cgroup_conf(buf_t *buffer)
 	packbool(slurm_cgroup_conf.ignore_systemd_on_failure, buffer);
 
 	packbool(slurm_cgroup_conf.enable_controllers, buffer);
+	packstr(slurm_cgroup_conf.enable_extra_controllers, buffer);
 	packbool(slurm_cgroup_conf.signal_children_processes, buffer);
 	pack64(slurm_cgroup_conf.systemd_timeout, buffer);
 }
@@ -269,6 +276,7 @@ static int _unpack_cgroup_conf(buf_t *buffer)
 	safe_unpackbool(&slurm_cgroup_conf.ignore_systemd_on_failure, buffer);
 
 	safe_unpackbool(&slurm_cgroup_conf.enable_controllers, buffer);
+	safe_unpackstr(&slurm_cgroup_conf.enable_extra_controllers, buffer);
 	safe_unpackbool(&slurm_cgroup_conf.signal_children_processes, buffer);
 	safe_unpack64(&slurm_cgroup_conf.systemd_timeout, buffer);
 
@@ -307,6 +315,7 @@ static void _read_slurm_cgroup_conf(void)
 		{"IgnoreSystemd", S_P_BOOLEAN},
 		{"IgnoreSystemdOnFailure", S_P_BOOLEAN},
 		{"EnableControllers", S_P_BOOLEAN},
+		{"EnableExtraControllers", S_P_STRING},
 		{"SignalChildrenProcesses", S_P_BOOLEAN},
 		{"SystemdTimeout", S_P_UINT64},
 		{NULL} };
@@ -409,6 +418,11 @@ static void _read_slurm_cgroup_conf(void)
 
 		(void) s_p_get_boolean(&slurm_cgroup_conf.enable_controllers,
 				       "EnableControllers", tbl);
+		if (s_p_get_string(&tmp_str, "EnableExtraControllers", tbl)) {
+			xfree(slurm_cgroup_conf.enable_extra_controllers);
+			slurm_cgroup_conf.enable_extra_controllers = tmp_str;
+			tmp_str = NULL;
+		}
 		(void) s_p_get_boolean(
 			&slurm_cgroup_conf.signal_children_processes,
 			"SignalChildrenProcesses", tbl);
@@ -592,6 +606,8 @@ extern list_t *cgroup_get_conf_list(void)
 			  cg_conf->ignore_systemd_on_failure);
 	add_key_pair_bool(cgroup_conf_l, "EnableControllers",
 			  cg_conf->enable_controllers);
+	add_key_pair(cgroup_conf_l, "EnableExtraControllers", "%s",
+		     cg_conf->enable_extra_controllers);
 
 	if (cg_conf->memory_swappiness != NO_VAL64)
 		add_key_pair(cgroup_conf_l, "MemorySwappiness", "%"PRIu64,
@@ -754,6 +770,10 @@ extern int cgroup_g_init(void)
 			goto done;
 		}
 	}
+
+	if (running_in_slurmd())
+		if (!xstrcmp(type, "cgroup/v1"))
+			warning("cgroup/v1 plugin is deprecated, please upgrade to cgroup/v2 at your earliest convenience");
 
 	g_context = plugin_context_create(
 		plugin_type, type, (void **)&ops, syms, sizeof(syms));
@@ -1019,4 +1039,25 @@ extern int cgroup_g_signal(int signal)
 		return SLURM_SUCCESS;
 
 	return (*(ops.signal))(signal);
+}
+
+extern char *cgroup_g_get_task_empty_event_path(uint32_t taskid,
+						bool *on_modify)
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_SUCCESS;
+
+	return (*(ops.get_task_empty_event_path))(taskid, on_modify);
+}
+
+extern int cgroup_g_is_task_empty(uint32_t taskid)
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_SUCCESS;
+
+	return (*(ops.is_task_empty))(taskid);
 }

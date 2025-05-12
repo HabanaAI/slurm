@@ -64,6 +64,7 @@ typedef struct slurm_switch_ops {
 	int          (*unpack_jobinfo)    ( void **switch_jobinfo,
 					    buf_t *buffer,
 					    uint16_t protocol_version );
+	void (*free_jobinfo)(void *switch_jobinfo);
 	int          (*build_stepinfo)    ( switch_stepinfo_t **stepinfo,
 					    slurm_step_layout_t *step_layout,
 					    step_record_t *step_ptr );
@@ -103,6 +104,7 @@ static const char *syms[] = {
 	"switch_p_restore",
 	"switch_p_pack_jobinfo",
 	"switch_p_unpack_jobinfo",
+	"switch_p_free_jobinfo",
 	"switch_p_build_stepinfo",
 	"switch_p_duplicate_stepinfo",
 	"switch_p_free_stepinfo",
@@ -334,6 +336,16 @@ unpack_error:
 	return SLURM_ERROR;
 }
 
+/* Free switch_jobinfo struct when switch_g_job_complete can't be used */
+extern void switch_g_free_jobinfo(job_record_t *job_ptr)
+{
+	xassert(switch_context_cnt >= 0);
+	if (!switch_context_cnt)
+		return;
+
+	(*(ops[switch_context_default].free_jobinfo))(job_ptr);
+}
+
 extern int switch_g_build_stepinfo(dynamic_plugin_data_t **stepinfo,
 				   slurm_step_layout_t *step_layout,
 				   step_record_t *step_ptr)
@@ -441,7 +453,8 @@ extern int switch_g_unpack_stepinfo(dynamic_plugin_data_t **stepinfo,
 	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
 		safe_unpack32(&length, buffer);
 		switch_stepinfo_end = get_buf_offset(buffer) + length;
-		if (!running_in_slurmstepd() || !length || !switch_context_cnt)
+		if (!(running_in_slurmstepd() || running_in_slurmctld()) ||
+		    !length || !switch_context_cnt)
 			goto skip_buf;
 
 		if (remaining_buf(buffer) < length)

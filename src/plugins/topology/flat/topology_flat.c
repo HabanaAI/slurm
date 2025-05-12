@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  topology_default.c - Default for system topology
+ *  topology_flat.c - Default for system topology
  *****************************************************************************
  *  Copyright (C) 2009 Lawrence Livermore National Security.
  *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
@@ -74,10 +74,11 @@
  * plugin_version - an unsigned 32-bit integer containing the Slurm version
  * (major.minor.micro combined into a single number).
  */
-const char plugin_name[]        = "topology Default plugin";
-const char plugin_type[]        = "topology/default";
-const uint32_t plugin_id = TOPOLOGY_PLUGIN_DEFAULT;
-const uint32_t plugin_version   = SLURM_VERSION_NUMBER;
+const char plugin_name[] = "topology Flat plugin";
+const char plugin_type[] = "topology/flat";
+const uint32_t plugin_id = TOPOLOGY_PLUGIN_FLAT;
+const uint32_t plugin_version = SLURM_VERSION_NUMBER;
+const bool supports_exclusive_topo = false;
 
 extern int init(void)
 {
@@ -90,7 +91,18 @@ extern int fini(void)
 	return SLURM_SUCCESS;
 }
 
-extern int topology_p_build_config(void)
+extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
+				  void *tctx)
+{
+	return SLURM_SUCCESS;
+}
+
+extern int topology_p_build_config(topology_ctx_t *tctx)
+{
+	return SLURM_SUCCESS;
+}
+
+extern int topology_p_destroy_config(topology_ctx_t *tctx)
 {
 	return SLURM_SUCCESS;
 }
@@ -100,7 +112,7 @@ extern int topology_p_eval_nodes(topology_eval_t *topo_eval)
 	return common_topo_choose_nodes(topo_eval);
 }
 
-extern int topology_p_whole_topo(bitstr_t *node_mask)
+extern int topology_p_whole_topo(bitstr_t *node_mask, void *tctx)
 {
 	return SLURM_SUCCESS;
 }
@@ -110,19 +122,20 @@ extern bitstr_t *topology_p_get_bitmap(char *name)
 	return NULL;
 }
 
-extern bool topology_p_generate_node_ranking(void)
+extern bool topology_p_generate_node_ranking(topology_ctx_t *tctx)
 {
 	return false;
 }
 
 extern int topology_p_get_node_addr(
-	char *node_name, char **paddr, char **ppattern)
+	char *node_name, char **paddr, char **ppattern, void *tctx)
 {
 	return common_topo_get_node_addr(node_name, paddr, ppattern);
 }
 
 extern int topology_p_split_hostlist(hostlist_t *hl, hostlist_t ***sp_hl,
-				     int *count, uint16_t tree_width)
+				     int *count, uint16_t tree_width,
+				     void *tctx)
 {
 	return common_topo_split_hostlist_treewidth(
 		hl, sp_hl, count, tree_width);
@@ -133,8 +146,35 @@ extern int topology_p_topology_free(void *topoinfo_ptr)
 	return SLURM_SUCCESS;
 }
 
-extern int topology_p_get(topology_data_t type, void *data)
+extern int topology_p_get(topology_data_t type, void *data, void *tctx)
 {
+	switch (type) {
+	case TOPO_DATA_TOPOLOGY_PTR:
+	{
+		dynamic_plugin_data_t **topoinfo_pptr = data;
+
+		*topoinfo_pptr = xmalloc(sizeof(dynamic_plugin_data_t));
+		(*topoinfo_pptr)->data = NULL;
+		(*topoinfo_pptr)->plugin_id = plugin_id;
+
+		break;
+	}
+	case TOPO_DATA_REC_CNT:
+	{
+		int *rec_cnt = data;
+		*rec_cnt = 0;
+		break;
+	}
+	case TOPO_DATA_EXCLUSIVE_TOPO:
+	{
+		int *exclusive_topo = data;
+		*exclusive_topo = 0;
+		break;
+	}
+	default:
+		error("Unsupported option %d", type);
+	}
+
 	return SLURM_SUCCESS;
 }
 

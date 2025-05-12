@@ -508,9 +508,19 @@ static void _expand_wildcard(char **expanded, char **pos, char *ptr,
 {
 	switch (*ptr) {
 	case 'A': /* Array job ID */
+		if (job->array_job_id) {
+			xstrfmtcatat(*expanded, pos, "%0*u", padding,
+				     job->array_job_id);
+		} else {
+			xstrfmtcatat(*expanded, pos, "%0*u", padding,
+				     job->jobid);
+		}
+		break;
 	case 'J': /* Jobid.stepid */
 	case 'j': /* Job ID */
 		xstrfmtcatat(*expanded, pos, "%0*u", padding, job->jobid);
+		if ((*ptr == 'J') && (job->first_step_id != SLURM_BATCH_SCRIPT))
+			xstrfmtcatat(*expanded, pos, ".%d", job->first_step_id);
 		break;
 	case 'a': /* Array task ID */
 		xstrfmtcatat(*expanded, pos, "%0*u", padding,
@@ -524,7 +534,11 @@ static void _expand_wildcard(char **expanded, char **pos, char *ptr,
 		xstrfmtcatat(*expanded, pos, "%s", job->first_step_node);
 		break;
 	case 's': /* Stepid of the running job */
-		xstrfmtcatat(*expanded, pos, "%s", job->first_step_name);
+		if (job->first_step_id == SLURM_BATCH_SCRIPT)
+			xstrcatat(*expanded, pos, "batch");
+		else
+			xstrfmtcatat(*expanded, pos, "%0*u", padding,
+				     job->first_step_id);
 		break;
 	case 'n': /* Node id relative to current job */
 	case 't': /* Task id (rank) relative to current job */
@@ -545,8 +559,6 @@ static void _expand_wildcard(char **expanded, char **pos, char *ptr,
  * Special expansion function for stdin/stdout/stderr filename patterns.
  * Fields that can potentially map to a range of values will use the first in
  * that range (e.g %t is replaced by 0).
- *
- * The parser do not support steps and is only for batch jobs.
  *
  * \      If we found this symbol, don't replace anything.
  * %%     The character "%".
@@ -581,8 +593,13 @@ extern char *expand_stdio_fields(char *stdio_path, job_std_pattern_t *job)
 	if (!stdio_path || !*stdio_path || !job)
 		return NULL;
 
-	if (stdio_path[0] != '/')
-		xstrcatat(expanded, &pos, job->work_dir);
+	if (job->work_dir && (stdio_path[0] != '/')) {
+		size_t len = strlen(job->work_dir);
+		if (job->work_dir[len - 1] == '/')
+			xstrcatat(expanded, &pos, job->work_dir);
+		else
+			xstrfmtcatat(expanded, &pos, "%s/", job->work_dir);
+	}
 
 	/*
 	 * Special case, if we find a \ it means the file has not been
@@ -605,24 +622,48 @@ extern char *expand_stdio_fields(char *stdio_path, job_std_pattern_t *job)
 				xstrfmtcatat(expanded, &pos, "%c", *ptr);
 			break;
 		case STATE_EXPAND:
+			/* Double %% is escape, so print one %. */
+			if (*ptr == '%') {
+				xstrfmtcatat(expanded, &pos, "%c", *ptr);
+				curr_state = STATE_INIT;
+				break;
+			}
 			if (isdigit(*ptr)) {
+				char *tmp_ptr = ptr;
 				if ((padding = strtoul(ptr, &end, 10)) > 9) {
 					/* Remove % and double digit 10 */
 					ptr = end;
 					padding = 10;
-				} else
+				} else {
 					ptr++;
+				}
+				/*
+				 * weird behavior fix: we remove all the digits
+				 * except the last one to match with the current
+				 * fname creation.
+				 */
+				if (!_is_wildcard(ptr)) {
+					ptr = tmp_ptr;
+					/* seek until the last digit */
+					while (isdigit(*(ptr + 1))) {
+						ptr++;
+					}
+					xstrfmtcatat(expanded, &pos,
+						     "%c", *ptr);
+					padding = 0;
+					curr_state = STATE_INIT;
+					break;
+				}
 			}
 			if (!_is_wildcard(ptr)) {
-				padding = 0;
-				xstrfmtcatat(expanded, &pos, "%c", *ptr);
+				/* If not a wildcard print also the %. */
+				xstrfmtcatat(expanded, &pos, "%%%c", *ptr);
 			} else {
 				_expand_wildcard(&expanded, &pos, ptr, padding,
 						 job);
+				padding = 0;
 			}
-			/* If we find another %, don't leave this state yet. */
-			if (*ptr != '%')
-				curr_state = STATE_INIT;
+			curr_state = STATE_INIT;
 			break;
 		default:
 			break;

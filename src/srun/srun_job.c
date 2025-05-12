@@ -183,7 +183,7 @@ job_create_noalloc(void)
 
 	hostlist_destroy(hl);
 
-	cpn[0] = (opt_local->ntasks + ai->nnodes - 1) / ai->nnodes;
+	cpn[0] = ROUNDUP(opt_local->ntasks, ai->nnodes);
 	ai->cpus_per_node  = cpn;
 	cpu_count_reps[0] = ai->nnodes;
 	ai->cpu_count_reps = cpu_count_reps;
@@ -686,7 +686,7 @@ extern void init_srun(int argc, char **argv, log_options_t *logopt,
 	 * Initialize plugin stack, read options from plugins, etc.
 	 */
 	init_spank_env();
-	if (spank_init(NULL) < 0) {
+	if (spank_init(NULL)) {
 		error("Plug-in initialization failed");
 		exit(error_exit);
 	}
@@ -1413,13 +1413,6 @@ extern void create_srun_job(void **p_job, bool *got_alloc)
 		xfree(het_job_nodelist);
 	} else {
 		/* Combined job allocation and job step launch */
-#if defined HAVE_FRONT_END
-		uid_t my_uid = getuid();
-		if ((my_uid != 0) && (my_uid != slurm_conf.slurm_user_id)) {
-			error("srun task launch not supported on this system");
-			exit(error_exit);
-		}
-#endif
 		if (slurm_option_set_by_cli(&opt, 'J'))
 			setenvfs("SLURM_JOB_NAME=%s", opt.job_name);
 		else if (!slurm_option_set_by_env(&opt, 'J') && opt.argc)
@@ -1536,7 +1529,7 @@ extern void pre_launch_srun_job(srun_job_t *job, slurm_opt_t *opt_local)
 		slurm_thread_create(&signal_thread, _srun_signal_mgr, job);
 
 	_run_srun_prolog(job);
-	if (_call_spank_local_user(job, opt_local) < 0) {
+	if (_call_spank_local_user(job, opt_local)) {
 		error("Failure in local plugin stack");
 		slurm_step_launch_abort(job->step_ctx);
 		exit(error_exit);
@@ -1675,10 +1668,6 @@ static srun_job_t *_job_create_structure(allocation_info_t *ainfo,
 	job->het_job_task_offset = NO_VAL;
 	job->nhosts   = ainfo->nnodes;
 
-#if defined HAVE_FRONT_END
-	/* Limited job step support */
-	opt_local->overcommit = true;
-#else
 	if (opt_local->min_nodes > job->nhosts) {
 		error("Only allocated %d nodes asked for %d",
 		      job->nhosts, opt_local->min_nodes);
@@ -1696,7 +1685,7 @@ static srun_job_t *_job_create_structure(allocation_info_t *ainfo,
 		xfree(job);
 		return NULL;
 	}
-#endif
+
 	job->ntasks  = opt_local->ntasks;
 	job->ntasks_per_board = ainfo->ntasks_per_board;
 	job->ntasks_per_core = ainfo->ntasks_per_core;

@@ -687,7 +687,7 @@ function __slurm_comp_filter() {
 # Determine if a slurmctld will respond
 function __slurm_ctld_status() {
 	local output exit_code
-	output=$(scontrol ping)
+	output=$(scontrol ping >/dev/null 2>&1)
 	exit_code=$?
 
 	if ((exit_code == 0)); then
@@ -702,7 +702,7 @@ function __slurm_ctld_status() {
 # Determine if a slurmdbd will respond
 function __slurm_dbd_status() {
 	local output exit_code
-	output=$(sacctmgr ping 2>/dev/null)
+	output=$(sacctmgr ping >/dev/null 2>&1)
 	exit_code=$?
 
 	if ((exit_code == 0)); then
@@ -3380,6 +3380,7 @@ function __scontrol_create_nodename() {
 		"state="
 		"threadspercore="
 		"tmpdisk="
+		"topology="
 		"weight="
 	)
 	local states=(
@@ -3523,8 +3524,7 @@ function __scontrol_power_up() {
 # completion handler for: scontrol power down *
 function __scontrol_power_down() {
 	local parameters=(
-		"asap"
-		"force"
+		"reason="
 	)
 
 	__slurm_log_debug "$(__func__): prev='$prev' cur='$cur'"
@@ -3532,7 +3532,8 @@ function __scontrol_power_down() {
 	__slurm_log_trace "$(__func__): parameters[*]='${parameters[*]}'"
 
 	case "${prev}" in
-	down|asap|force) __slurm_compreply_list "$(__slurm_nodes)" "ALL" "true" ;;
+	down) __slurm_compreply_list "$(__slurm_nodes)" "ALL asap force" "true" ;;
+	asap | force) __slurm_compreply_list "$(__slurm_nodes)" "ALL" "true" ;;
 	*)
 		$split && return
 		__slurm_compreply_param "${parameters[*]}"
@@ -4136,6 +4137,7 @@ function __scontrol_update_nodename() {
 		"reason="
 		"resumeafter="
 		"state="
+		"topology="
 		"weight="
 	)
 	local states=(
@@ -4216,6 +4218,7 @@ function __scontrol_update_partitionname() {
 		"reqresv="
 		"shared="
 		"state="
+		"topology="
 		"tresbillingweights="
 	)
 	local job_defaults=(
@@ -4910,6 +4913,7 @@ function __sreport_cluster() {
 
 	case "${prev}" in
 	account?(s)) __slurm_compreply_list "$(__slurm_accounts)" ;;
+	qos?(s)) __slurm_compreply_list "$(__slurm_qos)" ;;
 	user?(s)) __slurm_compreply_list "$(__slurm_users)" ;;
 	wckey?(s)) __slurm_compreply_list "$(__slurm_wckeys)" ;;
 	*)

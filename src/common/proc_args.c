@@ -1139,7 +1139,6 @@ char *print_commandline(const int script_argc, char **script_argv)
 int get_signal_opts(char *optarg, uint16_t *warn_signal, uint16_t *warn_time,
 		    uint16_t *warn_flags)
 {
-	static bool daemon_run = false, daemon_set = false;
 	char *endptr;
 	long num;
 
@@ -1151,7 +1150,6 @@ int get_signal_opts(char *optarg, uint16_t *warn_signal, uint16_t *warn_time,
 		optarg++;
 	}
 
-	if (run_in_daemon(&daemon_run, &daemon_set, "sbatch")) {
 		if (!xstrncasecmp(optarg, "B", 1)) {
 			*warn_flags |= KILL_JOB_BATCH;
 			optarg++;
@@ -1162,7 +1160,6 @@ int get_signal_opts(char *optarg, uint16_t *warn_signal, uint16_t *warn_time,
 			*warn_flags |= KILL_JOB_RESV;
 			optarg++;
 		}
-	}
 
 	if (*optarg == ':')
 		optarg++;
@@ -1596,6 +1593,10 @@ extern uint64_t parse_resv_flags(const char *flagstr, const char *msg,
 				outflags |= RESERVE_FLAG_NO_USER_DEL;
 			else
 				outflags |= RESERVE_FLAG_USER_DEL;
+		} else if (!xstrncasecmp(curr, "Force_Start", MAX(taglen, 1)) &&
+			   op == RESV_NEW) {
+			curr += taglen;
+			outflags |= RESERVE_FLAG_FORCE_START;
 		} else {
 			error("Error parsing flags %s.  %s", flagstr, msg);
 			return INFINITE64;
@@ -1784,4 +1785,19 @@ extern void xfmt_tres_freq(char **dest, char *prefix, char *src)
 	}
 	xstrfmtcat(result, "%s%s:%s", sep, prefix, src);
 	*dest = result;
+}
+
+extern bool valid_runtime_directory(char *runtime_dir)
+{
+	/*
+	 * systemd >= v240 prepends "/run" to generate RUNTIME_DIRECTORY
+	 * environment variable off of RuntimeDirectory unit option.
+	 *
+	 * Example:
+	 * RuntimeDirectory=foo/bar results in RUNTIME_DIRECTORY=/run/foo/bar.
+	 */
+	if (xstrncmp(runtime_dir, "/run/", 5) || (strlen(runtime_dir) < 6))
+		return false;
+
+	return true;
 }

@@ -66,6 +66,7 @@
 #include "src/interfaces/burst_buffer.h"
 #include "src/interfaces/priority.h"
 #include "src/interfaces/select.h"
+#include "src/interfaces/topology.h"
 
 #include "src/slurmctld/gang.h"
 #include "src/slurmctld/groups.h"
@@ -612,6 +613,10 @@ extern int load_all_part_state(uint16_t reconfig_flags)
 		part_ptr->orig_nodes = part_rec_state->nodes;
 		part_rec_state->nodes = NULL;
 
+		xfree(part_ptr->topology_name);
+		part_ptr->topology_name = part_rec_state->topology_name;
+		part_rec_state->topology_name = NULL;
+
 		part_record_delete(part_rec_state);
 	}
 
@@ -669,34 +674,36 @@ extern list_t *part_list_copy(list_t *part_list_src)
 /*
  * get_part_list - find record for named partition(s)
  * IN name - partition name(s) in a comma separated list
+ * OUT part_ptr_list - sorted list of pointers to the partitions or NULL
+ * OUT prim_part_ptr - pointer to the primary partition
  * OUT err_part - The first invalid partition name.
- * RET sorted list of pointers to the partitions or NULL if not found
  * NOTE: Caller must free the returned list
  * NOTE: Caller must free err_part
  */
-extern list_t *get_part_list(char *name, char **err_part)
+extern void get_part_list(char *name, list_t **part_ptr_list,
+			  part_record_t **prim_part_ptr, char **err_part)
 {
 	part_record_t *part_ptr;
-	list_t *job_part_list = NULL;
 	char *token, *last = NULL, *tmp_name;
 
+	*part_ptr_list = NULL;
+	*prim_part_ptr = NULL;
+
 	if (name == NULL)
-		return job_part_list;
+		return;
 
 	tmp_name = xstrdup(name);
 	token = strtok_r(tmp_name, ",", &last);
 	while (token) {
 		part_ptr = list_find_first(part_list, &list_find_part, token);
 		if (part_ptr) {
-			if (job_part_list == NULL) {
-				job_part_list = list_create(NULL);
-			}
-			if (!list_find_first(job_part_list, &_match_part_ptr,
-					     part_ptr)) {
-				list_append(job_part_list, part_ptr);
-			}
+			if (!(*part_ptr_list))
+				*part_ptr_list = list_create(NULL);
+			if (!list_find_first(*part_ptr_list, &_match_part_ptr,
+					     part_ptr))
+				list_append(*part_ptr_list, part_ptr);
 		} else {
-			FREE_NULL_LIST(job_part_list);
+			FREE_NULL_LIST(*part_ptr_list);
 			if (err_part) {
 				xfree(*err_part);
 				*err_part = xstrdup(token);
@@ -706,10 +713,22 @@ extern list_t *get_part_list(char *name, char **err_part)
 		token = strtok_r(NULL, ",", &last);
 	}
 
-	if (job_part_list)
-		list_sort(job_part_list, priority_sort_part_tier);
+	if (*part_ptr_list) {
+		/*
+		 * Return the first part_ptr in the list before sorting. On
+		 * state load, the first partition in the list is the running
+		 * partition -- for multi-partition jobs. Other times it doesn't
+		 * matter what the returned part_ptr is because it will be
+		 * modified when scheduling the different job_queue_rec_t's.
+		 *
+		 * The part_ptr_list always needs to be sorted by priority_tier.
+		 */
+		*prim_part_ptr = list_peek(*part_ptr_list);
+		list_sort(*part_ptr_list, priority_sort_part_tier);
+		if (list_count(*part_ptr_list) == 1)
+			FREE_NULL_LIST(*part_ptr_list);
+	}
 	xfree(tmp_name);
-	return job_part_list;
 }
 
 /*
@@ -956,7 +975,56 @@ extern buf_t *pack_all_part(uint16_t show_flags, uid_t uid,
  */
 void pack_part(part_record_t *part_ptr, buf_t *buffer, uint16_t protocol_version)
 {
-	if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		if (default_part_loc == part_ptr)
+			part_ptr->flags |= PART_FLAG_DEFAULT;
+		else
+			part_ptr->flags &= (~PART_FLAG_DEFAULT);
+
+		packstr(part_ptr->name, buffer);
+		pack32(part_ptr->cpu_bind, buffer);
+		pack32(part_ptr->grace_time, buffer);
+		pack32(part_ptr->max_time, buffer);
+		pack32(part_ptr->default_time, buffer);
+		pack32(part_ptr->max_nodes_orig, buffer);
+		pack32(part_ptr->min_nodes_orig, buffer);
+		pack32(part_ptr->total_nodes, buffer);
+		pack32(part_ptr->total_cpus, buffer);
+		pack64(part_ptr->def_mem_per_cpu, buffer);
+		pack32(part_ptr->max_cpus_per_node, buffer);
+		pack32(part_ptr->max_cpus_per_socket, buffer);
+		pack64(part_ptr->max_mem_per_cpu, buffer);
+
+		pack32(part_ptr->flags, buffer);
+		pack16(part_ptr->max_share, buffer);
+		pack16(part_ptr->over_time_limit, buffer);
+		pack16(part_ptr->preempt_mode, buffer);
+		pack16(part_ptr->priority_job_factor, buffer);
+		pack16(part_ptr->priority_tier, buffer);
+		pack16(part_ptr->state_up, buffer);
+		pack16(part_ptr->cr_type, buffer);
+		pack16(part_ptr->resume_timeout, buffer);
+		pack16(part_ptr->suspend_timeout, buffer);
+		pack32(part_ptr->suspend_time, buffer);
+
+		packstr(part_ptr->allow_accounts, buffer);
+		packstr(part_ptr->allow_groups, buffer);
+		packstr(part_ptr->allow_alloc_nodes, buffer);
+		packstr(part_ptr->allow_qos, buffer);
+		packstr(part_ptr->qos_char, buffer);
+		packstr(part_ptr->alternate, buffer);
+		packstr(part_ptr->deny_accounts, buffer);
+		packstr(part_ptr->deny_qos, buffer);
+		packstr(part_ptr->nodes, buffer);
+		packstr(part_ptr->nodesets, buffer);
+		pack_bit_str_hex(part_ptr->node_bitmap, buffer);
+		packstr(part_ptr->billing_weights_str, buffer);
+		packstr(part_ptr->topology_name, buffer);
+		packstr(part_ptr->tres_fmt_str, buffer);
+		(void) slurm_pack_list(part_ptr->job_defaults_list,
+				       job_defaults_pack, buffer,
+				       protocol_version);
+	} else if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
 		if (default_part_loc == part_ptr)
 			part_ptr->flags |= PART_FLAG_DEFAULT;
 		else
@@ -1269,27 +1337,6 @@ extern int update_part(update_part_msg_t * part_desc, bool create_flag)
 		part_ptr->flags &= (~PART_FLAG_EXCLUSIVE_TOPO);
 	}
 
-	if (part_desc->flags & PART_FLAG_DEFAULT) {
-		if (default_part_name == NULL) {
-			info("%s: setting default partition to %s", __func__,
-			     part_desc->name);
-		} else if (xstrcmp(default_part_name, part_desc->name) != 0) {
-			info("%s: changing default partition from %s to %s",
-			     __func__, default_part_name, part_desc->name);
-		}
-		xfree(default_part_name);
-		default_part_name = xstrdup(part_desc->name);
-		default_part_loc = part_ptr;
-		part_ptr->flags |= PART_FLAG_DEFAULT;
-	} else if ((part_desc->flags & PART_FLAG_DEFAULT_CLR) &&
-		   (default_part_loc == part_ptr)) {
-		info("%s: clearing default partition from %s", __func__,
-		     part_desc->name);
-		xfree(default_part_name);
-		default_part_loc = NULL;
-		part_ptr->flags &= (~PART_FLAG_DEFAULT);
-	}
-
 	if (part_desc->flags & PART_FLAG_LLN) {
 		info("%s: setting LLN for partition %s", __func__,
 		     part_desc->name);
@@ -1329,29 +1376,34 @@ extern int update_part(update_part_msg_t * part_desc, bool create_flag)
 		part_ptr->over_time_limit = part_desc->over_time_limit;
 	}
 
-	if (part_desc->preempt_mode != NO_VAL16 &&
-	    (!(part_desc->preempt_mode & PREEMPT_MODE_GANG))) {
-		uint16_t new_mode;
+	if (part_desc->preempt_mode != NO_VAL16) {
+		if (!(part_desc->preempt_mode & PREEMPT_MODE_GANG)) {
+			uint16_t new_mode;
 
-		new_mode = part_desc->preempt_mode & (~PREEMPT_MODE_GANG);
-		if (new_mode <= PREEMPT_MODE_CANCEL) {
-			/*
-			 * This is a valid mode, but if GANG was enabled at
-			 * cluster level, always leave it set.
-			 */
-			if (part_ptr->preempt_mode & PREEMPT_MODE_GANG)
-				new_mode = new_mode | PREEMPT_MODE_GANG;
+			new_mode =
+				part_desc->preempt_mode & (~PREEMPT_MODE_GANG);
 
-			info("%s: setting preempt_mode to %s for partition %s",
-			     __func__, preempt_mode_string(new_mode),
-			     part_desc->name);
-			part_ptr->preempt_mode = new_mode;
+			if (new_mode <= PREEMPT_MODE_CANCEL) {
+				/*
+				 * This is a valid mode, but if GANG was enabled
+				 * at cluster level, always leave it set.
+				 */
+				if ((part_ptr->preempt_mode != NO_VAL16) &&
+				    (part_ptr->preempt_mode &
+				     PREEMPT_MODE_GANG))
+					new_mode = new_mode | PREEMPT_MODE_GANG;
+				info("%s: setting preempt_mode to %s for partition %s",
+				     __func__,
+				     preempt_mode_string(new_mode),
+				     part_desc->name);
+				part_ptr->preempt_mode = new_mode;
+			} else {
+				info("%s: invalid preempt_mode %u", __func__, new_mode);
+			}
 		} else {
-			info("%s: invalid preempt_mode %u", __func__, new_mode);
+			info("%s: PreemptMode=GANG is a cluster-wide option and cannot be set at partition level",
+			      __func__);
 		}
-	} else if (part_desc->preempt_mode & PREEMPT_MODE_GANG) {
-		info("%s: PreemptMode=GANG is a cluster-wide option and cannot be set at partition level",
-		      __func__);
 	}
 
 	if (part_desc->priority_tier != NO_VAL16) {
@@ -1754,8 +1806,56 @@ extern int update_part(update_part_msg_t * part_desc, bool create_flag)
 		part_ptr->node_bitmap = bit_alloc(node_record_count);
 	}
 
+	if (part_desc->topology_name) {
+		char *old_topo_name = part_ptr->topology_name;
+
+		info("%s: Setting Topology to %s for partition %s",
+		      __func__, part_desc->topology_name, part_desc->name);
+
+		if (part_desc->topology_name[0] == '\0') {
+			part_ptr->topology_name = NULL;
+			part_ptr->topology_idx = 0;
+			xfree(old_topo_name);
+		} else {
+			part_ptr->topology_name = part_desc->topology_name;
+
+			if (set_part_topology_idx(part_ptr, NULL)) {
+				error("Failed to set part %s's topology to %s",
+				      part_ptr->name, part_ptr->topology_name);
+				part_ptr->topology_name = old_topo_name;
+				error_code = ESLURM_REQUESTED_TOPO_CONFIG_UNAVAILABLE;
+			} else {
+				part_desc->topology_name = NULL;
+				xfree(old_topo_name);
+			}
+		}
+	}
+
 fini:
 	if (error_code == SLURM_SUCCESS) {
+		if (part_desc->flags & PART_FLAG_DEFAULT) {
+			if (default_part_name == NULL) {
+				info("%s: setting default partition to %s",
+				     __func__, part_desc->name);
+			} else if (xstrcmp(default_part_name,
+					   part_desc->name) != 0) {
+				info("%s: changing default partition from %s to %s",
+				     __func__, default_part_name,
+				     part_desc->name);
+			}
+			xfree(default_part_name);
+			default_part_name = xstrdup(part_desc->name);
+			default_part_loc = part_ptr;
+			part_ptr->flags |= PART_FLAG_DEFAULT;
+		} else if ((part_desc->flags & PART_FLAG_DEFAULT_CLR) &&
+			   (default_part_loc == part_ptr)) {
+			info("%s: clearing default partition from %s", __func__,
+			     part_desc->name);
+			xfree(default_part_name);
+			default_part_loc = NULL;
+			part_ptr->flags &= (~PART_FLAG_DEFAULT);
+		}
+
 		gs_reconfig();
 		select_g_reconfigure();		/* notify select plugin too */
 	} else if (create_flag) {
@@ -2207,4 +2307,17 @@ extern char *part_list_to_xstr(list_t *list)
 	list_for_each(list, _foreach_part_name_to_xstr, &part_names);
 
 	return part_names.names;
+}
+
+extern int set_part_topology_idx(void *x, void *arg)
+{
+	part_record_t *part_ptr = x;
+
+	if (!part_ptr->topology_name)
+		part_ptr->topology_idx = 0;
+	else if (topology_g_get(TOPO_DATA_TCTX_IDX, part_ptr->topology_name,
+				&(part_ptr->topology_idx)))
+		return -1;
+
+	return 0;
 }

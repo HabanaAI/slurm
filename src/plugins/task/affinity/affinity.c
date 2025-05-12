@@ -37,26 +37,6 @@
 
 #include "affinity.h"
 
-/* Older versions of sched.h (ie. Centos5) don't include CPU_OR. */
-#ifndef CPU_OR
-
-#ifndef CPU_OP_S
-# define __CPU_OP_S(setsize, destset, srcset1, srcset2, op) \
-  (__extension__      \
-   ({ cpu_set_t *__dest = (destset);      \
-     const __cpu_mask *__arr1 = (srcset1)->__bits;      \
-     const __cpu_mask *__arr2 = (srcset2)->__bits;      \
-     size_t __imax = (setsize) / sizeof (__cpu_mask);      \
-     size_t __i;      \
-     for (__i = 0; __i < __imax; ++__i)      \
-       ((__cpu_mask *) __dest->__bits)[__i] = __arr1[__i] op __arr2[__i];    \
-     __dest; }))
-#endif
-
-# define CPU_OR(destset, srcset1, srcset2) \
-  __CPU_OP_S (sizeof (cpu_set_t), destset, srcset1, srcset2, |)
-#endif
-
 /* If HAVE_NUMA, create mask for given ldom.
  * Otherwise create mask for given socket
  */
@@ -219,53 +199,4 @@ int get_cpuset(cpu_set_t *mask, stepd_step_rec_t *step, uint32_t node_tid)
 	}
 
 	return false;
-}
-
-int slurm_setaffinity(pid_t pid, size_t size, const cpu_set_t *mask)
-{
-	int rval;
-	char mstr[CPU_SET_HEX_STR_SIZE];
-
-#ifdef __FreeBSD__
-        rval = cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID,
-				pid, size, mask);
-#else
-	rval = sched_setaffinity(pid, size, mask);
-#endif
-	if (rval) {
-		verbose("sched_setaffinity(%d,%zu,0x%s) failed: %m",
-			pid, size, task_cpuset_to_str(mask, mstr));
-	}
-	return (rval);
-}
-
-int slurm_getaffinity(pid_t pid, size_t size, cpu_set_t *mask)
-{
-	int rval;
-	char mstr[CPU_SET_HEX_STR_SIZE];
-
-	CPU_ZERO(mask);
-
-	/*
-	 * The FreeBSD cpuset API is a superset of the Linux API.
-	 * In addition to PIDs, it supports threads, interrupts,
-	 * jails, and potentially other objects.  The first two arguments
-	 * to cpuset_*etaffinity() below indicate that the third argument
-	 * is a PID.  -1 indicates the PID of the calling process.
-	 * Linux sched_*etaffinity() uses 0 for this.
-	 */
-#ifdef __FreeBSD__
-        rval = cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_PID,
-				pid, size, mask);
-#else
-	rval = sched_getaffinity(pid, size, mask);
-#endif
-	if (rval) {
-		verbose("sched_getaffinity(%d,%zu,0x%s) failed with status %d",
-			pid, size, task_cpuset_to_str(mask, mstr), rval);
-	} else {
-		debug3("sched_getaffinity(%d) = 0x%s",
-		       pid, task_cpuset_to_str(mask, mstr));
-	}
-	return (rval);
 }

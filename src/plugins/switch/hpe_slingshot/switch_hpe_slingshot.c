@@ -122,6 +122,10 @@ extern int init(void)
 		if (!slingshot_setup_config(slurm_conf.switch_param))
 			return SLURM_ERROR;
 	}
+	if (running_in_slurmstepd()) {
+		if (!slingshot_stepd_init(slurm_conf.switch_param))
+			return SLURM_ERROR;
+	}
 
 	return SLURM_SUCCESS;
 }
@@ -198,7 +202,6 @@ extern int switch_p_save(void)
 
 /*
  * Restore slingshot_state from state file
- * NOTE: assumes this runs before loading the slurm.conf config
  */
 extern int switch_p_restore(bool recover)
 {
@@ -278,7 +281,7 @@ extern int switch_p_restore(bool recover)
 	debug("State file %s recovered", state_file);
 	FREE_NULL_BUFFER(state_buf);
 	xfree(state_file);
-	return SLURM_SUCCESS;
+	return slingshot_update_vni_table();
 
 unpack_error:
 	error("Error unpacking state file %s", state_file);
@@ -348,6 +351,13 @@ unpack_error:
 	slingshot_free_jobinfo(jobinfo);
 	*switch_jobinfo = NULL;
 	return SLURM_ERROR;
+}
+
+/* Used to free switch_jobinfo when switch_p_job_complete can't be used */
+extern void switch_p_free_jobinfo(job_record_t *job_ptr)
+{
+	slingshot_free_jobinfo(job_ptr->switch_jobinfo);
+	job_ptr->switch_jobinfo = NULL;
 }
 
 static void _copy_stepinfo(slingshot_stepinfo_t *old, slingshot_stepinfo_t *new)

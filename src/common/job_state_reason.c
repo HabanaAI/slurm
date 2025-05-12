@@ -112,9 +112,6 @@ const static entry_t jsra[] = {
 		.flags = JSR_MISC,
 		.str = "ReqNodeNotAvail",
 	},
-	[WAIT_FRONT_END] = {
-		.str = "FrontEndDown",
-	},
 	[FAIL_DEFER] = {
 		.str = "SchedDefer",
 	},
@@ -886,7 +883,7 @@ const static entry_t jsra[] = {
 
 extern const char *job_state_reason_string(enum job_state_reason inx)
 {
-	const char *ret_str = "InvaildReason";
+	const char *ret_str = "InvalidReason";
 
 	if ((inx < REASON_END) && jsra[inx].str)
 		ret_str = jsra[inx].str;

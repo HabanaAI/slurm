@@ -58,6 +58,8 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/tls.h"
+
 #include "src/slurmd/slurmstepd/slurmstepd.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
@@ -96,27 +98,29 @@ static bool _x11_socket_readable(eio_obj_t *obj)
 
 static int _x11_socket_read(eio_obj_t *obj, list_t *objs)
 {
-	eio_obj_t *e1, *e2;
+	void *tls_conn = NULL;
 	slurm_msg_t req, resp;
 	net_forward_msg_t rpc;
 	slurm_addr_t sin;
 	int *local, *remote;
+	char *srun_tls_cert = obj->arg;
 	int rc;
 
 	local = xmalloc(sizeof(*local));
 	remote = xmalloc(sizeof(*remote));
 
-	if ((*local = slurm_accept_msg_conn(obj->fd, &sin)) == -1) {
+	if ((*local = slurm_accept_conn(obj->fd, &sin)) == -1) {
 		error("accept call failure, shutting down");
 		goto shutdown;
 	}
 
-	*remote = slurm_open_msg_conn(&alloc_node);
-	if (*remote < 0) {
+	if (!(tls_conn = slurm_open_msg_conn(&alloc_node, srun_tls_cert))) {
 		error("%s: slurm_open_msg_conn(%pA): %m",
 		      __func__, &alloc_node);
 		goto shutdown;
 	}
+
+	*remote = tls_g_get_conn_fd(tls_conn);
 
 	rpc.job_id = job_id;
 	rpc.flags = 0;
@@ -131,7 +135,7 @@ static int _x11_socket_read(eio_obj_t *obj, list_t *objs)
 	slurm_msg_set_r_uid(&req, job_uid);
 	req.data = &rpc;
 
-	slurm_send_recv_msg(*remote, &req, &resp, 0);
+	slurm_send_recv_msg(tls_conn, &req, &resp, 0);
 
 	if (resp.msg_type != RESPONSE_SLURM_RC) {
 		error("Unexpected response on setup, forwarding failed.");
@@ -151,11 +155,10 @@ static int _x11_socket_read(eio_obj_t *obj, list_t *objs)
 	net_set_nodelay(*local, true, NULL);
 	net_set_nodelay(*remote, true, NULL);
 
-	/* setup eio to handle both sides of the connection now */
-	e1 = eio_obj_create(*local, &half_duplex_ops, remote);
-	e2 = eio_obj_create(*remote, &half_duplex_ops, local);
-	eio_new_obj(eio_handle, e1);
-	eio_new_obj(eio_handle, e2);
+	if (half_duplex_add_objs_to_handle(eio_handle, local, remote,
+					   tls_conn)) {
+		goto shutdown;
+	}
 
 	debug("%s: X11 forwarding setup successful", __func__);
 
@@ -271,6 +274,8 @@ extern int setup_x11_forward(stepd_step_rec_t *step)
 
 	eio_handle = eio_handle_create(0);
 	obj = eio_obj_create(listen_socket, &x11_socket_ops, NULL);
+	obj->arg = xstrdup(srun->tls_cert);
+
 	eio_new_initial_obj(eio_handle, obj);
 	slurm_thread_create_detached(_eio_thread, NULL);
 

@@ -715,6 +715,8 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 	}
 	if (opt_local->job_flags & GRES_ALLOW_TASK_SHARING)
 		step_req->flags |= SSF_GRES_ALLOW_TASK_SHARING;
+	if (srun_opt->wait_for_children)
+		step_req->flags |= SSF_WAIT_FOR_CHILDREN;
 
 	if (opt_local->immediate == 1)
 		step_req->immediate = opt_local->immediate;
@@ -870,6 +872,10 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 	memcpy(&step_req->step_id, &job->step_id, sizeof(step_req->step_id));
 	step_req->array_task_id = srun_opt->array_task_id;
 
+	step_req->cwd = xstrdup(opt_local->chdir);
+	step_req->std_err = xstrdup(opt_local->efname);
+	step_req->std_in = xstrdup(opt_local->ifname);
+	step_req->std_out = xstrdup(opt_local->ofname);
 	step_req->submit_line = xstrdup(opt_local->submit_line);
 
 	if (opt_local->threads_per_core != NO_VAL) {
@@ -1182,13 +1188,11 @@ extern int launch_g_create_job_step(srun_job_t *job, bool use_all_cpus,
 		       opt_local->min_nodes, opt_local->max_nodes);
 		return SLURM_ERROR;
 	}
-#if !defined HAVE_FRONT_END
 	if (opt_local->min_nodes && (opt_local->min_nodes > job->nhosts)) {
 		error ("Minimum node count > allocated node count (%d > %d)",
 		       opt_local->min_nodes, job->nhosts);
 		return SLURM_ERROR;
 	}
-#endif
 
 	step_req = _create_job_step_create_request(
 		opt_local, use_all_cpus, job);
@@ -1399,6 +1403,7 @@ extern int launch_g_step_launch(srun_job_t *job, slurm_step_io_fds_t *cio_fds,
 	launch_params.het_job_ntasks = job->het_job_ntasks;
 	launch_params.het_job_offset = job->het_job_offset;
 	launch_params.het_job_step_cnt = srun_opt->het_step_cnt;
+	launch_params.het_job_step_task_cnts = job->het_job_step_task_cnts;
 	launch_params.het_job_task_offset = job->het_job_task_offset;
 	launch_params.het_job_task_cnts = job->het_job_task_cnts;
 	launch_params.het_job_tids = job->het_job_tids;

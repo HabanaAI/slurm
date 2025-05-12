@@ -54,6 +54,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "slurm/slurm_errno.h"
@@ -62,7 +63,6 @@
 #include "src/common/net.h"
 #include "src/common/read_config.h"
 #include "src/common/slurm_protocol_api.h"
-#include "src/common/slurm_protocol_defs.h"
 #include "src/common/slurm_protocol_socket.h"
 #include "src/common/slurm_time.h"
 #include "src/common/strlcpy.h"
@@ -70,6 +70,8 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xsignal.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/tls.h"
 
 #define PORT_RETRIES    3
 #define MIN_USER_PORT   (IPPORT_RESERVED + 1)
@@ -113,13 +115,14 @@ static void _sock_bind_wild(int sockfd)
 	return;
 }
 
-extern ssize_t slurm_msg_recvfrom_timeout(int fd, char **pbuf, size_t *lenp,
-					  int timeout)
+extern ssize_t slurm_msg_recvfrom_timeout(void *tls_conn, char **pbuf,
+					  size_t *lenp, int timeout)
 {
 	ssize_t  len;
 	uint32_t msglen;
 
-	len = slurm_recv_timeout(fd, (char *) &msglen, sizeof(msglen), timeout);
+	len = slurm_recv_timeout(tls_conn, (char *) &msglen, sizeof(msglen),
+				 timeout);
 
 	if (len < ((ssize_t) sizeof(msglen)))
 		return SLURM_ERROR;
@@ -135,7 +138,7 @@ extern ssize_t slurm_msg_recvfrom_timeout(int fd, char **pbuf, size_t *lenp,
 	if (!(*pbuf = try_xmalloc(msglen)))
 		slurm_seterrno_ret(ENOMEM);
 
-	if (slurm_recv_timeout(fd, *pbuf, msglen, timeout) != msglen) {
+	if (slurm_recv_timeout(tls_conn, *pbuf, msglen, timeout) != msglen) {
 		xfree(*pbuf);
 		*pbuf = NULL;
 		return SLURM_ERROR;
@@ -146,7 +149,8 @@ extern ssize_t slurm_msg_recvfrom_timeout(int fd, char **pbuf, size_t *lenp,
 	return (ssize_t) msglen;
 }
 
-static int _writev_timeout(int fd, struct iovec *iov, int iovcnt, int timeout)
+static int _writev_timeout(int fd, void *tls_conn, struct iovec *iov,
+			   int iovcnt, int timeout)
 {
 	int tot_bytes_sent = 0;
 	size_t size = 0;
@@ -154,6 +158,9 @@ static int _writev_timeout(int fd, struct iovec *iov, int iovcnt, int timeout)
 	struct pollfd ufds;
 	struct timeval tstart;
 	char temp[2];
+
+	if (tls_conn)
+		fd = tls_g_get_conn_fd(tls_conn);
 
 	ufds.fd     = fd;
 	ufds.events = POLLOUT;
@@ -170,6 +177,9 @@ static int _writev_timeout(int fd, struct iovec *iov, int iovcnt, int timeout)
 		ssize_t bytes_sent = 0;
 		int rc;
 		int timeleft = timeout - timeval_tot_wait(&tstart);
+
+		if (tls_g_peek(tls_conn))
+			goto ready;
 
 		if (timeleft <= 0) {
 			debug("%s at %d of %zu, timeout",
@@ -231,7 +241,12 @@ static int _writev_timeout(int fd, struct iovec *iov, int iovcnt, int timeout)
 			      __func__, ufds.revents);
 		}
 
-		bytes_sent = writev(fd, iov, iovcnt);
+ready:
+		if (tls_conn) {
+			bytes_sent = tls_g_sendv(tls_conn, iov, iovcnt);
+		} else {
+			bytes_sent = writev(fd, iov, iovcnt);
+		}
 
 		if (bytes_sent < 0) {
  			if (errno == EINTR)
@@ -296,13 +311,14 @@ static int _writev_timeout(int fd, struct iovec *iov, int iovcnt, int timeout)
  * Send slurm message with timeout
  * RET message size (as specified in argument) or SLURM_ERROR on error
  */
-extern int slurm_send_timeout(int fd, char *buf, size_t size, int timeout)
+extern int slurm_send_timeout(void *tls_conn, char *buf, size_t size,
+			      int timeout)
 {
 	struct iovec iov = { .iov_base = buf, .iov_len = size };
-	return _writev_timeout(fd, &iov, 1, timeout);
+	return _writev_timeout(-1, tls_conn, &iov, 1, timeout);
 }
 
-extern ssize_t slurm_msg_sendto(int fd, char *buffer, size_t size)
+extern ssize_t slurm_msg_sendto(void *tls_conn, char *buffer, size_t size)
 {
 	struct iovec iov[2];
 	uint32_t usize;
@@ -323,7 +339,7 @@ extern ssize_t slurm_msg_sendto(int fd, char *buffer, size_t size)
 
 	usize = htonl(iov[1].iov_len);
 
-	len = _writev_timeout(fd, iov, 2, timeout);
+	len = _writev_timeout(-1, tls_conn, iov, 2, timeout);
 
 	xsignal(SIGPIPE, ohandler);
 
@@ -333,7 +349,38 @@ extern ssize_t slurm_msg_sendto(int fd, char *buffer, size_t size)
 	return size;
 }
 
-extern ssize_t slurm_bufs_sendto(int fd, msg_bufs_t *buffers)
+extern ssize_t slurm_msg_sendto_socket(int fd, char *buffer, size_t size)
+{
+	struct iovec iov[2];
+	uint32_t usize;
+	int len;
+	SigFunc *ohandler;
+	int timeout = slurm_conf.msg_timeout * 1000;
+
+	/*
+	 *  Ignore SIGPIPE so that send can return a error code if the
+	 *    other side closes the socket
+	 */
+	ohandler = xsignal(SIGPIPE, SIG_IGN);
+
+	iov[0].iov_base = &usize;
+	iov[0].iov_len = sizeof(usize);
+	iov[1].iov_base = buffer;
+	iov[1].iov_len = size;
+
+	usize = htonl(iov[1].iov_len);
+
+	len = _writev_timeout(fd, NULL, iov, 2, timeout);
+
+	xsignal(SIGPIPE, ohandler);
+
+	/* Returned size should not include the 4-byte length header. */
+	if (len < 0)
+		return SLURM_ERROR;
+	return size;
+}
+
+extern ssize_t slurm_bufs_sendto(void *tls_conn, msg_bufs_t *buffers)
 {
 	struct iovec iov[4];
 	int len;
@@ -361,7 +408,7 @@ extern ssize_t slurm_bufs_sendto(int fd, msg_bufs_t *buffers)
 
 	usize = htonl(iov[1].iov_len + iov[2].iov_len + iov[3].iov_len);
 
-	len = _writev_timeout(fd, iov, 4, timeout);
+	len = _writev_timeout(-1, tls_conn, iov, 4, timeout);
 
 	xsignal(SIGPIPE, ohandler);
 	return len;
@@ -369,14 +416,18 @@ extern ssize_t slurm_bufs_sendto(int fd, msg_bufs_t *buffers)
 
 /* Get slurm message with timeout
  * RET message size (as specified in argument) or SLURM_ERROR on error */
-extern int slurm_recv_timeout(int fd, char *buffer, size_t size, int timeout)
+extern int slurm_recv_timeout(void *tls_conn, char *buffer, size_t size,
+			      int timeout)
 {
+	int fd = -1;
 	int rc;
 	int recvlen = 0;
 	int fd_flags;
 	struct pollfd  ufds;
 	struct timeval tstart;
 	int timeleft = timeout;
+
+	fd = tls_g_get_conn_fd(tls_conn);
 
 	ufds.fd     = fd;
 	ufds.events = POLLIN;
@@ -395,6 +446,9 @@ extern int slurm_recv_timeout(int fd, char *buffer, size_t size, int timeout)
 			recvlen = SLURM_ERROR;
 			goto done;
 		}
+
+		if (tls_g_peek(tls_conn))
+			goto ready;
 
 		if ((rc = poll(&ufds, 1, timeleft)) <= 0) {
 			if ((errno == EINTR) || (errno == EAGAIN) || (rc == 0))
@@ -444,7 +498,9 @@ extern int slurm_recv_timeout(int fd, char *buffer, size_t size, int timeout)
 			continue;
 		}
 
-		rc = recv(fd, &buffer[recvlen], (size - recvlen), 0);
+ready:
+		rc = tls_g_recv(tls_conn, &buffer[recvlen], (size - recvlen));
+
 		if (rc < 0)  {
 			if ((errno == EINTR) || (errno == EAGAIN)) {
 				log_flag(NET, "%s: recv(fd:%d) got %m. retrying.",
@@ -459,9 +515,14 @@ extern int slurm_recv_timeout(int fd, char *buffer, size_t size, int timeout)
 			}
 		}
 		if (rc == 0) {
-			debug("%s at %d of %zu, recv zero bytes",
-			      __func__, recvlen, size);
-			errno = SLURM_PROTOCOL_SOCKET_ZERO_BYTES_SENT;
+			log_flag(NET, "%s: recv(fd:%d)=0 at %d/%zu bytes",
+				 __func__, fd, recvlen, size);
+
+			if (recvlen > 0)
+				errno = ESLURM_PROTOCOL_INCOMPLETE_PACKET;
+			else
+				errno = SLURM_PROTOCOL_SOCKET_ZERO_BYTES_SENT;
+
 			recvlen = SLURM_ERROR;
 			goto done;
 		}
@@ -529,12 +590,41 @@ error:
  * set *ADDR (which is *ADDR_LEN bytes long) to the address of the connecting
  * peer and *ADDR_LEN to the address's actual length, and return the
  * new socket's descriptor, or -1 for errors.  */
-extern int slurm_accept_msg_conn(int fd, slurm_addr_t *addr)
+extern int slurm_accept_conn(int fd, slurm_addr_t *addr)
 {
 	socklen_t len = sizeof(*addr);
 	int sock = accept4(fd, (struct sockaddr *) addr, &len, SOCK_CLOEXEC);
 	net_set_nodelay(sock, true, NULL);
 	return sock;
+}
+
+extern void *slurm_accept_msg_conn(int fd, slurm_addr_t *addr)
+{
+	socklen_t len = sizeof(*addr);
+	int sock = -1;
+	void *tls_conn = NULL;
+	tls_conn_args_t tls_args = {
+		.mode = TLS_CONN_SERVER,
+	};
+
+	sock = accept4(fd, (struct sockaddr *) addr, &len, SOCK_CLOEXEC);
+
+	if (sock < 0) {
+		error("%s: Unable to accept() connection to address %pA: %m",
+		      __func__, addr);
+		return NULL;
+	}
+
+	tls_args.input_fd = tls_args.output_fd = sock;
+	net_set_nodelay(sock, true, NULL);
+
+	if (!(tls_conn = tls_g_create_conn(&tls_args))) {
+		error("%s: Unable to create server TLS connection to address %pA: %m",
+		      __func__, addr);
+		(void) close(sock);
+	}
+
+	return tls_conn;
 }
 
 extern int slurm_open_stream(slurm_addr_t *addr, bool retry)
@@ -611,6 +701,41 @@ error:
 	/* Always set errno as upstream callers expect it. */
 	errno = rc;
 	return SLURM_ERROR;
+}
+
+extern int slurm_open_unix_stream(char *addr_name, int sock_flags, int *fd)
+{
+	struct sockaddr_un sa;
+	int rc;
+
+	xassert(addr_name);
+
+	if (strlen(addr_name) >= sizeof(sa.sun_path)) {
+		rc = ESLURMD_INVALID_SOCKET_NAME_LEN;
+		error("%s: [%s]: %s", __func__, addr_name, slurm_strerror(rc));
+		return rc;
+	}
+
+	if ((*fd = socket(AF_UNIX, SOCK_STREAM | sock_flags, 0)) < 0) {
+		rc = errno;
+		error("%s: [%s]: socket() failed: %m", __func__, addr_name);
+		return rc;
+	}
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sun_family = AF_UNIX;
+	strcpy(sa.sun_path, addr_name);
+
+	while ((rc = connect(*fd, (struct sockaddr *) &sa, SUN_LEN(&sa))) &&
+	       (errno == EINTR))
+		; /* empty loop */
+
+	if (rc < 0) {
+		rc = errno;
+		debug2("%s: [%s]: connect() failed: %m", __func__, addr_name);
+		fd_close(fd);
+	}
+	return rc;
 }
 
 /* Put the local address of FD into *ADDR and its length in *LEN.  */

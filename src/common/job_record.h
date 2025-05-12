@@ -36,7 +36,6 @@
 
 #include "src/common/cron.h"
 #include "src/common/extra_constraints.h"
-#include "src/common/front_end.h"
 #include "src/common/part_record.h"
 #include "src/common/slurm_protocol_defs.h"
 
@@ -160,6 +159,7 @@ typedef struct {
 	char *req_nodes;		/* required nodes */
 	uint16_t requeue;		/* controls ability requeue job */
 	uint16_t resv_port_cnt;		/* count of MPI ports reserved per node */
+	char *resv_req;			/* original requested reservations */
 	uint16_t segment_size;
 	uint8_t share_res;		/* set if job can share resources with
 					 * other jobs */
@@ -248,6 +248,9 @@ struct job_record {
 	char    *admin_comment;		/* administrator's arbitrary comment */
 	char	*alias_list;		/* node name to address aliases */
 	char    *alloc_node;		/* local node making resource alloc */
+	char *alloc_tls_cert;		/* TLS certificate for client that is
+					 * getting/has allocation
+					 * (srun, salloc,etc.) */
 	uint16_t alloc_resp_port;	/* RESPONSE_RESOURCE_ALLOCATION port */
 	uint32_t alloc_sid;		/* local sid making resource alloc */
 	uint32_t array_job_id;		/* job_id of a job array or 0 if N/A */
@@ -304,8 +307,6 @@ struct job_record {
 					 * this job to be killed.
 					 * NULL in all other situations */
 	job_fed_details_t *fed_details;	/* details for federated jobs. */
-	front_end_record_t *front_end_ptr; /* Pointer to front-end node running
-					 * this job */
 	list_t *gres_list_req;		/* Requested generic resource allocation
 					   detail */
 	list_t *gres_list_req_accum;	/* Requested generic resource allocation
@@ -339,7 +340,11 @@ struct job_record {
 					 * node failure */
 	time_t last_sched_eval;		/* last time job was evaluated for scheduling */
 	char *licenses;			/* licenses required by the job */
-	list_t *license_list;		/* structure with license info */
+	char *licenses_allocated;	/* licenses allocated to the job */
+	list_t *license_list;		/* structure with license info; when
+					 * the job is allocated, this list is
+					 * changed to match "licenses_allocated"
+					 */
 	list_t *licenses_to_preempt;    /* list of licenses the job will look
 					   for in its preemptee candidates
 					   Don't pack, don't save it's only used
@@ -362,6 +367,9 @@ struct job_record {
 	bitstr_t *node_bitmap;		/* bitmap of nodes allocated to job */
 	bitstr_t *node_bitmap_cg;	/* bitmap of nodes completing job */
 	bitstr_t *node_bitmap_pr;	/* bitmap of nodes with running prolog */
+	bitstr_t *node_bitmap_preempt; /* bitmap of nodes selected for the job
+					 * when trying to preempt other jobs.
+					 * (DO NOT SAVE OR PACK). */
 	uint32_t node_cnt;		/* count of nodes currently
 					 * allocated to job */
 	uint32_t node_cnt_wag;		/* count of nodes Slurm thinks
@@ -412,7 +420,7 @@ struct job_record {
 					 * service record used for
 					 * this job, confirm the
 					 * value before use */
-	void *qos_blocking_ptr;		/* internal use only, DON'T PACK */
+	slurmdb_qos_rec_t *qos_blocking_ptr; /* internal use only, DON'T PACK */
 	uint8_t reboot;			/* node reboot requested before start */
 	uint16_t restart_cnt;		/* count of restarts */
 	time_t resize_time;		/* time of latest size change */
@@ -428,7 +436,6 @@ struct job_record {
 	uint32_t requid;	    	/* requester user ID */
 	char *resp_host;		/* host for srun communications */
 	char *sched_nodes;		/* list of nodes scheduled for job */
-	dynamic_plugin_data_t *select_jobinfo;/* opaque data, BlueGene */
 	char *selinux_context;		/* SELinux context */
 	uint32_t site_factor;		/* factor to consider in priority */
 	char **spank_job_env;		/* environment variables for job prolog
@@ -584,6 +591,7 @@ typedef struct {
 					 * real memory per CPU | MEM_PER_CPU,
 					 * default=0 (use job limit) */
 	uint16_t port;			/* port for srun communications */
+	char *alloc_tls_cert;
 	time_t pre_sus_time;		/* time step ran prior to last suspend */
 	uint16_t start_protocol_ver;	/* Slurm version step was
 					 * started with either srun
@@ -595,7 +603,6 @@ typedef struct {
 	uint32_t requid;	    	/* requester user ID */
 	time_t start_time;		/* step allocation start time */
 	uint32_t time_limit;	  	/* step allocation time limit */
-	dynamic_plugin_data_t *select_jobinfo;/* opaque data, BlueGene */
 	uint32_t srun_pid;		/* PID of srun (also see host/port) */
 	uint32_t state;			/* state of the step. See job_states */
 	slurm_step_id_t step_id;	/* step number */
@@ -603,6 +610,10 @@ typedef struct {
 					  * in the step */
 	bitstr_t *step_node_bitmap;	/* bitmap of nodes allocated to job
 					 * step */
+	char *cwd;			/* path derived from cwd or --chdir */
+	char *std_err;			/* pathname of step's stderr file */
+	char *std_in;			/* pathname of step's stdin file */
+	char *std_out;			/* pathname of step's stdout file */
 /*	time_t suspend_time;		 * time step last suspended or resumed
 					 * implicitly the same as suspend_time
 					 * in the job record */

@@ -41,6 +41,7 @@
 #include <sys/prctl.h>
 #endif
 
+#include "src/common/data.h"
 #include "src/common/list.h"
 #include "src/common/macros.h"
 #include "src/common/read_config.h"
@@ -49,6 +50,7 @@
 #include "src/common/xstring.h"
 
 #include "src/interfaces/serializer.h"
+#include "src/interfaces/tls.h"
 
 #include "src/slurmctld/job_scheduler.h"
 #include "src/slurmctld/locks.h"
@@ -173,8 +175,8 @@ static void *_rpc_queue_worker(void *arg)
 			}
 			msg->flags |= CTLD_QUEUE_PROCESSING;
 			q->func(msg);
-			if ((msg->conn_fd >= 0) && (close(msg->conn_fd) < 0))
-				error("close(%d): %m", msg->conn_fd);
+			tls_g_destroy_conn(msg->tls_conn, true);
+			msg->tls_conn = NULL;
 
 			END_TIMER;
 			record_rpc_stats(msg, DELTA_TIMER);
@@ -192,6 +194,7 @@ static data_t *_load_config(void)
 	char *file = get_extra_conf_path("rpc_queue.yaml");
 	buf_t *buf = create_mmap_buf(file);
 	data_t *conf = NULL;
+	int rc = SLURM_SUCCESS;
 
 	if (!buf) {
 		debug("%s: could not load %s, ignoring", __func__, file);
@@ -199,12 +202,20 @@ static data_t *_load_config(void)
 		return NULL;
 	}
 
+	if ((rc = serializer_g_init(MIME_TYPE_YAML_PLUGIN, NULL)))
+		fatal("YAML plugin loading failed: %s", slurm_strerror(rc));
+
 	if (serialize_g_string_to_data(&conf, buf->head, buf->size,
 				       MIME_TYPE_YAML))
 		fatal("Failed to decode %s", file);
 
 	FREE_NULL_BUFFER(buf);
 	xfree(file);
+
+	if (data_get_type(conf) != DATA_TYPE_DICT)
+		fatal("%s: Unexpected root of rpc_queue.yaml is %s when dictionary expected",
+		      __func__, data_get_type_string(conf));
+
 	return conf;
 }
 

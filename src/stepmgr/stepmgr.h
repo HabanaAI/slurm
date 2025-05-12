@@ -36,7 +36,6 @@
 #ifndef _SLURM_STEP_MGR_H
 #define _SLURM_STEP_MGR_H
 
-#include "src/common/front_end.h"
 #include "src/common/id_util.h"
 #include "src/common/job_record.h"
 #include "src/common/node_conf.h"
@@ -44,7 +43,6 @@
 
 typedef struct {
 	void *acct_db_conn;
-	list_t *active_feature_list;
 	list_t *job_list;
 	time_t *last_job_update;
 	bitstr_t *up_node_bitmap;
@@ -54,8 +52,6 @@ typedef struct {
 	job_record_t *(*find_job_array_rec)(uint32_t array_job_id,
 					    uint32_t array_task_id);
 	void (*agent_queue_request)(agent_arg_t *agent_arg_ptr);
-
-	front_end_record_t *(*find_front_end_record)(char *name);
 } stepmgr_ops_t;
 
 extern stepmgr_ops_t *stepmgr_ops;
@@ -193,7 +189,7 @@ extern slurm_node_alias_addrs_t *build_alias_addrs(job_record_t *job_ptr);
  */
 extern int job_get_node_inx(char *node_name, bitstr_t *node_bitmap);
 
-extern int step_create_from_msg(slurm_msg_t *msg,
+extern int step_create_from_msg(slurm_msg_t *msg, int slurmd_fd,
 				void (*lock_func)(bool lock),
 				void (*fail_lock_func)(bool lock));
 

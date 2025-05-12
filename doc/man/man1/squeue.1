@@ -1,4 +1,4 @@
-.TH squeue "1" "Slurm Commands" "January 2025" "Slurm Commands"
+.TH squeue "1" "Slurm Commands" "March 2025" "Slurm Commands"
 
 .SH "NAME"
 squeue \- view information about jobs located in the Slurm scheduling queue.
@@ -451,7 +451,7 @@ Workload Characterization Key (wckey).
 
 .TP
 \fB%W\fR
-Licenses reserved for the job.
+Licenses requested by the job.
 (Valid for jobs only)
 .IP
 
@@ -791,7 +791,13 @@ Prints the last time the job was evaluated for scheduling.
 
 .TP
 \fBLicenses\fR
-Licenses reserved for the job.
+Licenses requested by the job.
+(Valid for jobs only)
+.IP
+
+.TP
+\fBLicensesAlloc\fR
+Licenses allocated to the job.
 (Valid for jobs only)
 .IP
 
@@ -1155,19 +1161,19 @@ See the \fBJOB STATE CODES\fR section below for a list of possible states.
 .TP
 \fBSTDERR\fR
 The directory for standard error to output to.
-(Valid for jobs only)
+(Valid for jobs and steps)
 .IP
 
 .TP
 \fBSTDIN\fR
 The directory for standard in.
-(Valid for jobs only)
+(Valid for jobs and steps)
 .IP
 
 .TP
 \fBSTDOUT\fR
 The directory for standard out to output to.
-(Valid for jobs only)
+(Valid for jobs and steps)
 .IP
 
 .TP
@@ -1589,11 +1595,6 @@ This job has a dependency on another job that will never be satisfied.
 .IP
 
 .TP
-\fBFrontEndDown\fR
-No front end node is available to execute this job.
-.IP
-
-.TP
 \fBInactiveLimit\fR
 The job reached the system InactiveLimit.
 .IP
@@ -1919,6 +1920,22 @@ variable takes precedence over the setting in the slurm.conf.
 .IP
 
 .TP
+\fBSLURM_JSON\fR
+Control JSON serialization:
+.IP
+.RS
+.TP
+\fBcompact\fR
+Output JSON as compact as possible.
+.IP
+
+.TP
+\fBpretty\fR
+Output JSON in pretty format to make it more readable.
+.IP
+.RE
+
+.TP
 \fBSLURM_TIME_FORMAT\fR
 Specify the format used to report time stamps. A value of \fIstandard\fR, the
 default value, generates output in the form "year\-month\-dateThour:minute:second".
@@ -1931,6 +1948,20 @@ For other years it returns a date month and year without a time (e.g.
 
 A valid strftime() format can also be specified. For example, a value of
 "%a %T" will report the day of the week and a time stamp (e.g. "Mon 12:34:56").
+.IP
+
+.TP
+\fBSLURM_YAML\fR
+Control YAML serialization:
+.IP
+.RS
+.TP
+\fBcompact\fR Output YAML as compact as possible.
+.IP
+
+.TP
+\fBpretty\fR Output YAML in pretty format to make it more readable.
+.RE
 .IP
 
 .TP

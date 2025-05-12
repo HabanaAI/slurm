@@ -912,10 +912,16 @@ extern int sacctmgr_add_qos(int argc, char **argv)
 
 	if (rc == SLURM_SUCCESS) {
 		if (commit_check("Would you like to commit changes?")) {
-			slurmdb_connection_commit(db_conn, 1);
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
 		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else {
 		exit_code = 1;
@@ -1294,7 +1300,7 @@ extern int sacctmgr_modify_qos(int argc, char **argv)
 		list_iterator_destroy(itr);
 		set = 1;
 	} else if (ret_list) {
-		printf(" Nothing modified\n");
+		printf("  Nothing modified\n");
 		rc = SLURM_ERROR;
 	} else {
 		exit_code=1;
@@ -1308,11 +1314,17 @@ extern int sacctmgr_modify_qos(int argc, char **argv)
 	notice_thread_fini();
 
 	if (set) {
-		if (commit_check("Would you like to commit changes?"))
-			slurmdb_connection_commit(db_conn, 1);
-		else {
+		if (commit_check("Would you like to commit changes?")) {
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
+		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	}
 
@@ -1356,6 +1368,7 @@ extern int sacctmgr_delete_qos(int argc, char **argv)
 
 	notice_thread_init();
 	ret_list = slurmdb_qos_remove(db_conn, qos_cond);
+	rc = errno;
 	notice_thread_fini();
 	slurmdb_destroy_qos_cond(qos_cond);
 
@@ -1368,7 +1381,7 @@ extern int sacctmgr_delete_qos(int argc, char **argv)
 		 * output from slurmdb_qos_remove, and
 		 * with a previously got g_qos_list.
 		 */
-		if (_isdefault(ret_list)) {
+		if ((!rc) && (_isdefault(ret_list))) {
 			exit_code=1;
 			fprintf(stderr, " Please either remove the qos' listed "
 				"above from list and resubmit,\n"
@@ -1376,6 +1389,18 @@ extern int sacctmgr_delete_qos(int argc, char **argv)
 				"remove the qos.\n"
 				" Changes Discarded\n");
 			slurmdb_connection_commit(db_conn, 0);
+			goto end_it;
+		}
+
+		if (rc == ESLURM_JOBS_RUNNING_ON_ASSOC) {
+			itr = list_iterator_create(ret_list);
+			fprintf(stderr, " Error with request: %s\n",
+				slurm_strerror(rc));
+			while ((object = list_next(itr))) {
+				fprintf(stderr, " %s\n", object);
+			}
+			slurmdb_connection_commit(db_conn, 0);
+			list_iterator_destroy(itr);
 			goto end_it;
 		}
 
@@ -1387,13 +1412,19 @@ extern int sacctmgr_delete_qos(int argc, char **argv)
 		}
 		list_iterator_destroy(itr);
 		if (commit_check("Would you like to commit changes?")) {
-			slurmdb_connection_commit(db_conn, 1);
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
 		} else {
 			printf(" Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else if (ret_list) {
-		printf(" Nothing deleted\n");
+		printf("  Nothing deleted\n");
 		rc = SLURM_ERROR;
 	} else {
 		exit_code=1;

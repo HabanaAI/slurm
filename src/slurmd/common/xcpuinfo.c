@@ -64,6 +64,7 @@
 #include "xcpuinfo.h"
 
 #define _DEBUG 0
+#define MAX_CPUSET_STR 2048
 #define _MAX_SOCKET_INX 1024
 
 #if !defined(HAVE_HWLOC)
@@ -75,16 +76,13 @@ static int _chk_cpuinfo_str(char *buffer, char *keyword, char **valptr);
 static int _chk_cpuinfo_uint32(char *buffer, char *keyword, uint32_t *val);
 #endif
 
-static int _range_to_map(char* range, uint16_t *map, uint16_t map_size,
-			 int add_threads);
+#if HWLOC_API_VERSION > 0x00020401
+/* Contains a bitmap of all the cpus of the node, but only p-cores are set. */
+static hwloc_bitmap_t cpuset_tot = NULL;
+#endif
 
-bool     initialized = false;
-uint16_t procs, boards, sockets, cores, threads=1;
-uint16_t block_map_size;
-uint16_t *block_map, *block_map_inv;
+static char *restricted_cpus_as_mac = NULL;
 extern slurmd_conf_t *conf;
-
-static bool refresh_hwloc = false;
 
 /*
  * get_procs - Return the count of procs on this system
@@ -125,8 +123,6 @@ get_procs(uint16_t *procs)
 
 #ifdef HAVE_HWLOC
 
-static char *hwloc_xml_whole = NULL;
-
 #if _DEBUG
 static void _hwloc_children(hwloc_topology_t topology, hwloc_obj_t obj,
 			    int depth)
@@ -157,32 +153,53 @@ static int _core_child_count(hwloc_topology_t topology, hwloc_obj_t obj)
 	return count;
 }
 
-static inline int _internal_hwloc_topology_export_xml(
-	hwloc_topology_t topology, const char *hwloc_xml)
-{
-#if HWLOC_API_VERSION >= 0x00020000
-	return hwloc_topology_export_xml(topology, hwloc_xml, 0);
-#else
-	return hwloc_topology_export_xml(topology, hwloc_xml);
-#endif
-}
-
+/*
+* This needs to run before _remove_ecores() as the call to
+* hwloc_topology_restrict() will change the view.
+*
+* There appears to be a bug in HWLOC 2.x where the IntelCore list
+* is restricted by the cgroup cpuset.
+*/
 static void _check_full_access(hwloc_topology_t *topology)
 {
 	hwloc_const_bitmap_t complete, allowed;
+	hwloc_bitmap_t restricted_cpus_mask;
 
 	complete = hwloc_topology_get_complete_cpuset(*topology);
 	allowed = hwloc_topology_get_allowed_cpuset(*topology);
 
-	if (!hwloc_bitmap_isequal(complete, allowed))
-		warning("restricted to a subset of cpus");
+	if (!hwloc_bitmap_isequal(complete, allowed)) {
+		/*
+		 * Get the cpus that are not set in both bitmaps and which
+		 * represent the cpus that slurm will not be able to run on,
+		 * a.k.a. CpuSpecList (without SlurmdOffSpec).
+		 */
+		restricted_cpus_mask = hwloc_bitmap_alloc();
+		hwloc_bitmap_andnot(restricted_cpus_mask, complete, allowed);
+		restricted_cpus_as_mac = xmalloc(MAX_CPUSET_STR);
+
+		/* And convert them into a string*/
+		hwloc_bitmap_list_snprintf(restricted_cpus_as_mac,
+					   MAX_CPUSET_STR,
+					   restricted_cpus_mask);
+		hwloc_bitmap_free(restricted_cpus_mask);
+
+		warning("%s: subset of restricted cpus (not available for jobs): %s",
+			__func__, restricted_cpus_as_mac);
+
+		/* We don't need this any further */
+		if (!(slurm_conf.task_plugin_param & SLURMD_SPEC_OVERRIDE))
+			xfree(restricted_cpus_as_mac);
+	} else {
+		debug2("%s: got full access to the cpuset topology", __func__);
+	}
 }
 
 static void _remove_ecores(hwloc_topology_t *topology)
 {
 #if HWLOC_API_VERSION > 0x00020401
 	int type_cnt;
-	hwloc_bitmap_t cpuset, cpuset_tot = NULL;
+	hwloc_bitmap_t cpuset;
 	char *pcore_freq = NULL;
 	bool found = false;
 
@@ -256,6 +273,7 @@ static void _remove_ecores(hwloc_topology_t *topology)
 	if (!found) {
 		hwloc_bitmap_free(cpuset);
 		hwloc_bitmap_free(cpuset_tot);
+		cpuset_tot = NULL;
 		return;
 	}
 
@@ -281,105 +299,50 @@ static void _remove_ecores(hwloc_topology_t *topology)
 	}
 
 	hwloc_topology_restrict(*topology, cpuset_tot, 0);
-	hwloc_bitmap_free(cpuset_tot);
 	hwloc_bitmap_free(cpuset);
 #endif
 }
 
 /* read or load topology and write if needed
  * init and destroy topology must be outside this function */
-extern int xcpuinfo_hwloc_topo_load(
-	void *topology_in, char *topo_file, bool full)
+static int xcpuinfo_hwloc_topo_load(hwloc_topology_t *topology)
 {
-	int ret = SLURM_SUCCESS;
-	struct stat buf;
-	hwloc_topology_t *topology = topology_in;
-	hwloc_topology_t tmp_topo;
-	static bool first_full = true;
-	bool check_file = true;
+	xassert(topology);
 
-	xassert(topo_file);
+	/* parse all system */
+	hwloc_topology_set_flags(*topology, HWLOC_TOPOLOGY_FLAG_WHOLE_SYSTEM);
 
-	if (!topology_in) {
-		topology = &tmp_topo;
-		goto handle_write;
-	}
-
-	if (full && first_full) {
-		/* Always regenerate file on slurmd startup */
-		if (refresh_hwloc)
-			check_file = false;
-		first_full = false;
-	}
-
-	if (check_file && !stat(topo_file, &buf)) {
-		debug2("%s: xml file (%s) found", __func__, topo_file);
-		if (hwloc_topology_set_xml(*topology, topo_file))
-			error("%s: hwloc_topology_set_xml() failed (%s)",
-			      __func__, topo_file);
-		else if (hwloc_topology_load(*topology))
-			error("%s: hwloc_topology_load() failed (%s)",
-			      __func__, topo_file);
-		else
-			return ret;
-	}
-
-	hwloc_topology_destroy(*topology);
-
-handle_write:
-
-	hwloc_topology_init(topology);
-
-	if (full) {
-		/* parse all system */
-		hwloc_topology_set_flags(*topology,
-					 HWLOC_TOPOLOGY_FLAG_WHOLE_SYSTEM);
-
-		/* ignores cache, misc */
+	/* ignores cache, misc */
 #if HWLOC_API_VERSION < 0x00020000
-		hwloc_topology_ignore_type (*topology, HWLOC_OBJ_CACHE);
-		hwloc_topology_ignore_type (*topology, HWLOC_OBJ_MISC);
+	hwloc_topology_ignore_type(*topology, HWLOC_OBJ_CACHE);
+	hwloc_topology_ignore_type(*topology, HWLOC_OBJ_MISC);
 #else
-		hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L1CACHE,
-					       HWLOC_TYPE_FILTER_KEEP_NONE);
-		hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L2CACHE,
-					       HWLOC_TYPE_FILTER_KEEP_NONE);
-		/* need to preserve HWLOC_OBJ_L3CACHE for l3cache_as_socket */
-		hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L4CACHE,
-					       HWLOC_TYPE_FILTER_KEEP_NONE);
-		hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L5CACHE,
-					       HWLOC_TYPE_FILTER_KEEP_NONE);
-		hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_MISC,
-					       HWLOC_TYPE_FILTER_KEEP_NONE);
+	hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L1CACHE,
+				       HWLOC_TYPE_FILTER_KEEP_NONE);
+	hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L2CACHE,
+				       HWLOC_TYPE_FILTER_KEEP_NONE);
+	/* need to preserve HWLOC_OBJ_L3CACHE for l3cache_as_socket */
+	hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L4CACHE,
+				       HWLOC_TYPE_FILTER_KEEP_NONE);
+	hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_L5CACHE,
+				       HWLOC_TYPE_FILTER_KEEP_NONE);
+	hwloc_topology_set_type_filter(*topology, HWLOC_OBJ_MISC,
+				       HWLOC_TYPE_FILTER_KEEP_NONE);
 #endif
-	}
 
 	/* load topology */
 	debug2("hwloc_topology_load");
 	if (hwloc_topology_load(*topology)) {
 		/* error in load hardware topology */
 		debug("hwloc_topology_load() failed.");
-		ret = SLURM_ERROR;
-		goto end_it;
+		return SLURM_ERROR;
 	}
 
 	_check_full_access(topology);
 
 	_remove_ecores(topology);
 
-	if (!conf->def_config) {
-		debug2("hwloc_topology_export_xml");
-		if (_internal_hwloc_topology_export_xml(*topology, topo_file)) {
-			/* error in export hardware topology */
-			error("%s: failed (load will be required after read failures).", __func__);
-		}
-	}
-
-end_it:
-	if (!topology_in)
-		hwloc_topology_destroy(tmp_topo);
-
-	return ret;
+	return SLURM_SUCCESS;
 }
 
 /*
@@ -421,13 +384,8 @@ extern int xcpuinfo_hwloc_topo_get(
 		return 1;
 	}
 
-	if (!hwloc_xml_whole)
-		hwloc_xml_whole = xstrdup_printf("%s/hwloc_topo_whole.xml",
-						 conf->spooldir);
-	if (xcpuinfo_hwloc_topo_load(&topology, hwloc_xml_whole, true)
-	    == SLURM_ERROR) {
+	if (xcpuinfo_hwloc_topo_load(&topology) != SLURM_SUCCESS) {
 		hwloc_topology_destroy(topology);
-		xfree(hwloc_xml_whole);
 		return 2;
 	}
 #if _DEBUG
@@ -889,12 +847,6 @@ extern int xcpuinfo_hwloc_topo_get(
 	return retval;
 }
 
-extern int xcpuinfo_hwloc_topo_load(
-	void *topology_in, char *topo_file, bool full)
-{
-	return SLURM_SUCCESS;
-}
-
 /* _chk_cpuinfo_str
  *	check a line of cpuinfo data (buffer) for a keyword.  If it
  *	exists, return the string value for that keyword in *valptr.
@@ -1096,53 +1048,6 @@ static int _compute_block_map(uint16_t numproc,
 }
 #endif
 
-int
-xcpuinfo_init(void)
-{
-	if ( initialized )
-		return SLURM_SUCCESS;
-
-	if (xcpuinfo_hwloc_topo_get(&procs,&boards,&sockets,&cores,&threads,
-				    &block_map_size,&block_map,&block_map_inv))
-		return SLURM_ERROR;
-
-	initialized = true ;
-
-	return SLURM_SUCCESS;
-}
-
-extern void xcpuinfo_refresh_hwloc(bool refresh)
-{
-	refresh_hwloc = refresh;
-}
-
-int
-xcpuinfo_fini(void)
-{
-	if ( ! initialized )
-		return SLURM_SUCCESS;
-
-	initialized = false ;
-	procs = sockets = cores = threads = 0;
-	block_map_size = 0;
-	xfree(block_map);
-	xfree(block_map_inv);
-#ifdef HAVE_HWLOC
-	if (hwloc_xml_whole) {
-		/*
-		 * When a slurmd is taking over the place of the next
-		 * slurmd it will have already made this file.  So don't
-		 * remove it or it will remove it for the new slurmd.
-		 * If this happens on the slurmstepd we don't want to remove it
-		 * to begin with.
-		 */
-		/* (void)remove(hwloc_xml_whole); */
-		xfree(hwloc_xml_whole);
-	}
-#endif
-	return SLURM_SUCCESS;
-}
-
 /*
  * Convert an abstract core range string into a machine-specific CPU range
  * string. Abstract id to machine id conversion is done using block_map.
@@ -1215,6 +1120,47 @@ end_it:
 		error("%s: failed", __func__);
 
 	return rc;
+}
+
+static char *_remove_ecores_range(const char *orig_range)
+{
+	char *pcores_range = NULL;
+#if HWLOC_API_VERSION > 0x00020401
+	hwloc_bitmap_t r = NULL, rout = NULL;
+
+	if (slurm_conf.conf_flags & CONF_FLAG_ECORE)
+		return NULL;
+
+	/*
+	 * This comes from _remove_ecores() and contains a bitmap of performance
+	 * cores.
+	 */
+	if (!cpuset_tot)
+		return NULL;
+
+	r = hwloc_bitmap_alloc();
+
+	if (hwloc_bitmap_list_sscanf(r, orig_range)) {
+		error("Cannot convert cpuset range %s into a hwloc bitmap",
+		      orig_range);
+		goto end_it;
+	}
+
+	rout = hwloc_bitmap_alloc();
+	hwloc_bitmap_and(rout, r, cpuset_tot);
+	pcores_range = xmalloc(MAX_CPUSET_STR);
+	hwloc_bitmap_list_snprintf(pcores_range, MAX_CPUSET_STR, rout);
+
+	debug2("Reduced original range from %s to %s to only include p-cores",
+	       orig_range, pcores_range);
+end_it:
+	hwloc_bitmap_free(r);
+	hwloc_bitmap_free(rout);
+	/* We do not need the cpuset_tot anymore */
+	hwloc_bitmap_free(cpuset_tot);
+	cpuset_tot = NULL;
+#endif
+	return pcores_range;
 }
 
 /*
@@ -1313,91 +1259,57 @@ end_it:
 	return rc;
 }
 
-int
-xcpuinfo_abs_to_map(char* lrange,uint16_t **map,uint16_t *map_size)
+extern char *xcpuinfo_get_cpuspec(void)
 {
-	*map_size = block_map_size;
-	*map = xcalloc(block_map_size, sizeof(uint16_t));
-	/* abstract range does not already include the hyperthreads */
-	return _range_to_map(lrange,*map,*map_size,1);
-}
+	char *res_abs_cores = NULL;
+	bitstr_t *res_core_bitmap = NULL;
+	bitstr_t *res_cpu_bitmap = NULL;
+	char *restricted_cpus_as_abs = NULL;
+	char *pcores_range = NULL;
 
-/*
- * set to 1 each element of already allocated map of size
- * map_size if they are present in the input range
- * if add_thread does not equal 0, the input range is a treated
- * as a core range, and it will be mapped to an array of uint16_t
- * that will include all the hyperthreads associated to the cores.
- */
-static int
-_range_to_map(char* range,uint16_t *map,uint16_t map_size,int add_threads)
-{
-	int bad_nb=0;
-	int num_fl=0;
-	int con_fl=0;
-	int last=0;
+	if (!restricted_cpus_as_mac)
+		return NULL;
 
-	char *dup;
-	char *p;
-	char *s=NULL;
-
-	uint16_t start=0,end=0,i;
-
-	/* duplicate input range */
-	dup = xstrdup(range);
-	p = dup;
-	while ( ! last ) {
-		if ( isdigit(*p) ) {
-			if ( !num_fl ) {
-				num_fl++;
-				s=p;
-			}
-		}
-		else if ( *p == '-' ) {
-			if ( s && num_fl ) {
-				*p = '\0';
-				start = (uint16_t) atoi(s);
-				con_fl=1;
-				num_fl=0;
-				s=NULL;
-			}
-		}
-		else if ( *p == ',' || *p == '\0') {
-			if ( *p == '\0' )
-				last = 1;
-			if ( s && num_fl ) {
-				*p = '\0';
-				end = (uint16_t) atoi(s);
-				if ( !con_fl )
-					start = end ;
-				con_fl=2;
-				num_fl=0;
-				s=NULL;
-			}
-		}
-		else {
-			bad_nb++;
-			break;
-		}
-		if ( con_fl == 2 ) {
-			if ( add_threads ) {
-				start = start * threads;
-				end = (end+1)*threads - 1 ;
-			}
-			for( i = start ; i <= end && i < map_size ; i++) {
-				map[i]=1;
-			}
-			con_fl=0;
-		}
-		p++;
+	/* We need to remove the e-cores to compute the cpuspec list */
+	pcores_range = _remove_ecores_range(restricted_cpus_as_mac);
+	if (pcores_range) {
+		xcpuinfo_mac_to_abs(pcores_range, &restricted_cpus_as_abs);
+		xfree(pcores_range);
+	} else {
+		xcpuinfo_mac_to_abs(restricted_cpus_as_mac,
+				    &restricted_cpus_as_abs);
 	}
 
-	xfree(dup);
+	debug2("%s: restricted cpus as machine: %s",
+	       __func__, restricted_cpus_as_mac);
+	debug2("%s: restricted cpus as abstract: %s",
+	       __func__, restricted_cpus_as_abs);
 
-	if ( bad_nb > 0 ) {
-		/* bad format for input range */
-		return SLURM_ERROR;
+	if (!restricted_cpus_as_abs || !restricted_cpus_as_abs[0])
+		goto empty_end;
+
+	res_core_bitmap = bit_alloc(MAX_CPU_CNT);
+	res_cpu_bitmap = bit_alloc(MAX_CPU_CNT);
+	bit_unfmt(res_core_bitmap, restricted_cpus_as_abs);
+
+	for (int core_off = 0; core_off < conf->cores; core_off++) {
+		if (!bit_test(res_core_bitmap, core_off))
+			continue;
+		for (int thread_off = 0; thread_off < conf->threads;
+		     thread_off++) {
+			int thread_inx =
+				(core_off * (int) conf->threads) + thread_off;
+			bit_set(res_cpu_bitmap, thread_inx);
+		}
 	}
 
-	return SLURM_SUCCESS;
+	res_abs_cores = xmalloc(MAX_CPU_CNT);
+	bit_fmt(res_abs_cores, MAX_CPU_CNT, res_cpu_bitmap);
+
+	FREE_NULL_BITMAP(res_core_bitmap);
+	FREE_NULL_BITMAP(res_cpu_bitmap);
+
+empty_end:
+	xfree(restricted_cpus_as_abs);
+	return res_abs_cores;
 }

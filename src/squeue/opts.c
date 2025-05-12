@@ -662,6 +662,7 @@ static fmt_data_job_t fmt_data_job[] = {
 	{"JobId", 'A', _print_job_job_id2, 0},
 	{"LastSchedEval", 0, _print_job_last_sched_eval, 0},
 	{"Licenses", 'W', _print_job_licenses, 0},
+	{"LicensesAlloc", 0, _print_job_licenses_alloc, 0},
 	{"MaxCPUs", 0, _print_job_max_cpus, 0},
 	{"MaxNodes", 0, _print_job_max_nodes, 0},
 	{"mem-per-tres", 0, _print_job_mem_per_tres, 0},
@@ -761,6 +762,9 @@ static fmt_data_step_t fmt_data_step[] = {
 	{"Partition", 0, _print_step_partition, 0},
 	{"ResvPorts", 0, _print_step_resv_ports, 0},
 	{"StartTime", 0, _print_step_time_start, 0},
+	{"StdErr", 0, _print_step_std_err, 0},
+	{"StdIn", 0, _print_step_std_in, 0},
+	{"StdOut", 0, _print_step_std_out, 0},
 	{"StepId", 0, _print_step_id, 0},
 	{"StepName", 0, _print_step_name, 0},
 	{"StepState", 0, _print_step_state, 0},
@@ -1369,14 +1373,21 @@ static list_t *_build_user_list(char *str)
 	my_user_list = xstrdup(str);
 	user = strtok_r(my_user_list, ",", &tmp_char);
 	while (user) {
+		int rc;
 		uid_t some_uid;
-		if (uid_from_string(user, &some_uid) == 0) {
+
+		/*
+		 * Allow numeric uids that no longer exist on underlying system
+		 * so that any old jobs that still use them can be identified.
+		 */
+		rc = uid_from_string(user, &some_uid);
+		if ((rc != SLURM_SUCCESS) && (rc != ESLURM_USER_ID_UNKNOWN)) {
+			error("Invalid user: %s\n", user);
+		} else {
 			uint32_t *user_id = NULL;
 			user_id = xmalloc(sizeof(uint32_t));
 			*user_id = (uint32_t) some_uid;
 			list_append(my_list, user_id);
-		} else {
-			error("Invalid user: %s\n", user);
 		}
 		user = strtok_r(NULL, ",", &tmp_char);
 	}
@@ -1667,6 +1678,7 @@ static int _check_only_state(void)
 	       sizeof(denied_params_mask.job_id));
 	memset(&denied_params_mask.job_list, 0,
 	       sizeof(denied_params_mask.job_list));
+	memset(&denied_params_mask.jobs, 0, sizeof(denied_params_mask.jobs));
 	memset(&denied_params_mask.local_flag, 0,
 	       sizeof(denied_params_mask.local_flag));
 	memset(&denied_params_mask.cluster_names, 0,

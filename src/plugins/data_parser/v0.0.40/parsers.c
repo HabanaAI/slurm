@@ -944,6 +944,12 @@ static data_for_each_cmd_t _foreach_parse_qos_string_id(data_t *src, void *arg)
 			       caller, false))) {
 		xassert(qos);
 		list_append(qos_list, xstrdup_printf("%u", qos->id));
+	} else {
+		char *path = NULL;
+		on_error(PARSING, parser->type, args, ESLURM_INVALID_QOS,
+			 set_source_path(&path, args, parent_path), __func__,
+			 "Unable to resolve QOS: %s", data_get_string(src));
+		xfree(path);
 	}
 
 	FREE_NULL_DATA(ppath);
@@ -1308,7 +1314,8 @@ static int DUMP_FUNC(TRES_STR)(const parser_t *const parser, void *obj,
 		return SLURM_SUCCESS;
 	}
 
-	slurmdb_tres_list_from_string(&tres_list, *tres, TRES_STR_FLAG_BYTES);
+	slurmdb_tres_list_from_string(&tres_list, *tres, TRES_STR_FLAG_BYTES,
+				      NULL);
 
 	if (!tres_list) {
 		rc = on_error(DUMPING, parser->type, args,
@@ -1426,11 +1433,11 @@ static int _dump_tres_nct(const parser_t *const parser, data_t *dst,
 	fargs.host_list = hostlist_create(nodes);
 
 	slurmdb_tres_list_from_string(&tres_count_list, tres_count,
-				      TRES_STR_FLAG_BYTES);
+				      TRES_STR_FLAG_BYTES, NULL);
 	slurmdb_tres_list_from_string(&tres_node_list, tres_node,
-				      TRES_STR_FLAG_BYTES);
+				      TRES_STR_FLAG_BYTES, NULL);
 	slurmdb_tres_list_from_string(&tres_task_list, tres_task,
-				      TRES_STR_FLAG_BYTES);
+				      TRES_STR_FLAG_BYTES, NULL);
 
 	fargs.type = TRES_EXPLODE_COUNT;
 	if (tres_count_list &&
@@ -3447,106 +3454,15 @@ static int DUMP_FUNC(CSV_STRING_LIST)(const parser_t *const parser, void *obj,
 	return SLURM_SUCCESS;
 }
 
-PARSE_DISABLED(NODE_SELECT_ALLOC_MEMORY)
-
-static int DUMP_FUNC(NODE_SELECT_ALLOC_MEMORY)(const parser_t *const parser,
-					       void *obj, data_t *dst,
-					       args_t *args)
-{
-	int rc;
-	node_info_t *node = obj;
-	uint64_t alloc_memory = 0;
-
-	if ((rc = slurm_get_select_nodeinfo(node->select_nodeinfo,
-					    SELECT_NODEDATA_MEM_ALLOC,
-					    NODE_STATE_ALLOCATED,
-					    &alloc_memory))) {
-		return on_error(
-			DUMPING, parser->type, args, rc,
-			"slurm_get_select_nodeinfo", __func__,
-			"slurm_get_select_nodeinfo(%s, SELECT_NODEDATA_MEM_ALLOC) failed",
-			node->name);
-	}
-
-	data_set_int(dst, alloc_memory);
-
-	return SLURM_SUCCESS;
-}
-
-PARSE_DISABLED(NODE_SELECT_ALLOC_CPUS)
-
-static int DUMP_FUNC(NODE_SELECT_ALLOC_CPUS)(const parser_t *const parser,
-					     void *obj, data_t *dst,
-					     args_t *args)
-{
-	int rc;
-	node_info_t *node = obj;
-	uint16_t alloc_cpus = 0;
-
-	if ((rc = slurm_get_select_nodeinfo(node->select_nodeinfo,
-					    SELECT_NODEDATA_SUBCNT,
-					    NODE_STATE_ALLOCATED,
-					    &alloc_cpus))) {
-		return on_error(DUMPING, parser->type, args, rc,
-				"slurm_get_select_nodeinfo", __func__,
-				"slurm_get_select_nodeinfo(%s, SELECT_NODEDATA_SUBCNT) failed",
-				node->name);
-	}
-
-	data_set_int(dst, alloc_cpus);
-
-	return SLURM_SUCCESS;
-}
-
 PARSE_DISABLED(NODE_SELECT_ALLOC_IDLE_CPUS)
 
 static int DUMP_FUNC(NODE_SELECT_ALLOC_IDLE_CPUS)(const parser_t *const parser,
 						  void *obj, data_t *dst,
 						  args_t *args)
 {
-	int rc;
 	node_info_t *node = obj;
-	uint16_t alloc_cpus = 0;
 
-	if ((rc = slurm_get_select_nodeinfo(node->select_nodeinfo,
-					    SELECT_NODEDATA_SUBCNT,
-					    NODE_STATE_ALLOCATED,
-					    &alloc_cpus))) {
-		return on_error(DUMPING, parser->type, args, rc,
-				"slurm_get_select_nodeinfo", __func__,
-				"slurm_get_select_nodeinfo(%s, SELECT_NODEDATA_SUBCNT) failed",
-				node->name);
-	}
-
-	data_set_int(dst, (node->cpus - alloc_cpus));
-
-	return SLURM_SUCCESS;
-}
-
-PARSE_DISABLED(NODE_SELECT_TRES_USED)
-
-static int DUMP_FUNC(NODE_SELECT_TRES_USED)(const parser_t *const parser,
-					    void *obj, data_t *dst,
-					    args_t *args)
-{
-	int rc;
-	node_info_t *node = obj;
-	char *node_alloc_tres = NULL;
-
-	if ((rc = slurm_get_select_nodeinfo(node->select_nodeinfo,
-					    SELECT_NODEDATA_TRES_ALLOC_FMT_STR,
-					    NODE_STATE_ALLOCATED,
-					    &node_alloc_tres))) {
-		return on_error(DUMPING, parser->type, args, rc,
-				"slurm_get_select_nodeinfo", __func__,
-				"slurm_get_select_nodeinfo(%s, SELECT_NODEDATA_TRES_ALLOC_FMT_STR) failed",
-				node->name);
-	}
-
-	if (node_alloc_tres)
-		data_set_string_own(dst, node_alloc_tres);
-	else
-		data_set_string(dst, "");
+	data_set_int(dst, (node->cpus - node->alloc_cpus));
 
 	return SLURM_SUCCESS;
 }
@@ -3557,21 +3473,7 @@ static int DUMP_FUNC(NODE_SELECT_TRES_WEIGHTED)(const parser_t *const parser,
 						void *obj, data_t *dst,
 						args_t *args)
 {
-	int rc;
-	node_info_t *node = obj;
-	double node_tres_weighted = 0;
-
-	if ((rc = slurm_get_select_nodeinfo(node->select_nodeinfo,
-					    SELECT_NODEDATA_TRES_ALLOC_WEIGHTED,
-					    NODE_STATE_ALLOCATED,
-					    &node_tres_weighted))) {
-		return on_error(DUMPING, parser->type, args, rc,
-				"slurm_get_select_nodeinfo", __func__,
-				"slurm_get_select_nodeinfo(%s, SELECT_NODEDATA_TRES_ALLOC_WEIGHTED) failed",
-				node->name);
-	}
-
-	data_set_float(dst, node_tres_weighted);
+	data_set_float(dst, 0);
 
 	return SLURM_SUCCESS;
 }
@@ -7341,7 +7243,6 @@ static const parser_t PARSER_ARRAY(STATS_RPC)[] = {
 static const flag_bit_t PARSER_FLAG_ARRAY(CLUSTER_REC_FLAGS)[] = {
 	add_flag_bit(CLUSTER_FLAG_REGISTER, "REGISTERING"),
 	add_flag_bit(CLUSTER_FLAG_MULTSD, "MULTIPLE_SLURMD"),
-	add_flag_bit(CLUSTER_FLAG_FE, "FRONT_END"),
 	add_flag_bit(CLUSTER_FLAG_FED, "FEDERATION"),
 	add_flag_bit(CLUSTER_FLAG_EXT, "EXTERNAL"),
 };
@@ -7630,11 +7531,11 @@ static const parser_t PARSER_ARRAY(NODE)[] = {
 	add_parse(USER_ID, reason_uid, "reason_set_by_user", "User who set the reason"),
 	add_parse(TIMESTAMP_NO_VAL, resume_after, "resume_after", "Number of seconds after the node's state is updated to \"DOWN\" or \"DRAIN\" before scheduling a node state resume"),
 	add_parse(STRING, resv_name, "reservation", "Name of reservation containing this node"),
-	add_cparse(NODE_SELECT_ALLOC_MEMORY, "alloc_memory", "Total memory in MB currently allocated for jobs"),
-	add_cparse(NODE_SELECT_ALLOC_CPUS, "alloc_cpus", "Total number of CPUs currently allocated for jobs"),
+	add_parse(UINT64, alloc_memory, "alloc_memory", "Total memory in MB currently allocated for jobs"),
+	add_parse(UINT16, alloc_cpus, "alloc_cpus", "Total number of CPUs currently allocated for jobs"),
 	add_cparse(NODE_SELECT_ALLOC_IDLE_CPUS, "alloc_idle_cpus", "Total number of idle CPUs"),
-	add_cparse(NODE_SELECT_TRES_USED, "tres_used", "Trackable resources currently allocated for jobs"),
-	add_cparse(NODE_SELECT_TRES_WEIGHTED, "tres_weighted", "Weighted number of billable trackable resources allocated"),
+	add_parse(STRING, alloc_tres_fmt_str, "tres_used", "Trackable resources currently allocated for jobs"),
+	add_removed(NODE_SELECT_TRES_WEIGHTED, "tres_weighted", "Ignored. Was weighted number of billable trackable resources allocated", SLURM_25_05_PROTOCOL_VERSION),
 	add_parse(TIMESTAMP_NO_VAL, slurmd_start_time, "slurmd_start_time", "Time when the slurmd started (UNIX timestamp)"),
 	add_parse(UINT16, sockets, "sockets", "Number of physical processor sockets/chips on the node"),
 	add_parse(UINT16, threads, "threads", "Number of logical threads in a single physical core"),
@@ -7863,7 +7764,11 @@ static const parser_t PARSER_ARRAY(JOB_INFO)[] = {
 	add_parse_overload(HOLD, priority, 1, "hold", "Hold (true) or release (false) job"),
 	add_parse_overload(UINT32_NO_VAL, priority, 1, "priority", "Request specific job priority"),
 	add_parse(ACCT_GATHER_PROFILE, profile, "profile", "Profile used by the acct_gather_profile plugin"),
-	add_parse(QOS_NAME, qos, "qos", "Quality of Service assigned to the job"),
+	/*
+	 * This field could also be QOS_NAME but we want to avoid NEED_QOS for
+	 * dumping since there is nothing that currently parses this field.
+	 */
+	add_parse(STRING, qos, "qos", "Quality of Service assigned to the job, if pending the QOS requested"),
 	add_parse(BOOL, reboot, "reboot", "Node reboot requested before start"),
 	add_parse(STRING, req_nodes, "required_nodes", "Comma separated list of required nodes"),
 	add_skip(req_node_inx),
@@ -9753,10 +9658,7 @@ static const parser_t parsers[] = {
 	addpcp(STATS_MSG_BF_EXIT, BF_EXIT_FIELDS, stats_info_response_msg_t, NEED_NONE, NULL),
 	addpcs(STATS_MSG_RPCS_BY_TYPE, stats_info_response_msg_t, NEED_NONE, ARRAY, NULL),
 	addpcs(STATS_MSG_RPCS_BY_USER, stats_info_response_msg_t, NEED_NONE, ARRAY, NULL),
-	addpc(NODE_SELECT_ALLOC_MEMORY, node_info_t, NEED_NONE, INT64, NULL),
-	addpc(NODE_SELECT_ALLOC_CPUS, node_info_t, NEED_NONE, INT32, NULL),
 	addpc(NODE_SELECT_ALLOC_IDLE_CPUS, node_info_t, NEED_NONE, INT32, NULL),
-	addpc(NODE_SELECT_TRES_USED, node_info_t, NEED_NONE, STRING, NULL),
 	addpc(NODE_SELECT_TRES_WEIGHTED, node_info_t, NEED_NONE, DOUBLE, NULL),
 	addpca(NODES, NODE, node_info_msg_t, NEED_NONE, NULL),
 	addpca(JOB_INFO_GRES_DETAIL, STRING, slurm_job_info_t, NEED_NONE, NULL),
@@ -9966,9 +9868,9 @@ static const parser_t parsers[] = {
 	addfa(SLURMDB_JOB_FLAGS, uint32_t),
 	addfa(ACCOUNT_FLAGS, uint32_t),
 	addfa(WCKEY_FLAGS, uint32_t),
-	addfa(QOS_FLAGS, uint32_t),
+	addfa(QOS_FLAGS, slurmdb_qos_flags_t),
 	addfa(QOS_PREEMPT_MODES, uint16_t),
-	addfa(CLUSTER_REC_FLAGS, uint32_t),
+	addfa(CLUSTER_REC_FLAGS, slurmdb_cluster_flags_t),
 	addfa(NODE_STATES, uint32_t),
 	addfa(PARTITION_STATES, uint16_t),
 	addfa(JOB_FLAGS, uint64_t),

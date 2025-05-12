@@ -14,7 +14,23 @@
 
 @SET_MAKE@
 
-# Makefile for topology/default plugin
+# This is common code for a Makefile.am and creates $(LIB_REF) to be used
+# afterwards in noinst_LTLIBRARIES and EXTRA_slurmrestd_DEPENDENCIES
+#
+# usage
+#
+# REF = usage.txt
+# include $(top_srcdir)/make_ref.include
+# noinst_LTLIBRARIES [+]= $(LIB_REF)
+# EXTRA_$PROGRAMNAME_DEPENDENCIES [+]= $(LIB_REF)
+# $PROGRAMNAME_LDADD += $(LIB_REF)
+#
+# What the above lines do is include this file in a Makefile.am
+# It will insert usage.txt as a variable that the calling program can access
+# with the calls in src/common/ref.h.
+#
+# If I where doing this for the slurmrestd I would put 'slurmrestd' in for
+# $PROGRAMNAME i.e. EXTRA_slurmrestd_DEPENDENCIES, slurmrestd_LDADD.
 
 VPATH = @srcdir@
 am__is_gnu_make = { \
@@ -91,7 +107,7 @@ POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
 target_triplet = @target@
-subdir = src/plugins/topology/default
+subdir = src/plugins/certgen/script
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/ax_compare_version.m4 \
@@ -108,6 +124,7 @@ am__aclocal_m4_deps = $(top_srcdir)/auxdir/ax_check_compile_flag.m4 \
 	$(top_srcdir)/auxdir/slurm.m4 \
 	$(top_srcdir)/auxdir/slurmrestd.m4 \
 	$(top_srcdir)/auxdir/x_ac_affinity.m4 \
+	$(top_srcdir)/auxdir/x_ac_bashcomp.m4 \
 	$(top_srcdir)/auxdir/x_ac_c99.m4 \
 	$(top_srcdir)/auxdir/x_ac_cgroup.m4 \
 	$(top_srcdir)/auxdir/x_ac_curl.m4 \
@@ -181,18 +198,21 @@ am__uninstall_files_from_dir = { \
          $(am__cd) "$$dir" && rm -f $$files; }; \
   }
 am__installdirs = "$(DESTDIR)$(pkglibdir)"
-LTLIBRARIES = $(pkglib_LTLIBRARIES)
-topology_default_la_DEPENDENCIES = ../common/libtopology_common.la
-am_topology_default_la_OBJECTS = topology_default.lo
-topology_default_la_OBJECTS = $(am_topology_default_la_OBJECTS)
+LTLIBRARIES = $(noinst_LTLIBRARIES) $(pkglib_LTLIBRARIES)
+certgen_script_la_DEPENDENCIES = $(LIB_REF)
+am_certgen_script_la_OBJECTS = certgen_script.lo
+certgen_script_la_OBJECTS = $(am_certgen_script_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
-topology_default_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
+certgen_script_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
 	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
-	$(AM_CFLAGS) $(CFLAGS) $(topology_default_la_LDFLAGS) \
-	$(LDFLAGS) -o $@
+	$(AM_CFLAGS) $(CFLAGS) $(certgen_script_la_LDFLAGS) $(LDFLAGS) \
+	-o $@
+lib_ref_la_DEPENDENCIES = lib_ref.lo
+am_lib_ref_la_OBJECTS =
+lib_ref_la_OBJECTS = $(am_lib_ref_la_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -208,7 +228,7 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir) -I$(top_builddir)/slurm
 depcomp = $(SHELL) $(top_srcdir)/auxdir/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/topology_default.Plo
+am__depfiles_remade = ./$(DEPDIR)/certgen_script.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -228,7 +248,7 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(topology_default_la_SOURCES)
+SOURCES = $(certgen_script_la_SOURCES) $(lib_ref_la_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -453,6 +473,7 @@ am__quote = @am__quote@
 am__tar = @am__tar@
 am__untar = @am__untar@
 ax_pthread_config = @ax_pthread_config@
+bashcompdir = @bashcompdir@
 bindir = @bindir@
 build = @build@
 build_alias = @build_alias@
@@ -509,17 +530,24 @@ top_srcdir = @top_srcdir@
 AUTOMAKE_OPTIONS = foreign
 PLUGIN_FLAGS = -module -avoid-version --export-dynamic
 AM_CPPFLAGS = -DSLURM_PLUGIN_DEBUG -I$(top_srcdir)
-pkglib_LTLIBRARIES = topology_default.la
+pkglib_LTLIBRARIES = certgen_script.la
+certgen_script_la_SOURCES = certgen_script.c
+certgen_script_la_LDFLAGS = $(PLUGIN_FLAGS)
+REF = certgen.sh.txt keygen.sh.txt
+CLEANFILES = *.bino
+BIN_REF = $(REF:.txt=.bino)
+LIB_REF = lib_ref.la
 
-# Null topology plugin.
-topology_default_la_SOURCES = topology_default.c
-topology_default_la_LDFLAGS = $(PLUGIN_FLAGS)
-topology_default_la_LIBADD = ../common/libtopology_common.la
+# a blank lib_ref_la_SOURCES is needed for 'make cscope' to work correctly.
+lib_ref_la_SOURCES = 
+lib_ref_la_LIBADD = lib_ref.lo
+noinst_LTLIBRARIES = $(LIB_REF)
+certgen_script_la_LIBADD = $(LIB_REF)
 all: all-am
 
 .SUFFIXES:
 .SUFFIXES: .c .lo .o .obj
-$(srcdir)/Makefile.in: @MAINTAINER_MODE_TRUE@ $(srcdir)/Makefile.am  $(am__configure_deps)
+$(srcdir)/Makefile.in: @MAINTAINER_MODE_TRUE@ $(srcdir)/Makefile.am $(top_srcdir)/make_ref.include $(am__configure_deps)
 	@for dep in $?; do \
 	  case '$(am__configure_deps)' in \
 	    *$$dep*) \
@@ -528,9 +556,9 @@ $(srcdir)/Makefile.in: @MAINTAINER_MODE_TRUE@ $(srcdir)/Makefile.am  $(am__confi
 	      exit 1;; \
 	  esac; \
 	done; \
-	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/plugins/topology/default/Makefile'; \
+	echo ' cd $(top_srcdir) && $(AUTOMAKE) --foreign src/plugins/certgen/script/Makefile'; \
 	$(am__cd) $(top_srcdir) && \
-	  $(AUTOMAKE) --foreign src/plugins/topology/default/Makefile
+	  $(AUTOMAKE) --foreign src/plugins/certgen/script/Makefile
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	@case '$?' in \
 	  *config.status*) \
@@ -539,6 +567,7 @@ Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	    echo ' cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles)'; \
 	    cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__maybe_remake_depfiles);; \
 	esac;
+$(top_srcdir)/make_ref.include $(am__empty):
 
 $(top_builddir)/config.status: $(top_srcdir)/configure $(CONFIG_STATUS_DEPENDENCIES)
 	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
@@ -548,6 +577,17 @@ $(top_srcdir)/configure: @MAINTAINER_MODE_TRUE@ $(am__configure_deps)
 $(ACLOCAL_M4): @MAINTAINER_MODE_TRUE@ $(am__aclocal_m4_deps)
 	cd $(top_builddir) && $(MAKE) $(AM_MAKEFLAGS) am--refresh
 $(am__aclocal_m4_deps):
+
+clean-noinstLTLIBRARIES:
+	-test -z "$(noinst_LTLIBRARIES)" || rm -f $(noinst_LTLIBRARIES)
+	@list='$(noinst_LTLIBRARIES)'; \
+	locs=`for p in $$list; do echo $$p; done | \
+	      sed 's|^[^/]*$$|.|; s|/[^/]*$$||; s|$$|/so_locations|' | \
+	      sort -u`; \
+	test -z "$$locs" || { \
+	  echo rm -f $${locs}; \
+	  rm -f $${locs}; \
+	}
 
 install-pkglibLTLIBRARIES: $(pkglib_LTLIBRARIES)
 	@$(NORMAL_INSTALL)
@@ -584,8 +624,11 @@ clean-pkglibLTLIBRARIES:
 	  rm -f $${locs}; \
 	}
 
-topology_default.la: $(topology_default_la_OBJECTS) $(topology_default_la_DEPENDENCIES) $(EXTRA_topology_default_la_DEPENDENCIES) 
-	$(AM_V_CCLD)$(topology_default_la_LINK) -rpath $(pkglibdir) $(topology_default_la_OBJECTS) $(topology_default_la_LIBADD) $(LIBS)
+certgen_script.la: $(certgen_script_la_OBJECTS) $(certgen_script_la_DEPENDENCIES) $(EXTRA_certgen_script_la_DEPENDENCIES) 
+	$(AM_V_CCLD)$(certgen_script_la_LINK) -rpath $(pkglibdir) $(certgen_script_la_OBJECTS) $(certgen_script_la_LIBADD) $(LIBS)
+
+lib_ref.la: $(lib_ref_la_OBJECTS) $(lib_ref_la_DEPENDENCIES) $(EXTRA_lib_ref_la_DEPENDENCIES) 
+	$(AM_V_CCLD)$(LINK)  $(lib_ref_la_OBJECTS) $(lib_ref_la_LIBADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -593,7 +636,7 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/topology_default.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/certgen_script.Plo@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -708,6 +751,7 @@ install-strip:
 mostlyclean-generic:
 
 clean-generic:
+	-test -z "$(CLEANFILES)" || rm -f $(CLEANFILES)
 
 distclean-generic:
 	-test -z "$(CONFIG_CLEAN_FILES)" || rm -f $(CONFIG_CLEAN_FILES)
@@ -718,11 +762,11 @@ maintainer-clean-generic:
 	@echo "it deletes files that may require special tools to rebuild."
 clean: clean-am
 
-clean-am: clean-generic clean-libtool clean-pkglibLTLIBRARIES \
-	mostlyclean-am
+clean-am: clean-generic clean-libtool clean-noinstLTLIBRARIES \
+	clean-pkglibLTLIBRARIES mostlyclean-am
 
 distclean: distclean-am
-		-rm -f ./$(DEPDIR)/topology_default.Plo
+		-rm -f ./$(DEPDIR)/certgen_script.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -768,7 +812,7 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-		-rm -f ./$(DEPDIR)/topology_default.Plo
+		-rm -f ./$(DEPDIR)/certgen_script.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 
@@ -790,26 +834,42 @@ uninstall-am: uninstall-pkglibLTLIBRARIES
 .MAKE: install-am install-strip
 
 .PHONY: CTAGS GTAGS TAGS all all-am am--depfiles check check-am clean \
-	clean-generic clean-libtool clean-pkglibLTLIBRARIES \
-	cscopelist-am ctags ctags-am distclean distclean-compile \
-	distclean-generic distclean-libtool distclean-tags dvi dvi-am \
-	html html-am info info-am install install-am install-data \
-	install-data-am install-dvi install-dvi-am install-exec \
-	install-exec-am install-html install-html-am install-info \
-	install-info-am install-man install-pdf install-pdf-am \
-	install-pkglibLTLIBRARIES install-ps install-ps-am \
-	install-strip installcheck installcheck-am installdirs \
-	maintainer-clean maintainer-clean-generic mostlyclean \
-	mostlyclean-compile mostlyclean-generic mostlyclean-libtool \
-	pdf pdf-am ps ps-am tags tags-am uninstall uninstall-am \
+	clean-generic clean-libtool clean-noinstLTLIBRARIES \
+	clean-pkglibLTLIBRARIES cscopelist-am ctags ctags-am distclean \
+	distclean-compile distclean-generic distclean-libtool \
+	distclean-tags dvi dvi-am html html-am info info-am install \
+	install-am install-data install-data-am install-dvi \
+	install-dvi-am install-exec install-exec-am install-html \
+	install-html-am install-info install-info-am install-man \
+	install-pdf install-pdf-am install-pkglibLTLIBRARIES \
+	install-ps install-ps-am install-strip installcheck \
+	installcheck-am installdirs maintainer-clean \
+	maintainer-clean-generic mostlyclean mostlyclean-compile \
+	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
+	tags tags-am uninstall uninstall-am \
 	uninstall-pkglibLTLIBRARIES
 
 .PRECIOUS: Makefile
 
 
-force:
-$(topology_default_la_LIBADD) : force
-	@cd `dirname $@` && $(MAKE) `basename $@`
+%.bino: %.txt
+	$(AM_V_GEN)curr_dir=$(shell pwd); cd $(abs_srcdir); $(LD) -r -o "$(abs_builddir)/$*.bino" -z noexecstack --format=binary "$(notdir $<)"; cd $$curr_dir
+	$(AM_V_at)@OBJCOPY@ --rename-section .data=.rodata,alloc,load,readonly,data,contents "$*.bino"
+
+lib_ref.lo: $(BIN_REF)
+	$(AM_V_at)echo "# $@ - a libtool object file" >"$@"
+	$(AM_V_at)echo "# Generated by libtool" >>"$@"
+	$(AM_V_at)echo "# (Not really... but we need libtool to believe it was.)" >>"$@"
+	$(AM_V_at)echo "#" >>"$@"
+	$(AM_V_at)echo "# Please DO NOT delete this file!" >>"$@"
+	$(AM_V_at)echo "# It is necessary for linking the library." >>"$@"
+	$(AM_V_at)echo >>"$@"
+	$(AM_V_at)echo "# Name of the PIC object." >>"$@"
+	$(AM_V_at)echo "pic_object='$(BIN_REF)'" >>"$@"
+	$(AM_V_at)echo >>"$@"
+	$(AM_V_at)echo "# Name of the non-PIC object" >>"$@"
+	$(AM_V_at)echo "non_pic_object=''" >>"$@"
+	$(AM_V_at)echo >>"$@"
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

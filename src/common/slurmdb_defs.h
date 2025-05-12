@@ -112,12 +112,6 @@ typedef enum {
 					      * unless INFINITE64 or NO_VAL64 */
 #define TRES_STR_FLAG_BYTES       0x00000800 /* Convertible Usage in Bytes */
 
-typedef struct {
-	slurmdb_cluster_rec_t *cluster_rec;
-	int preempt_cnt;
-	time_t start_time;
-} local_cluster_rec_t;
-
 extern slurmdb_job_rec_t *slurmdb_create_job_rec(void);
 extern slurmdb_step_rec_t *slurmdb_create_step_rec(void);
 extern slurmdb_assoc_usage_t *slurmdb_create_assoc_usage(int tres_cnt);
@@ -135,8 +129,8 @@ extern char *slurmdb_job_flags_str(uint32_t flags);
 extern uint32_t str_2_job_flags(char *flags);
 extern char *slurmdb_qos_str(list_t *qos_list, uint32_t level);
 extern uint32_t str_2_slurmdb_qos(list_t *qos_list, char *level);
-extern char *slurmdb_qos_flags_str(uint32_t flags);
-extern uint32_t str_2_qos_flags(char *flags, int option);
+extern char *slurmdb_qos_flags_str(slurmdb_qos_flags_t flags);
+extern slurmdb_qos_flags_t str_2_qos_flags(char *flags, int option);
 extern char *slurmdb_res_flags_str(uint32_t flags);
 extern uint32_t str_2_res_flags(char *flags, int option);
 extern char *slurmdb_res_type_str(slurmdb_resource_type_t type);
@@ -241,9 +235,13 @@ extern int slurmdb_sort_tres_by_id_asc(void *v1, void *v2);
  *                 Meaningful flags are TRES_STR_FLAG_REPLACE
  *                                      TRES_STR_FLAG_REMOVE
  *                                      TRES_STR_FLAG_SORT_ID
+ * IN    : sub_tres_list - list of slurmdb_tres_rec_t * to use instead of
+ *			   assoc_mgr_tres_list. If NULL assoc_mgr_tres_list is
+ *			   used.
  */
-extern void slurmdb_tres_list_from_string(
-	list_t **tres_list, const char *tres, uint32_t flags);
+extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
+					  uint32_t flags,
+					  list_t *sub_tres_list);
 
 /* combine a name array and count array into a string */
 extern char *slurmdb_make_tres_string_from_arrays(char **tres_names,
@@ -319,5 +317,12 @@ extern void slurmdb_merge_grp_node_usage(bitstr_t **grp_node_bitmap1,
 					 uint16_t *grp_node_job_cnt2);
 
 extern char *slurmdb_get_job_id_str(slurmdb_job_rec_t *job);
+
+/*
+ * Add an account to the user->coord_accts list.
+ * RETURN - 0 if not added 1 if added.
+ */
+extern int slurmdb_add_coord_to_user(slurmdb_user_rec_t *user, char *acct_name,
+				     uint16_t direct);
 
 #endif

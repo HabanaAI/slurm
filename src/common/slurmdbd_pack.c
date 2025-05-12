@@ -468,6 +468,7 @@ static void _pack_job_start_msg(void *in, uint16_t rpc_version, buf_t *buffer)
 		pack64(msg->req_mem, buffer);
 		pack16(msg->restart_cnt, buffer);
 		pack32(msg->resv_id, buffer);
+		packstr(msg->resv_req, buffer);
 		pack16(msg->segment_size, buffer);
 		pack_time(msg->start_time, buffer);
 		packstr(msg->std_err, buffer);
@@ -666,6 +667,7 @@ static int _unpack_job_start_msg(void **msg, uint16_t rpc_version,
 		safe_unpack64(&msg_ptr->req_mem, buffer);
 		safe_unpack16(&msg_ptr->restart_cnt, buffer);
 		safe_unpack32(&msg_ptr->resv_id, buffer);
+		safe_unpackstr(&msg_ptr->resv_req, buffer);
 		safe_unpack16(&msg_ptr->segment_size, buffer);
 		safe_unpack_time(&msg_ptr->start_time, buffer);
 		safe_unpackstr(&msg_ptr->std_err, buffer);
@@ -1247,6 +1249,10 @@ static void _pack_step_start_msg(dbd_step_start_msg_t *msg,
 		pack32(msg->req_cpufreq_max, buffer);
 		pack32(msg->req_cpufreq_gov, buffer);
 		pack_step_id(&msg->step_id, buffer, rpc_version);
+		packstr(msg->cwd, buffer);
+		packstr(msg->std_err, buffer);
+		packstr(msg->std_in, buffer);
+		packstr(msg->std_out, buffer);
 		packstr(msg->submit_line, buffer);
 		pack32(msg->task_dist, buffer);
 		pack32(msg->time_limit, buffer);
@@ -1297,6 +1303,10 @@ static int _unpack_step_start_msg(dbd_step_start_msg_t **msg,
 		if (unpack_step_id_members(&msg_ptr->step_id, buffer,
 					   rpc_version) != SLURM_SUCCESS)
 			goto unpack_error;
+		safe_unpackstr(&msg_ptr->cwd, buffer);
+		safe_unpackstr(&msg_ptr->std_err, buffer);
+		safe_unpackstr(&msg_ptr->std_in, buffer);
+		safe_unpackstr(&msg_ptr->std_out, buffer);
 		safe_unpackstr(&msg_ptr->submit_line, buffer);
 		safe_unpack32(&msg_ptr->task_dist, buffer);
 		safe_unpack32(&msg_ptr->time_limit, buffer);
@@ -1729,7 +1739,6 @@ extern buf_t *pack_slurmdbd_msg(persist_msg_t *req, uint16_t rpc_version)
 
 	switch (req->msg_type) {
 	case REQUEST_PERSIST_INIT:
-	case REQUEST_PERSIST_INIT_TLS:
 		slurm_persist_pack_init_req_msg(req->data, buffer);
 		break;
 	case PERSIST_RC:
@@ -1937,7 +1946,6 @@ extern int unpack_slurmdbd_msg(persist_msg_t *resp, uint16_t rpc_version,
 		resp->data = msg.data;
 		break;
 	case REQUEST_PERSIST_INIT:
-	case REQUEST_PERSIST_INIT_TLS:
 		resp->data = xmalloc(sizeof(slurm_msg_t));
 		slurm_msg_t_init(resp->data);
 		rc = slurm_unpack_received_msg(

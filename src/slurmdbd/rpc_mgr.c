@@ -91,19 +91,17 @@ extern void *rpc_mgr(void *no_data)
 		 * accept needed for stream implementation is a no-op in
 		 * message implementation that just passes sockfd to newsockfd
 		 */
-		if ((newsockfd = slurm_accept_msg_conn(sockfd,
-						       &cli_addr)) ==
+		if ((newsockfd = slurm_accept_conn(sockfd, &cli_addr)) ==
 		    SLURM_ERROR) {
 			slurm_persist_conn_free_thread_loc(i);
 			if (errno != EINTR)
-				error("slurm_accept_msg_conn: %m");
+				error("slurm_accept_conn: %m");
 			continue;
 		}
 		fd_set_nonblocking(newsockfd);
 
 		conn_arg = xmalloc(sizeof(slurmdbd_conn_t));
 		conn_arg->conn = xmalloc(sizeof(persist_conn_t));
-		conn_arg->conn->fd = newsockfd;
 		conn_arg->conn->flags = PERSIST_FLAG_DBD;
 		conn_arg->conn->callback_proc = proc_req;
 		conn_arg->conn->callback_fini = _connection_fini_callback;
@@ -116,7 +114,7 @@ extern void *rpc_mgr(void *no_data)
 				 INET6_ADDRSTRLEN);
 
 		slurm_persist_conn_recv_thread_init(
-			conn_arg->conn, i, conn_arg);
+			conn_arg->conn, newsockfd, i, conn_arg);
 	}
 
 	debug("rpc_mgr shutting down");

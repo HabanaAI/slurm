@@ -21,6 +21,8 @@ MYCFLAGS  = @CHECK_CFLAGS@ -Wall
 MYCFLAGS += -D_ISO99_SOURCE
 TESTS += xhash-test \
 	 data-test \
+	 dns-test \
+	 http-test \
 	 serializer-test \
 	 sluid-test \
 	 xstring-test \
@@ -36,6 +38,10 @@ xahash_test_CFLAGS = $(MYCFLAGS)
 xahash_test_LDADD  = $(LDADD) @CHECK_LIBS@
 data_test_CFLAGS  = $(MYCFLAGS)
 data_test_LDADD   = $(LDADD) @CHECK_LIBS@
+dns_test_CFLAGS  = $(MYCFLAGS)
+dns_test_LDADD   = $(LDADD) @CHECK_LIBS@
+http_test_CFLAGS  = $(MYCFLAGS)
+http_test_LDADD   = $(LDADD) @CHECK_LIBS@
 serializer_test_CFLAGS  = $(MYCFLAGS)
 serializer_test_LDADD   = $(LDADD) @CHECK_LIBS@
 sluid_test_CFLAGS = $(MYCFLAGS)
@@ -50,4 +56,20 @@ pack_test_CFLAGS = $(MYCFLAGS)
 pack_test_LDADD = $(LDADD) @CHECK_LIBS@
 reverse_tree_test_CFLAGS = $(MYCFLAGS)
 reverse_tree_test_LDADD = $(LDADD) @CHECK_LIBS@
+
+if HAVE_LUA
+
+TESTS += lua-test
+
+AM_CPPFLAGS += $(lua_CFLAGS)
+
+lua_test_CFLAGS = $(MYCFLAGS) \
+	-DLUA_TEST_SCRIPT=\"$(top_srcdir)/testsuite/slurm_unit/common/lua-test.lua\"
+lua_test_LDADD = \
+	$(LDADD) @CHECK_LIBS@ \
+	$(top_builddir)/src/lua/libslurm_lua.la \
+	$(lua_LIBS)
+
+endif
+
 endif

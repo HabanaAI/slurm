@@ -594,9 +594,9 @@ extern void slurmdb_pack_cluster_rec(void *in, uint16_t protocol_version,
 
 		pack16(object->rpc_version, buffer);
 		persist_conn = object->fed.recv;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		persist_conn = object->fed.send;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		packstr(object->tres_str, buffer);
 	} else if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
 		if (!object) {
@@ -656,9 +656,9 @@ extern void slurmdb_pack_cluster_rec(void *in, uint16_t protocol_version,
 
 		pack16(object->rpc_version, buffer);
 		persist_conn = object->fed.recv;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		persist_conn = object->fed.send;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		packstr(object->tres_str, buffer);
 	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		if (!object) {
@@ -723,9 +723,9 @@ extern void slurmdb_pack_cluster_rec(void *in, uint16_t protocol_version,
 
 		pack16(object->rpc_version, buffer);
 		persist_conn = object->fed.recv;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		persist_conn = object->fed.send;
-		pack8((persist_conn && persist_conn->fd != -1) ? 1 : 0, buffer);
+		pack8((persist_conn && persist_conn->tls_conn) ? 1 : 0, buffer);
 		packstr(object->tres_str, buffer);
 	} else {
 		error("%s: protocol_version %hu not supported",
@@ -794,13 +794,11 @@ extern int slurmdb_unpack_cluster_rec(void **object, uint16_t protocol_version,
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.recv = conn;
 		}
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.send = conn;
 		}
 		safe_unpackstr(&object_ptr->tres_str, buffer);
@@ -846,13 +844,11 @@ extern int slurmdb_unpack_cluster_rec(void **object, uint16_t protocol_version,
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.recv = conn;
 		}
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.send = conn;
 		}
 		safe_unpackstr(&object_ptr->tres_str, buffer);
@@ -900,13 +896,11 @@ extern int slurmdb_unpack_cluster_rec(void **object, uint16_t protocol_version,
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.recv = conn;
 		}
 		safe_unpack8(&uint8_tmp, buffer);
 		if (uint8_tmp) {
 			conn = xmalloc(sizeof(*conn));
-			conn->fd = -1;
 			object_ptr->fed.send = conn;
 		}
 		safe_unpackstr(&object_ptr->tres_str, buffer);
@@ -2268,8 +2262,45 @@ extern void slurmdb_pack_reservation_rec(void *in, uint16_t protocol_version,
 					 buf_t *buffer)
 {
 	slurmdb_reservation_rec_t *object = (slurmdb_reservation_rec_t *)in;
+	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		if (!object) {
+			packnull(buffer);
+			packnull(buffer);
+			packnull(buffer);
+			pack64(NO_VAL64, buffer);
+			pack32(NO_VAL, buffer);
+			packnull(buffer);
+			packnull(buffer);
+			packnull(buffer);
+			pack_time(0, buffer);
+			pack_time(0, buffer);
+			pack_time(0, buffer);
+			pack_time(0, buffer);
+			packnull(buffer);
+			pack32(NO_VAL, buffer);
+			packdouble(0.0, buffer);
+			return;
+		}
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+		packstr(object->assocs, buffer);
+		packstr(object->cluster, buffer);
+		packstr(object->comment, buffer);
+		pack64(object->flags, buffer);
+		pack32(object->id, buffer);
+		packstr(object->name, buffer);
+		packstr(object->nodes, buffer);
+		packstr(object->node_inx, buffer);
+		pack_time(object->time_end, buffer);
+		pack_time(object->time_force, buffer);
+		pack_time(object->time_start, buffer);
+		pack_time(object->time_start_prev, buffer);
+		packstr(object->tres_str, buffer);
+
+		slurm_pack_list(object->tres_list, slurmdb_pack_tres_rec,
+				buffer, protocol_version);
+
+		packdouble(object->unused_wall, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		if (!object) {
 			packnull(buffer);
 			packnull(buffer);
@@ -2320,7 +2351,28 @@ extern int slurmdb_unpack_reservation_rec(void **object,
 
 	*object = object_ptr;
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		safe_unpackstr(&object_ptr->assocs, buffer);
+		safe_unpackstr(&object_ptr->cluster, buffer);
+		safe_unpackstr(&object_ptr->comment, buffer);
+		safe_unpack64(&object_ptr->flags, buffer);
+		safe_unpack32(&object_ptr->id, buffer);
+		safe_unpackstr(&object_ptr->name, buffer);
+		safe_unpackstr(&object_ptr->nodes, buffer);
+		safe_unpackstr(&object_ptr->node_inx, buffer);
+		safe_unpack_time(&object_ptr->time_end, buffer);
+		safe_unpack_time(&object_ptr->time_force, buffer);
+		safe_unpack_time(&object_ptr->time_start, buffer);
+		safe_unpack_time(&object_ptr->time_start_prev, buffer);
+		safe_unpackstr(&object_ptr->tres_str, buffer);
+		if (slurm_unpack_list(&object_ptr->tres_list,
+				      slurmdb_unpack_tres_rec,
+				      slurmdb_destroy_tres_rec,
+				      buffer, protocol_version) !=
+		    SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpackdouble(&object_ptr->unused_wall, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_unpackstr(&object_ptr->assocs, buffer);
 		safe_unpackstr(&object_ptr->cluster, buffer);
 		safe_unpackstr(&object_ptr->comment, buffer);
@@ -2335,12 +2387,11 @@ extern int slurmdb_unpack_reservation_rec(void **object,
 		safe_unpackstr(&object_ptr->tres_str, buffer);
 		if (slurm_unpack_list(&object_ptr->tres_list,
 				      slurmdb_unpack_tres_rec,
-				      slurmdb_destroy_tres_rec,
-				      buffer, protocol_version) !=
-		    SLURM_SUCCESS)
+				      slurmdb_destroy_tres_rec, buffer,
+				      protocol_version) != SLURM_SUCCESS)
 			goto unpack_error;
 		safe_unpackdouble(&object_ptr->unused_wall, buffer);
-	}  else {
+	} else {
 		error("%s: protocol_version %hu not supported",
 		      __func__, protocol_version);
 		goto unpack_error;
@@ -4181,6 +4232,7 @@ extern void slurmdb_pack_job_rec(void *object, uint16_t protocol_version,
 		pack16(job->restart_cnt, buffer);
 		packstr(job->resv_name, buffer);
 		pack32(job->resvid, buffer);
+		packstr(job->resv_req, buffer);
 		packstr(job->script, buffer);
 		pack32(job->show_full, buffer);
 		pack_time(job->start, buffer);
@@ -4551,6 +4603,7 @@ extern int slurmdb_unpack_job_rec(void **job, uint16_t protocol_version,
 		safe_unpack16(&job_ptr->restart_cnt, buffer);
 		safe_unpackstr(&job_ptr->resv_name, buffer);
 		safe_unpack32(&job_ptr->resvid, buffer);
+		safe_unpackstr(&job_ptr->resv_req, buffer);
 		safe_unpackstr(&job_ptr->script, buffer);
 		safe_unpack32(&job_ptr->show_full, buffer);
 		safe_unpack_time(&job_ptr->start, buffer);
@@ -5156,6 +5209,10 @@ extern void slurmdb_pack_step_rec(slurmdb_step_rec_t *step,
 		pack16(step->state, buffer);
 		pack_step_id(&step->step_id, buffer, protocol_version);
 		packstr(step->stepname, buffer);
+		packstr(step->cwd, buffer);
+		packstr(step->std_err, buffer);
+		packstr(step->std_in, buffer);
+		packstr(step->std_out, buffer);
 		packstr(step->submit_line, buffer);
 		pack32(step->suspended, buffer);
 		pack64(step->sys_cpu_sec, buffer);
@@ -5233,6 +5290,10 @@ extern int slurmdb_unpack_step_rec(slurmdb_step_rec_t **step,
 					   protocol_version) != SLURM_SUCCESS)
 			goto unpack_error;
 		safe_unpackstr(&step_ptr->stepname, buffer);
+		safe_unpackstr(&step_ptr->cwd, buffer);
+		safe_unpackstr(&step_ptr->std_err, buffer);
+		safe_unpackstr(&step_ptr->std_in, buffer);
+		safe_unpackstr(&step_ptr->std_out, buffer);
 		safe_unpackstr(&step_ptr->submit_line, buffer);
 		safe_unpack32(&step_ptr->suspended, buffer);
 		safe_unpack64(&step_ptr->sys_cpu_sec, buffer);

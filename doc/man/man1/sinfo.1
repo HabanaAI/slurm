@@ -779,7 +779,8 @@ default sort value is "N" (increasing node name).
 \fB\-t\fR, \fB\-\-states\fR=<\fIstates\fR>
 List nodes only having the given state(s). Multiple states
 may be comma separated and the comparison is case insensitive.
-If the states are separated by '&', then the nodes must be in all states.
+If the states are separated by '+', then the nodes must be in all states.
+The state can be prefixed with '~' which will invert the result of match.
 Possible values include (case insensitive): ALLOC, ALLOCATED, BLOCKED, CLOUD,
 COMP, COMPLETING, DOWN, DRAIN (for node in DRAINING or DRAINED
 states), DRAINED, DRAINING, FAIL, FUTURE, FUTR,
@@ -1238,6 +1239,22 @@ variable takes precedence over the setting in the slurm.conf.
 .IP
 
 .TP
+\fBSLURM_JSON\fR
+Control JSON serialization:
+.IP
+.RS
+.TP
+\fBcompact\fR
+Output JSON as compact as possible.
+.IP
+
+.TP
+\fBpretty\fR
+Output JSON in pretty format to make it more readable.
+.IP
+.RE
+
+.TP
 \fBSLURM_TIME_FORMAT\fR
 Specify the format used to report time stamps. A value of \fIstandard\fR, the
 default value, generates output in the form "year\-month\-dateThour:minute:second".
@@ -1251,6 +1268,22 @@ For other years it returns a date month and year without a time (e.g.
 A valid strftime() format can also be specified. For example, a value of
 "%a %T" will report the day of the week and a time stamp (e.g. "Mon 12:34:56").
 .IP
+
+.TP
+\fBSLURM_YAML\fR
+Control YAML serialization:
+.IP
+.RS
+.TP
+\fBcompact\fR Output YAML as compact as possible.
+.IP
+
+.TP
+\fBpretty\fR Output YAML in pretty format to make it more readable.
+.RE
+.IP
+
+
 
 .SH "EXAMPLES"
 

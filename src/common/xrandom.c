@@ -1,11 +1,6 @@
 /*****************************************************************************\
- *  node_select_info.c - get the node select plugin state information of slurm
+ *  xgetrandom.c - Slurm helper functions for randomness
  *****************************************************************************
- *  Copyright (C) 2005 The Regents of the University of California.
- *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
- *  Written by Morris Jette <jette1@llnl.gov>
- *  CODE-OCEC-09-009. All rights reserved.
- *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
  *  Please also read the included file: DISCLAIMER.
@@ -36,26 +31,33 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <stdio.h>
+#include "config.h"
+
+#include <inttypes.h>
+#include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
-#include <syslog.h>
+#include <time.h>
 #include <unistd.h>
 
-#include "slurm/slurm.h"
+#ifdef HAVE_GETRANDOM
+#include <sys/random.h>
+#endif
 
-#include "src/common/parse_time.h"
-#include "src/common/slurm_protocol_api.h"
-#include "src/interfaces/select.h"
-#include "src/common/xmalloc.h"
-#include "src/common/xstring.h"
-
-extern int slurm_get_select_nodeinfo(dynamic_plugin_data_t *nodeinfo,
-				     enum select_nodedata_type data_type,
-				     enum node_states state, void *data)
+uint32_t xrandom(void)
 {
-	return select_g_select_nodeinfo_get(nodeinfo, data_type, state, data);
+	static bool no_seed = true;
+	uint32_t random_value = 0;
+
+#ifdef HAVE_GETRANDOM
+	if (getrandom(&random_value, sizeof(random_value), 0) != -1)
+		return random_value;
+#endif
+	if (no_seed) {
+		srandom(time(NULL) + getpid());
+		no_seed = false;
+	}
+
+	random_value = random();
+
+	return random_value;
 }

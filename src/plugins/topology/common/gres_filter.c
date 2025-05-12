@@ -398,8 +398,7 @@ extern void gres_filter_sock_core(job_record_t *job_ptr,
 
 		min_core_cnt = MAX(*min_tasks_this_node, 1) *
 			mc_ptr->cpus_per_task;
-		min_core_cnt = (min_core_cnt + cpus_per_core - 1) /
-			cpus_per_core;
+		min_core_cnt = ROUNDUP(min_core_cnt, cpus_per_core);
 
 		if (gres_js->cpus_per_gres) {
 			cpus_per_gres = gres_js->cpus_per_gres;
@@ -588,8 +587,9 @@ extern void gres_filter_sock_core(job_record_t *job_ptr,
 			 */
 			gres_cpus = cpus_per_gres * cnt_avail_total;
 
-			if (gres_cpus <
-			    (*min_tasks_this_node * mc_ptr->cpus_per_task)) {
+			if ((gres_cpus <
+			     (*min_tasks_this_node * mc_ptr->cpus_per_task)) ||
+			    (gres_cpus < job_ptr->details->pn_min_cpus)) {
 				/*
 				 * cpus_per_gres may end up requesting fewer
 				 * cpus than tasks on the node. In this case,
@@ -830,7 +830,7 @@ extern void gres_filter_sock_core(job_record_t *job_ptr,
 			i *= cpus_per_gres;
 			/* max tasks is based on cpus */
 			*max_tasks_this_node = MIN(i, *max_tasks_this_node);
-			i = (i + cpus_per_core - 1) / cpus_per_core;
+			i = ROUNDUP(i, cpus_per_core);
 			if (req_cores < i)
 				log_flag(SELECT_TYPE, "Node %s: Increasing req_cores=%d from cpus_per_gres=%d cpus_per_core=%u",
 					 node_name,

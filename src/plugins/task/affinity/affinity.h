@@ -41,17 +41,6 @@
 #  include <numa.h>
 #endif
 
-/*
- * FreeBSD and Linux affinity functions have a slightly different interface
- * and are defined in different headers.  See platform-dependencies in
- * affinity.c.
- */
-#ifdef __FreeBSD__
-#  include <sys/param.h>
-#  include <sys/cpuset.h>
-   typedef cpuset_t cpu_set_t;
-#endif
-
 #ifdef HAVE_SYS_PRCTL_H
 #  include <sys/prctl.h>
 #endif
@@ -60,7 +49,6 @@
 #include <grp.h>
 #include <poll.h>
 #include <pwd.h>
-#include <sched.h> /* SMB */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,16 +78,11 @@
 #include "src/common/xsignal.h"
 #include "src/common/xstring.h"
 #include "src/common/xmalloc.h"
-
-#ifndef CPUSET_DIR
-#define CPUSET_DIR "/dev/cpuset"
-#endif
+#include "src/common/xsched.h"
 
 /*** from affinity.c ***/
 void	slurm_chkaffinity(cpu_set_t *mask, stepd_step_rec_t *step, int statval);
 int	get_cpuset(cpu_set_t *mask, stepd_step_rec_t *step, uint32_t node_tid);
-int	slurm_setaffinity(pid_t pid, size_t size, const cpu_set_t *mask);
-int	slurm_getaffinity(pid_t pid, size_t size, cpu_set_t *mask);
 
 /*** from numa.c ***/
 #ifdef HAVE_NUMA

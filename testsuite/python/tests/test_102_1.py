@@ -931,8 +931,6 @@ def test_max_clusters_federation(setup_federation1):
         f"sacctmgr -i modify cluster cluster{max_fed_clusters} set federation={federation1}",
         user=atf.properties["slurm-user"],
     )
-    assert first_match(r"Setting", results["stdout"])
-    assert next_match(rf"(?m)^ +Federation += +{federation1}")
     assert first_match(r"Too many clusters in federation", results["stderr"])
 
     output = atf.run_command_output(

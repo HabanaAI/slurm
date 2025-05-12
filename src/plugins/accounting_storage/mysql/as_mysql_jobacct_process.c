@@ -79,6 +79,7 @@ char *job_req_inx[] = {
 	"t1.restart_cnt",
 	"t1.id_resv",
 	"t3.resv_name",
+	"t1.resv_req",
 	"t1.id_user",
 	"t1.id_wckey",
 	"t1.job_db_inx",
@@ -145,6 +146,7 @@ enum {
 	JOB_REQ_RESTART_CNT,
 	JOB_REQ_RESVID,
 	JOB_REQ_RESV_NAME,
+	JOB_REQ_RESV_REQ,
 	JOB_REQ_UID,
 	JOB_REQ_WCKEYID,
 	JOB_REQ_DB_INX,
@@ -213,6 +215,10 @@ char *step_req_inx[] = {
 	"t1.req_cpufreq_min",
 	"t1.req_cpufreq",
 	"t1.req_cpufreq_gov",
+	"t1.cwd",
+	"t1.std_err",
+	"t1.std_in",
+	"t1.std_out",
 	"t1.submit_line",
 	"t1.tres_alloc",
 	"t1.tres_usage_in_max",
@@ -259,6 +265,10 @@ enum {
 	STEP_REQ_REQ_CPUFREQ_MIN,
 	STEP_REQ_REQ_CPUFREQ_MAX,
 	STEP_REQ_REQ_CPUFREQ_GOV,
+	STEP_REQ_CWD,
+	STEP_REQ_STDERR,
+	STEP_REQ_STDIN,
+	STEP_REQ_STDOUT,
 	STEP_REQ_SUBMIT_LINE,
 	STEP_REQ_TRES,
 	STEP_REQ_TRES_USAGE_IN_MAX,
@@ -688,6 +698,8 @@ static int _cluster_get_jobs(mysql_conn_t *mysql_conn,
 
 		if (row[JOB_REQ_RESV_NAME] && row[JOB_REQ_RESV_NAME][0])
 			job->resv_name = xstrdup(row[JOB_REQ_RESV_NAME]);
+		if (row[JOB_REQ_RESV_REQ] && row[JOB_REQ_RESV_REQ][0])
+			job->resv_req = xstrdup(row[JOB_REQ_RESV_REQ]);
 
 		job->cluster = xstrdup(cluster_name);
 
@@ -1074,6 +1086,11 @@ static int _cluster_get_jobs(mysql_conn_t *mysql_conn,
 			else
 				step->requid = slurm_atoul(
 					step_row[STEP_REQ_KILL_REQUID]);
+
+			step->cwd = xstrdup(step_row[STEP_REQ_CWD]);
+			step->std_err = xstrdup(step_row[STEP_REQ_STDERR]);
+			step->std_in = xstrdup(step_row[STEP_REQ_STDIN]);
+			step->std_out = xstrdup(step_row[STEP_REQ_STDOUT]);
 
 			step->submit_line =
 				xstrdup(step_row[STEP_REQ_SUBMIT_LINE]);

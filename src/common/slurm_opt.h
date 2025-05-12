@@ -104,6 +104,7 @@ enum {
 	LONG_OPT_EXCLUSIVE,
 	LONG_OPT_EXPORT,
 	LONG_OPT_EXPORT_FILE,
+	LONG_OPT_EXTERNAL,
 	LONG_OPT_EXTERNAL_LAUNCHER,
 	LONG_OPT_EXTRA,
 	LONG_OPT_GET_USER_ENV,
@@ -193,6 +194,7 @@ enum {
 	LONG_OPT_USAGE,
 	LONG_OPT_USE_MIN_NODES,
 	LONG_OPT_WAIT_ALL_NODES,
+	LONG_OPT_WAIT_FOR_CHILDREN,
 	LONG_OPT_WCKEY,
 	LONG_OPT_WHOLE,
 	LONG_OPT_WRAP,
@@ -287,6 +289,7 @@ typedef struct {
 	uint16_t tree_width;		/* --treewidth			*/
 	bool unbuffered;		/* --unbuffered			*/
 	bool whole;			/* --whole			*/
+	bool wait_for_children; /* --wait-for-children		*/
 } srun_opt_t;
 
 typedef struct {
@@ -401,8 +404,7 @@ typedef struct {
 	char *extra;			/* --extra			*/
 	uint16_t mail_type;		/* --mail-type			*/
 	char *mail_user;		/* --mail-user			*/
-	int get_user_env_time;		/* --get-user-env[=timeout]	*/
-	int get_user_env_mode;		/* --get-user-env=[S|L]		*/
+	bool get_user_env;		/* --get-user-env		*/
 	char *wckey;			/* workload characterization key */
 	char *reservation;		/* --reservation		*/
 	int resv_port_cnt;		/* --resv_ports			*/

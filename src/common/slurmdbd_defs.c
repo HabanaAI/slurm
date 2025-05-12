@@ -1161,6 +1161,7 @@ extern void slurmdbd_free_job_start_msg(void *in)
 		xfree(msg->node_inx);
 		xfree(msg->partition);
 		xfree(msg->qos_req);
+		xfree(msg->resv_req);
 		xfree(msg->script_hash);
 		xfree(msg->std_err);
 		xfree(msg->std_in);
@@ -1308,6 +1309,10 @@ extern void slurmdbd_free_step_start_msg(dbd_step_start_msg_t *msg)
 		xfree(msg->name);
 		xfree(msg->nodes);
 		xfree(msg->node_inx);
+		xfree(msg->cwd);
+		xfree(msg->std_err);
+		xfree(msg->std_in);
+		xfree(msg->std_out);
 		xfree(msg->submit_line);
 		xfree(msg->tres_alloc_str);
 		xfree(msg);

@@ -1089,10 +1089,17 @@ extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	char *extra = NULL, *query = NULL,
 		*name_char = NULL, *assoc_char = NULL;
 	time_t now = time(NULL);
-	char *user_name = NULL;
 	MYSQL_RES *result = NULL;
 	MYSQL_ROW row;
 	list_t *cluster_list_tmp = NULL;
+
+	remove_common_args_t args = {
+		.jobs_running = false,
+		.mysql_conn = mysql_conn,
+		.now = now,
+		.table = qos_table,
+		.type = DBD_REMOVE_QOS,
+	};
 
 	if (!qos_cond) {
 		error("we need something to change");
@@ -1164,7 +1171,7 @@ extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	}
 	xfree(query);
 
-	user_name = uid_to_string((uid_t) uid);
+	args.user_name = uid_to_string((uid_t) uid);
 
 	slurm_rwlock_rdlock(&as_mysql_cluster_list_lock);
 	cluster_list_tmp = list_shallow_copy(as_mysql_cluster_list);
@@ -1186,19 +1193,16 @@ extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 				reset_mysql_conn(mysql_conn);
 				break;
 			}
-
-			if ((rc = remove_common(mysql_conn, DBD_REMOVE_QOS, now,
-						user_name, qos_table, name_char,
-						assoc_char, object, NULL, NULL,
-						NULL))
-			    != SLURM_SUCCESS)
-				break;
 		}
 		list_iterator_destroy(itr);
-	} else
-		rc = remove_common(mysql_conn, DBD_REMOVE_QOS, now,
-				   user_name, qos_table, name_char,
-				   assoc_char, NULL, NULL, NULL, NULL);
+	}
+
+	args.assoc_char = assoc_char;
+	args.name_char = name_char;
+	args.ret_list = ret_list;
+	args.use_cluster_list = cluster_list_tmp;
+
+	rc = remove_common(&args);
 
 	FREE_NULL_LIST(cluster_list_tmp);
 	slurm_rwlock_unlock(&as_mysql_cluster_list_lock);
@@ -1206,11 +1210,16 @@ extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 	xfree(extra);
 	xfree(assoc_char);
 	xfree(name_char);
-	xfree(user_name);
+	xfree(args.user_name);
 	if (rc != SLURM_SUCCESS) {
 		FREE_NULL_LIST(ret_list);
 		return NULL;
 	}
+
+	if (args.jobs_running)
+		errno = ESLURM_JOBS_RUNNING_ON_ASSOC;
+	else
+		errno = SLURM_SUCCESS;
 
 	return ret_list;
 }
@@ -1233,6 +1242,7 @@ extern list_t *as_mysql_get_qos(mysql_conn_t *mysql_conn, uid_t uid,
 	/* if this changes you will need to edit the corresponding enum */
 	char *qos_req_inx[] = {
 		"name",
+		"deleted",
 		"description",
 		"id",
 		"flags",
@@ -1270,6 +1280,7 @@ extern list_t *as_mysql_get_qos(mysql_conn_t *mysql_conn, uid_t uid,
 	};
 	enum {
 		QOS_REQ_NAME,
+		QOS_REQ_DELETED,
 		QOS_REQ_DESC,
 		QOS_REQ_ID,
 		QOS_REQ_FLAGS,
@@ -1358,6 +1369,9 @@ empty:
 		qos->id = slurm_atoul(row[QOS_REQ_ID]);
 
 		qos->flags = slurm_atoul(row[QOS_REQ_FLAGS]);
+
+		if (row[QOS_REQ_DELETED] && (row[QOS_REQ_DELETED][0] == '1'))
+			qos->flags |= QOS_FLAG_DELETED;
 
 		if (row[QOS_REQ_NAME] && row[QOS_REQ_NAME][0])
 			qos->name = xstrdup(row[QOS_REQ_NAME]);

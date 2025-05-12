@@ -57,6 +57,7 @@
 #include "src/common/proc_args.h"
 #include "src/common/slurm_protocol_pack.h"
 #include "src/common/stepd_api.h"
+#include "src/common/stepd_proxy.h"
 #include "src/common/strlcpy.h"
 #include "src/common/timers.h"
 #include "src/common/tres_frequency.h"
@@ -286,7 +287,7 @@ static int _wait_for_job_running(stepd_step_rec_t *step)
 	if (step->state < SLURMSTEPD_STEP_RUNNING) {
 		debug("%ps not running yet %d [cont_id:%"PRIu64"]",
 		      &step->step_id, step->state, step->cont_id);
-		rc = ESLURMD_JOB_NOTRUNNING;
+		rc = ESLURMD_STEP_NOTRUNNING;
 	}
 
 	slurm_mutex_unlock(&step->state_mutex);
@@ -487,6 +488,9 @@ rwfail:
 	return NULL;
 }
 
+/*
+ * NOTE: reply must be in sync with corresponding rpc handling in slurmd.
+ */
 static int _handle_stepmgr_relay_msg(int fd,
 				     uid_t uid,
 				     slurm_msg_t *msg,
@@ -497,17 +501,15 @@ static int _handle_stepmgr_relay_msg(int fd,
 	buf_t *buffer;
 	char *data = NULL;
 	uint16_t protocol_version;
-	uint32_t client_fd;
 	uint32_t data_size;
+	return_code_msg_t rc_msg = { 0 };
 
 	safe_read(fd, &protocol_version, sizeof(uint16_t));
-	client_fd = receive_fd_over_socket(fd);
 	safe_read(fd, &data_size, sizeof(uint32_t));
 	data = xmalloc(data_size);
 	safe_read(fd, data, data_size);
 
 	slurm_msg_t_init(msg);
-	msg->conn_fd = client_fd;
 	msg->msg_type = msg_type;
 	msg->protocol_version = protocol_version;
 
@@ -534,8 +536,12 @@ static int _handle_stepmgr_relay_msg(int fd,
 
 done:
 	if (rc) {
-		if (reply)
-			slurm_send_rc_msg(msg, rc);
+		if (reply) {
+			rc_msg.return_code = rc;
+			stepd_proxy_send_resp_to_slurmd(fd, msg,
+							RESPONSE_SLURM_RC,
+							&rc_msg);
+		}
 		slurm_free_msg_members(msg);
 	}
 
@@ -562,7 +568,7 @@ static int _handle_step_create(int fd, stepd_step_rec_t *step, uid_t uid)
 	msg.auth_ids_set = true;
 
 	/* step_create_from_msg responds to the client */
-	step_create_from_msg(&msg, NULL, NULL);
+	step_create_from_msg(&msg, fd, NULL, NULL);
 
 	slurm_mutex_unlock(&stepmgr_mutex);
 
@@ -601,7 +607,8 @@ static int _handle_job_step_get_info(int fd, stepd_step_rec_t *step, uid_t uid)
 	pack_job_step_info_response_msg(&args);
 	slurm_mutex_unlock(&stepmgr_mutex);
 
-	(void) send_msg_response(&msg, RESPONSE_JOB_STEP_INFO, buffer);
+	(void) stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_JOB_STEP_INFO,
+					       buffer);
 	FREE_NULL_BUFFER(buffer);
 	slurm_free_msg_members(&msg);
 
@@ -614,6 +621,7 @@ static int _handle_cancel_job_step(int fd, stepd_step_rec_t *step, uid_t uid)
 	int rc;
 	slurm_msg_t msg;
 	job_step_kill_msg_t *request;
+	return_code_msg_t rc_msg = { 0 };
 
 	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
 					    REQUEST_CANCEL_JOB_STEP, true)))
@@ -626,7 +634,8 @@ static int _handle_cancel_job_step(int fd, stepd_step_rec_t *step, uid_t uid)
 			     request->flags, uid);
 	slurm_mutex_unlock(&stepmgr_mutex);
 
-	slurm_send_rc_msg(&msg, rc);
+	rc_msg.return_code = rc;
+	stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_SLURM_RC, &rc_msg);
 	slurm_free_msg_members(&msg);
 
 done:
@@ -706,6 +715,7 @@ static int _handle_update_step(int fd, stepd_step_rec_t *step, uid_t uid)
 	int rc;
 	slurm_msg_t msg;
 	step_update_request_msg_t *request;
+	return_code_msg_t rc_msg = { 0 };
 
 	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
 					    REQUEST_UPDATE_JOB_STEP, true)))
@@ -717,7 +727,8 @@ static int _handle_update_step(int fd, stepd_step_rec_t *step, uid_t uid)
 	rc = update_step(request, uid);
 	slurm_mutex_unlock(&stepmgr_mutex);
 
-	slurm_send_rc_msg(&msg, rc);
+	rc_msg.return_code = rc;
+	stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_SLURM_RC, &rc_msg);
 	slurm_free_msg_members(&msg);
 
 done:
@@ -730,6 +741,7 @@ static int _handle_step_layout(int fd, stepd_step_rec_t *step, uid_t uid)
 	slurm_msg_t msg;
 	slurm_step_id_t *request;
 	slurm_step_layout_t *step_layout = NULL;
+	return_code_msg_t rc_msg = { 0 };
 
 	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg, REQUEST_STEP_LAYOUT,
 					    true)))
@@ -741,11 +753,14 @@ static int _handle_step_layout(int fd, stepd_step_rec_t *step, uid_t uid)
 	rc = stepmgr_get_step_layouts(job_step_ptr, request, &step_layout);
 	slurm_mutex_unlock(&stepmgr_mutex);
 	if (!rc) {
-		(void) send_msg_response(&msg, RESPONSE_STEP_LAYOUT,
-					 step_layout);
+		(void) stepd_proxy_send_resp_to_slurmd(fd, &msg,
+						       RESPONSE_STEP_LAYOUT,
+						       step_layout);
 		slurm_step_layout_destroy(step_layout);
 	} else {
-		slurm_send_rc_msg(&msg, rc);
+		rc_msg.return_code = rc;
+		stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_SLURM_RC,
+						&rc_msg);
 	}
 
 	slurm_free_msg_members(&msg);
@@ -760,6 +775,7 @@ static int _handle_job_sbcast_cred(int fd, stepd_step_rec_t *step, uid_t uid)
 	slurm_msg_t msg;
 	step_alloc_info_msg_t *request;
 	job_sbcast_cred_msg_t *job_info_resp_msg = NULL;
+	return_code_msg_t rc_msg = { 0 };
 
 	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
 					    REQUEST_JOB_SBCAST_CRED, true)))
@@ -775,15 +791,17 @@ static int _handle_job_sbcast_cred(int fd, stepd_step_rec_t *step, uid_t uid)
 	if (rc)
 		goto resp;
 
-	(void) send_msg_response(&msg, RESPONSE_JOB_SBCAST_CRED,
-				 job_info_resp_msg);
+	(void) stepd_proxy_send_resp_to_slurmd(fd, &msg,
+					       RESPONSE_JOB_SBCAST_CRED,
+					       job_info_resp_msg);
 
 	slurm_free_sbcast_cred_msg(job_info_resp_msg);
 	slurm_free_msg_members(&msg);
 	return rc;
 
 resp:
-	slurm_send_rc_msg(&msg, rc);
+	rc_msg.return_code = rc;
+	stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_SLURM_RC, &rc_msg);
 	slurm_free_msg_members(&msg);
 
 done:
@@ -803,6 +821,7 @@ static int _handle_het_job_alloc_info(int fd, stepd_step_rec_t *step, uid_t uid)
 	job_alloc_info_msg_t *request;
 	resource_allocation_response_msg_t *job_info_resp_msg = NULL;
 	list_t *resp_list = NULL;
+	return_code_msg_t rc_msg = { 0 };
 
 	if ((rc = _handle_stepmgr_relay_msg(fd, uid, &msg,
 					    REQUEST_HET_JOB_ALLOC_INFO, true)))
@@ -826,14 +845,17 @@ static int _handle_het_job_alloc_info(int fd, stepd_step_rec_t *step, uid_t uid)
 
 	slurm_mutex_unlock(&stepmgr_mutex);
 
-	(void) send_msg_response(&msg, RESPONSE_HET_JOB_ALLOCATION, resp_list);
+	(void) stepd_proxy_send_resp_to_slurmd(fd, &msg,
+					       RESPONSE_HET_JOB_ALLOCATION,
+					       resp_list);
 
 	FREE_NULL_LIST(resp_list);
 	slurm_free_msg_members(&msg);
 	return rc;
 
 resp:
-	slurm_send_rc_msg(&msg, rc);
+	rc_msg.return_code = rc;
+	stepd_proxy_send_resp_to_slurmd(fd, &msg, RESPONSE_SLURM_RC, &rc_msg);
 	slurm_free_msg_members(&msg);
 
 done:
@@ -1141,9 +1163,13 @@ _handle_signal_container(int fd, stepd_step_rec_t *step, uid_t uid)
 		} else if (sig == SIG_UME) {
 			error("*** %s ON %s UNCORRECTABLE MEMORY ERROR AT %s ***",
 			      entity, step->node_name, time_str);
-		} else if ((sig == SIGTERM) || (sig == SIGKILL) ||
-			   (sig == SIG_TERM_KILL)) {
-			error("*** %s ON %s CANCELLED AT %s ***",
+		} else if ((sig == SIGTERM) || (sig == SIGKILL)) {
+			error("*** %s ON %s CANCELLED AT %s DUE to SIGNAL %s ***",
+			      entity, step->node_name, time_str,
+			      strsignal(sig));
+			msg_sent = 1;
+		} else if (sig == SIG_TERM_KILL) {
+			error("*** %s ON %s CANCELLED AT %s DUE TO TASK FAILURE ***",
 			      entity, step->node_name, time_str);
 			msg_sent = 1;
 		}
@@ -1356,7 +1382,7 @@ _handle_attach(int fd, stepd_step_rec_t *step, uid_t uid)
 	srun_info_t *srun;
 	int rc = SLURM_SUCCESS;
 	uint32_t *gtids = NULL, *pids = NULL;
-	uint32_t key_len;
+	uint32_t key_len, cert_len;
 	int len, i;
 
 	debug("_handle_attach for %ps", &step->step_id);
@@ -1365,6 +1391,11 @@ _handle_attach(int fd, stepd_step_rec_t *step, uid_t uid)
 
 	debug("sizeof(srun_info_t) = %d, sizeof(slurm_addr_t) = %d",
 	      (int) sizeof(srun_info_t), (int) sizeof(slurm_addr_t));
+	safe_read(fd, &cert_len, sizeof(uint32_t));
+	if (cert_len) {
+		srun->tls_cert = xmalloc(cert_len);
+		safe_read(fd, srun->tls_cert, cert_len);
+	}
 	safe_read(fd, &srun->ioaddr, sizeof(slurm_addr_t));
 	safe_read(fd, &srun->resp_addr, sizeof(slurm_addr_t));
 	safe_read(fd, &key_len, sizeof(uint32_t));
@@ -1380,7 +1411,7 @@ _handle_attach(int fd, stepd_step_rec_t *step, uid_t uid)
 	 * Check if jobstep is actually running.
 	 */
 	if (step->state != SLURMSTEPD_STEP_RUNNING) {
-		rc = ESLURMD_JOB_NOTRUNNING;
+		rc = ESLURMD_STEP_NOTRUNNING;
 		goto done;
 	}
 
@@ -1512,8 +1543,9 @@ static void _block_on_pid(pid_t pid)
 		sleep(1);
 }
 
-/* Wait for the pid given and when it ends get and children it might
- * of left behind and wait on them instead.
+/*
+ * Wait for the given pid and when it ends, get any children that the pid might
+ * have left behind. Then wait on these if so.
  */
 static void *_wait_extern_pid(void *args)
 {
@@ -1544,12 +1576,25 @@ static void *_wait_extern_pid(void *args)
 	}
 	acct_gather_profile_g_task_end(pid);
 
-	/* See if we have any children of init left and add them to track. */
+	/*
+	 * See if we have any children of the given pid left behind, and if
+	 * found add them to track.
+	 */
 	proctrack_g_get_pids(step->cont_id, &pids, &npids);
 	for (i = 0; i < npids; i++) {
 		snprintf(proc_stat_file, 256, "/proc/%d/stat", pids[i]);
 		if (!(stat_fp = fopen(proc_stat_file, "r")))
 			continue;  /* Assume the process went away */
+
+		/*
+		 * If this pid is slurmstepd's pid (ourselves) or it is already
+		 * tracked in the accounting, this is not an orphaned pid,
+		 * so just ignore it.
+		 */
+		if ((getpid() == pids[i]) ||
+		    jobacct_gather_stat_task(pids[i], false))
+			goto next_pid;
+
 		fd = fileno(stat_fp);
 		if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1)
 			error("%s: fcntl(%s): %m", __func__, proc_stat_file);
@@ -2301,29 +2346,13 @@ _handle_stat_jobacct(int fd, stepd_step_rec_t *step, uid_t uid)
 	 * differently
 	 */
 	if (step->step_id.step_id == SLURM_EXTERN_CONT) {
-		pid_t *pids = NULL;
-		int npids = 0;
-
 		/*
 		 * We only have one task in the extern step on each node,
 		 * despite many pids may have been adopted.
 		 */
+		jobacct_gather_stat_all_task(jobacct);
+		jobacctinfo_aggregate(jobacct, step->jobacct);
 		num_tasks = 1;
-		proctrack_g_get_pids(step->cont_id, &pids, &npids);
-
-		for (int i = 0; i < npids; i++) {
-			temp_jobacct = jobacct_gather_stat_task(pids[i],
-								update_data);
-			update_data = false;
-			if (temp_jobacct) {
-				jobacctinfo_aggregate(jobacct, temp_jobacct);
-				jobacctinfo_destroy(temp_jobacct);
-			}
-			log_flag(JAG, "%s: step_extern cont_id=%"PRIu64" includes pid=%"PRIu64,
-				 __func__, step->cont_id, (uint64_t) pids[i]);
-		}
-
-		xfree(pids);
 	} else {
 		for (int i = 0; i < step->node_tasks; i++) {
 			temp_jobacct =

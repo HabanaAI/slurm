@@ -55,7 +55,6 @@
 #include "src/common/bitstring.h"
 #include "src/common/cron.h"
 #include "src/common/extra_constraints.h"
-#include "src/common/front_end.h"
 #include "src/common/identity.h"
 #include "src/common/job_record.h"
 #include "src/common/job_resources.h"
@@ -256,7 +255,6 @@ extern bool disable_remote_singleton;
 extern int listen_nports;
 extern int max_depend_depth;
 extern uint32_t max_powered_nodes;
-extern bool node_features_updated;
 extern pthread_cond_t purge_thread_cond;
 extern pthread_mutex_t purge_thread_lock;
 extern pthread_mutex_t check_bf_running_lock;
@@ -278,12 +276,6 @@ extern bool ping_nodes_now;		/* if set, ping nodes immediately */
 extern bool want_nodes_reboot;		/* if set, check for idle nodes */
 extern bool ignore_state_errors;
 
-typedef struct node_features {
-	uint32_t magic;		/* magic cookie to test data integrity */
-	char *name;		/* name of a feature */
-	bitstr_t *node_bitmap;	/* bitmap of nodes with this feature */
-} node_feature_t;
-
 extern list_t *conf_includes_list;  /* list of conf_includes_map_t */
 
 #define PACK_FANOUT_ADDRS(_X) \
@@ -293,12 +285,13 @@ extern list_t *conf_includes_list;  /* list of conf_includes_map_t */
 
 /*****************************************************************************\
  *  NODE states and bitmaps
- *
+ *  asap_node_bitmap 	    Set if the node is marked to be rebooted asap
  *  avail_node_bitmap       Set if node's state is not DOWN, DRAINING/DRAINED,
  *                          FAILING or NO_RESPOND (i.e. available to run a job)
  *  booting_node_bitmap     Set if node in process of booting
  *  cg_node_bitmap          Set if node in completing state
  *  cloud_node_bitmap       Set if node in CLOUD state
+ *  external_node_bitmap    Set if node in EXTERNAL state
  *  future_node_bitmap      Set if node in FUTURE state
  *  idle_node_bitmap        Set if node has no jobs allocated to it
  *  power_down_node_bitmap  Set for nodes which are powered down
@@ -309,6 +302,7 @@ extern list_t *conf_includes_list;  /* list of conf_includes_map_t */
  *                          configured for the job's partition)
  *  up_node_bitmap          Set if the node's state is not DOWN
 \*****************************************************************************/
+extern bitstr_t *asap_node_bitmap; /* reboot asap nodes */
 extern bitstr_t *avail_node_bitmap;	/* bitmap of available nodes,
 					 * state not DOWN, DRAIN or FAILING */
 extern bitstr_t *bf_ignore_node_bitmap;	/* bitmap of nodes made available during
@@ -316,6 +310,7 @@ extern bitstr_t *bf_ignore_node_bitmap;	/* bitmap of nodes made available during
 extern bitstr_t *booting_node_bitmap;	/* bitmap of booting nodes */
 extern bitstr_t *cg_node_bitmap;	/* bitmap of completing nodes */
 extern bitstr_t *cloud_node_bitmap;	/* bitmap of cloud nodes */
+extern bitstr_t *external_node_bitmap;	/* bitmap of external nodes */
 extern bitstr_t *future_node_bitmap;	/* bitmap of FUTURE nodes */
 extern bitstr_t *idle_node_bitmap;	/* bitmap of idle nodes */
 extern bitstr_t *power_down_node_bitmap; /* Powered down nodes */
@@ -396,6 +391,8 @@ typedef struct slurmctld_resv {
 	time_t start_time_prev;	/* If start time was changed this is
 				 * the previous start time.  Needed
 				 * for accounting */
+	time_t time_force; /* The actual start time of the reservation if the
+			    * FORCE_START flag was used */
 	char *tres_fmt_str;     /* formatted string of tres to deal with */
 	char *tres_str;         /* simple string of tres to deal with */
 	char *users;		/* names of users permitted to use	*/
@@ -420,25 +417,6 @@ extern time_t last_resv_update;	/* time of last resv_list update */
 \*****************************************************************************/
 extern list_t *job_list;		/* list of job_record entries */
 extern list_t *purge_jobs_list;		/* list of job_record_t to free */
-
-/*****************************************************************************\
- *  Consumable Resources parameters and data structures
-\*****************************************************************************/
-
-/*
- * Define the type of update and of data retrieval that can happen
- * from the "select/cons_res" plugin. This information needed to
- * support processors as consumable resources.  This structure will be
- * useful when updating other types of consumable resources as well
-*/
-enum select_plugindata_info {
-	SELECT_CR_PLUGIN = 0,    /* data-> uint32 See SELECT_TYPE_* below */
-	SELECT_CONFIG_INFO = 6,  /* data-> list_t * get .conf info from select
-				  * plugin */
-};
-#define SELECT_TYPE_CONS_RES	1
-#define SELECT_TYPE_CONS_TRES	2
-
 
 /*****************************************************************************\
  *  Global assoc_cache variables
@@ -796,12 +774,14 @@ extern uint32_t get_next_job_id(bool test_only);
 /*
  * get_part_list - find record for named partition(s)
  * IN name - partition name(s) in a comma separated list
+ * OUT part_ptr_list - sorted list of pointers to the partitions or NULL
+ * OUT prim_part_ptr - pointer to the primary partition
  * OUT err_part - The first invalid partition name.
- * RET sorted list of pointers to the partitions or NULL if not found
  * NOTE: Caller must free the returned list
  * NOTE: Caller must free err_part
  */
-extern list_t *get_part_list(char *name, char **err_part);
+extern void get_part_list(char *name, list_t **part_ptr_list,
+			  part_record_t **prim_part_ptr, char **err_part);
 
 /*
  * init_depend_policy()
@@ -1046,17 +1026,6 @@ extern int job_signal(job_record_t *job_ptr, uint16_t signal,
 		      uint16_t flags, uid_t uid, bool preempt);
 
 /*
- * job_signal_id - signal the specified job
- * IN job_id - id of the job to be signaled
- * IN signal - signal to send, SIGKILL == cancel the job
- * IN flags  - see KILL_JOB_* flags in slurm.h
- * IN uid - uid of requesting user
- * IN preempt - true if job being preempted
- * RET 0 on success, otherwise ESLURM error code
- */
-extern int job_signal_id(uint32_t job_id, uint16_t signal, uint16_t flags,
-			 uid_t uid, bool preempt);
-/*
  * het_job_signal - signal all components of a hetjob
  * IN het_job_leader - job record of job hetjob leader
  * IN signal - signal to send, SIGKILL == cancel the job
@@ -1239,20 +1208,12 @@ extern int kill_job_by_part_name(char *part_name);
 extern void kill_job_on_node(job_record_t *job_ptr, node_record_t *node_ptr);
 
 /*
- * kill_job_by_front_end_name - Given a front end node name, deallocate
- *	resource for its jobs and kill them.
- * IN node_name - name of a front end node
- * RET number of jobs associated with this front end node
- */
-extern int kill_job_by_front_end_name(char *node_name);
-
-/*
- * kill_running_job_by_node_name - Given a node name, deallocate RUNNING
+ * kill_running_job_by_node_ptr - Given a node_ptr, deallocate RUNNING
  *	or COMPLETING jobs from the node or kill them
  * IN node_name - name of a node
  * RET number of killed jobs
  */
-extern int kill_running_job_by_node_name(char *node_name);
+extern int kill_running_job_by_node_ptr(node_record_t *node_ptr);
 
 /* list_compare_config - compare two entry from the config list based upon
  *	weight, see common/list.h for documentation */
@@ -1302,11 +1263,6 @@ extern void load_part_uid_allow_list(bool force);
  *	file data.
  */
 extern int load_all_part_state(uint16_t reconfig_flags);
-
-/*
- * Log contents of avail_feature_list and active_feature_list
- */
-extern void log_feature_lists(void);
 
 /* make_node_alloc - flag specified node as allocated to a job
  * IN node_ptr - pointer to node being allocated
@@ -1916,11 +1872,11 @@ extern int update_node_record_acct_gather_data(
 /*
  * Create nodes from scontrol using slurm.conf nodeline syntax.
  *
- * IN nodeline - slurm.conf nodename description.
+ * IN msg - creation message including nodeline
  * OUT err_msg - pass error messages out.
  * RET SLURM_SUCCESS on success, SLURM_ERROR otherwise.
  */
-extern int create_nodes(char *nodeline, char **err_msg);
+extern int create_nodes(update_node_msg_t *msg, char **err_msg);
 
 /*
  * Create and add dynamic node to system from registration.
@@ -1970,6 +1926,11 @@ extern int update_part (update_part_msg_t * part_desc, bool create_flag);
 extern void sort_all_jobs_partition_lists();
 
 /*
+ * Common code to handle a job when a cred can't be created.
+ */
+extern void job_mgr_handle_cred_failure(job_record_t *job_ptr);
+
+/*
  * validate_alloc_node - validate that the allocating node
  * is allowed to use this partition
  * IN part_ptr - pointer to a partition
@@ -2015,20 +1976,6 @@ extern void validate_jobs_on_node(slurm_msg_t *slurm_msg);
 extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up);
 
 /*
- * validate_nodes_via_front_end - validate all nodes on a cluster as having
- *	a valid configuration as soon as the front-end registers. Individual
- *	nodes will not register with this configuration
- * IN reg_msg - node registration message
- * IN protocol_version - Version of Slurm on this node
- * OUT newly_up - set if node newly brought into service
- * RET 0 if no error, Slurm error code otherwise
- * NOTE: READ lock_slurmctld config before entry
- */
-extern int validate_nodes_via_front_end(
-		slurm_node_registration_status_msg_t *reg_msg,
-		uint16_t protocol_version, bool *newly_up);
-
-/*
  * validate_super_user - validate that the uid is authorized at the
  *      root, SlurmUser, or SLURMDB_ADMIN_SUPER_USER level
  * IN uid - user to validate
@@ -2043,6 +1990,7 @@ extern bool validate_super_user(uid_t uid);
  * RET true if permitted to run, false otherwise
  */
 extern bool validate_operator(uid_t uid);
+extern bool validate_operator_locked(uid_t uid);
 
 /*
  * validate_operator_user_rec - validate that the user is authorized at the
@@ -2311,6 +2259,8 @@ extern void set_node_reason(node_record_t *node_ptr,
 			    char *message,
 			    time_t time);
 
+extern int set_part_topology_idx(void *x, void *arg);
+
 extern void reconfigure_slurm(slurm_msg_t *msg);
 
 extern void notify_parent_of_success(void);
@@ -2349,5 +2299,11 @@ extern void controller_reconfig_scheduling(void);
  * part_record_t's.
  */
 extern char *part_list_to_xstr(list_t *list);
+
+/* Allow listener sockets to accept() new incoming requests */
+extern void listeners_unquiesce(void);
+
+/* Stop listener sockets from accept()ing new incoming requests */
+extern void listeners_quiesce(void);
 
 #endif /* !_HAVE_SLURMCTLD_H */

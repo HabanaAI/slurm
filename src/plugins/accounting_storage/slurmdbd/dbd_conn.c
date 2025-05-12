@@ -180,7 +180,7 @@ extern int dbd_conn_check_and_reopen(persist_conn_t *pc)
 {
 	xassert(pc);
 
-	if (pc && pc->fd >= 0) {
+	if (pc && pc->tls_conn) {
 		debug("Attempt to re-open slurmdbd socket");
 		/* clear errno (checked after this for errors) */
 		errno = 0;
@@ -199,9 +199,10 @@ extern int dbd_conn_check_and_reopen(persist_conn_t *pc)
 
 extern void dbd_conn_close(persist_conn_t **pc)
 {
+	persist_msg_t req = { 0 };
+	dbd_fini_msg_t get_msg;
+	int resp_code = SLURM_SUCCESS;
 	int rc;
-	buf_t *buffer;
-	dbd_fini_msg_t req;
 
 	if (!pc)
 		return;
@@ -225,14 +226,30 @@ extern void dbd_conn_close(persist_conn_t **pc)
 		goto destroy_conn;
 	}
 
-	buffer = init_buf(1024);
-	pack16((uint16_t) DBD_FINI, buffer);
-	req.commit = 0;
-	req.close_conn = 1;
-	slurmdbd_pack_fini_msg(&req, SLURM_PROTOCOL_VERSION, buffer);
+	memset(&get_msg, 0, sizeof(dbd_fini_msg_t));
 
-	rc = slurm_persist_send_msg(*pc, buffer);
-	FREE_NULL_BUFFER(buffer);
+	get_msg.close_conn = 0;
+	get_msg.commit = false;
+
+	req.msg_type = DBD_FINI;
+	req.conn = *pc;
+	req.data = &get_msg;
+
+	if ((rc = dbd_conn_send_recv_rc_msg(SLURM_PROTOCOL_VERSION, &req,
+					    &resp_code))) {
+		log_flag(NET, "unable to send/recv DB_FINI msg to %s:%u: %s",
+			 (*pc)->rem_host, (*pc)->rem_port,
+			 slurm_strerror(rc));
+		goto destroy_conn;
+	}
+
+	if (resp_code != SLURM_SUCCESS) {
+		log_flag(NET, "got error in response to DB_FINI msg from %s:%u: %s",
+			 (*pc)->rem_host, (*pc)->rem_port,
+			 slurm_strerror(resp_code));
+		rc = resp_code;
+		goto destroy_conn;
+	}
 
 	log_flag(NET, "sent DB_FINI msg to %s:%u rc(%d):%s",
 		 (*pc)->rem_host, (*pc)->rem_port,
@@ -261,11 +278,11 @@ extern int dbd_conn_send_recv_direct(uint16_t rpc_version,
 	xassert(resp);
 	xassert(use_conn);
 
-	if (use_conn->fd < 0) {
+	if (!use_conn->tls_conn) {
 		/* The connection has been closed, reopen */
 		rc = dbd_conn_check_and_reopen(use_conn);
 
-		if (rc != SLURM_SUCCESS || (use_conn->fd < 0)) {
+		if (rc != SLURM_SUCCESS || !use_conn->tls_conn) {
 			rc = SLURM_ERROR;
 			goto end_it;
 		}

@@ -415,6 +415,9 @@ void slurm_write_ctl_conf ( slurm_ctl_conf_info_msg_t * slurm_ctl_conf_ptr,
 	        else
 	                fprintf(fp, " State=UNKNOWN");
 
+		if (p[i].topology_name)
+			fprintf(fp, " Topology=%s", p[i].topology_name);
+
 		if (p[i].billing_weights_str != NULL)
 			fprintf(fp, " TRESBillingWeights=%s",
 			        p[i].billing_weights_str);
@@ -566,6 +569,8 @@ static void _sprint_task_plugin_params(char *str,
 		strcat(str, "OOMKillStep,");
 	if (task_plugin_params & SLURMD_OFF_SPEC)
 		strcat(str, "SlurmdOffSpec,");
+	if (task_plugin_params & SLURMD_SPEC_OVERRIDE)
+		strcat(str, "SlurmdSpecOverride");
 
 	slurm_sprint_cpu_bind_type(tmp_str, task_plugin_params);
 	/*
@@ -666,6 +671,9 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *conf)
 
 	add_key_pair(ret_list, "BurstBufferType", "%s", conf->bb_type);
 
+	add_key_pair(ret_list, "CertgenParameters", "%s", conf->certgen_params);
+	add_key_pair(ret_list, "CertgenType", "%s", conf->certgen_type);
+
 	add_key_pair(ret_list, "CertmgrParameters", "%s", conf->certmgr_params);
 	add_key_pair(ret_list, "CertmgrType", "%s", conf->certmgr_type);
 
@@ -740,9 +748,6 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *conf)
 	add_key_pair(ret_list, "FederationParameters", "%s", conf->fed_params);
 
 	add_key_pair(ret_list, "FirstJobId", "%u", conf->first_job_id);
-
-	add_key_pair(ret_list, "GetEnvTimeout", "%u sec",
-		     conf->get_env_timeout);
 
 	add_key_pair(ret_list, "GresTypes", "%s", conf->gres_plugins);
 
@@ -978,8 +983,16 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *conf)
 		xfree(key);
 	}
 
-	add_key_pair(ret_list, "PrologEpilogTimeout", "%u",
-		     conf->prolog_epilog_timeout);
+	/* If prolog and epilog timeouts equal print only PrologEpilogTimeout */
+	if (conf->prolog_timeout == conf->epilog_timeout) {
+		add_key_pair(ret_list, "PrologEpilogTimeout", "%u",
+			     conf->prolog_timeout);
+	} else {
+		add_key_pair(ret_list, "EpilogTimeout", "%u",
+			     conf->epilog_timeout);
+		add_key_pair(ret_list, "PrologTimeout", "%u",
+			     conf->prolog_timeout);
+	}
 
 	for (int i = 0; i < conf->prolog_slurmctld_cnt; i++) {
 		char *key = xstrdup_printf("PrologSlurmctld[%d]", i);
@@ -1017,8 +1030,11 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *conf)
 	add_key_pair(ret_list, "ResumeRate", "%u nodes/min",
 		     conf->resume_rate);
 
-	add_key_pair(ret_list, "ResumeTimeout", "%u sec",
-		     conf->resume_timeout);
+	if (conf->resume_timeout == INFINITE16)
+		add_key_pair(ret_list, "ResumeTimeout", "INFINITE");
+	else
+		add_key_pair(ret_list, "ResumeTimeout", "%u sec",
+		     	     conf->resume_timeout);
 
 	add_key_pair(ret_list, "ResvEpilog", "%s", conf->resv_epilog);
 

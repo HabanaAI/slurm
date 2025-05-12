@@ -126,11 +126,7 @@ extern bool has_default_opt(void)
 {
 	if (opt.account == NULL
 	    && opt.batch == false
-#ifdef HAVE_FRONT_END
-	    && opt.ctld
-#else
 	    && !opt.ctld
-#endif
 	    && opt.interactive == false
 	    && opt.job_name == NULL
 	    && opt.partition == NULL
@@ -187,11 +183,7 @@ static void _opt_default(void)
 	opt.account	= NULL;
 	opt.batch	= false;
 	opt.clusters    = NULL;
-#ifdef HAVE_FRONT_END
-	opt.ctld	= true;
-#else
 	opt.ctld	= false;
-#endif
 	opt.cron = false;
 	opt.full	= false;
 	opt.hurry	= false;
@@ -628,7 +620,14 @@ _opt_verify(void)
 	bool verified = true;
 
 	if (opt.user_name) {	/* translate to user_id */
-		if ( uid_from_string( opt.user_name, &opt.user_id ) != 0 ) {
+		int rc;
+
+		/*
+		 * Allow numeric uids that no longer exist on underlying system
+		 * so that any old jobs that still use them can be identified.
+		 */
+		rc = uid_from_string(opt.user_name, &opt.user_id);
+		if ((rc != SLURM_SUCCESS) && (rc != ESLURM_USER_ID_UNKNOWN)) {
 			error("Invalid user name: %s", opt.user_name);
 			return false;
 		}

@@ -1,7 +1,6 @@
 /*****************************************************************************\
  *  sacct.c - job accounting reports for Slurm's jobacct/log plugin
  *****************************************************************************
- *
  *  Copyright (C) 2008-2009 Lawrence Livermore National Security.
  *  Copyright (C) 2005 Hewlett-Packard Development Company, L.P.
  *
@@ -34,8 +33,6 @@
  *  with Slurm; if not, write to the Free Software Foundation, Inc.,
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
-
-#include "src/interfaces/auth.h"
 
 #include "sacct.h"
 
@@ -126,6 +123,7 @@ print_field_t fields[] = {
 	{10, "ReqTRES", print_fields_str, PRINT_TRESR},
 	{20, "Reservation",  print_fields_str, PRINT_RESERVATION},
 	{8,  "ReservationId",  print_fields_uint, PRINT_RESERVATION_ID},
+	{20, "ReqReservation", print_fields_str, PRINT_RESERVATION_REQ},
 	{8,  "Restarts", print_fields_uint16, PRINT_RESTART_CNT},
 	{11, "SegmentSize", print_fields_uint16, PRINT_SEGMENT_SIZE},
 	{14, "SLUID", print_fields_sluid, PRINT_SLUID},
@@ -171,48 +169,22 @@ list_t *jobs = NULL;
 
 int main(int argc, char **argv)
 {
-	enum {
-		SACCT_LIST,
-		SACCT_HELP,
-		SACCT_USAGE
-	} op;
 	int rc = 0;
 
 	slurm_init(NULL);
 	sacct_init();
 	parse_command_line(argc, argv);
 
-	/* What are we doing? Requests for help take highest priority,
-	 * but then check for illogical switch combinations.
-	 */
-
-	if (params.opt_help)
-		op = SACCT_HELP;
+	if (!params.mimetype &&
+	    !(params.job_cond->flags & JOBCOND_FLAG_SCRIPT) &&
+	    !(params.job_cond->flags & JOBCOND_FLAG_ENV))
+		print_fields_header(print_fields_list);
+	if (get_data() == SLURM_ERROR)
+		exit(1);
+	if (params.opt_completion)
+		do_list_completion();
 	else
-		op = SACCT_LIST;
-
-
-	switch (op) {
-	case SACCT_LIST:
-		if (!params.mimetype &&
-		    !(params.job_cond->flags & JOBCOND_FLAG_SCRIPT) &&
-		    !(params.job_cond->flags & JOBCOND_FLAG_ENV))
-			print_fields_header(print_fields_list);
-		if (get_data() == SLURM_ERROR)
-			exit(1);
-		if (params.opt_completion)
-			do_list_completion();
-		else
-			do_list(argc, argv);
-		break;
-	case SACCT_HELP:
-		do_help();
-		break;
-	default:
-		fprintf(stderr, "sacct bug: should never get here\n");
-		sacct_fini();
-		exit(2);
-	}
+		do_list(argc, argv);
 
 	sacct_fini();
 

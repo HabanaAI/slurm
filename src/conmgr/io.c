@@ -114,9 +114,8 @@ static int _get_fd_readable(conmgr_fd_t *con)
 	return readable;
 }
 
-extern void handle_read(conmgr_callback_args_t conmgr_args, void *arg)
+extern void read_input(conmgr_fd_t *con, buf_t *buf, const char *what)
 {
-	conmgr_fd_t *con = conmgr_args.con;
 	ssize_t read_c;
 	int rc, readable;
 
@@ -132,17 +131,17 @@ extern void handle_read(conmgr_callback_args_t conmgr_args, void *arg)
 	readable = _get_fd_readable(con);
 
 	/* Grow buffer as needed to handle the incoming data */
-	if ((rc = try_grow_buf_remaining(con->in, readable))) {
-		error("%s: [%s] unable to allocate larger input buffer: %s",
-		      __func__, con->name, slurm_strerror(rc));
+	if ((rc = try_grow_buf_remaining(buf, readable))) {
+		error("%s: [%s] unable to allocate larger %s: %s",
+		      __func__, con->name, what, slurm_strerror(rc));
 		close_con(false, con);
 		return;
 	}
 
 	/* check for errors with a NULL read */
-	read_c = read(con->input_fd,
-		      (get_buf_data(con->in) + get_buf_offset(con->in)),
-		      readable);
+	read_c = read(con->input_fd, (get_buf_data(buf) +
+				      get_buf_offset(buf)), readable);
+
 	if (read_c == -1) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK) {
 			log_flag(NET, "%s: [%s] socket would block on read",
@@ -152,28 +151,42 @@ extern void handle_read(conmgr_callback_args_t conmgr_args, void *arg)
 
 		log_flag(NET, "%s: [%s] error while reading: %m",
 			 __func__, con->name);
+
 		close_con(false, con);
 		return;
 	} else if (read_c == 0) {
-		log_flag(NET, "%s: [%s] read EOF with %u bytes to process already in buffer",
-			 __func__, con->name, get_buf_offset(con->in));
+		log_flag(NET, "%s: [%s] read EOF with %u bytes to process already in %s",
+			 __func__, con->name, get_buf_offset(buf), what);
 
 		slurm_mutex_lock(&mgr.mutex);
 		/* lock to tell mgr that we are done */
 		con_set_flag(con, FLAG_READ_EOF);
 		slurm_mutex_unlock(&mgr.mutex);
 	} else {
-		log_flag(NET, "%s: [%s] read %zd bytes with %u bytes to process already in buffer",
-			 __func__, con->name, read_c, get_buf_offset(con->in));
+		log_flag(NET, "%s: [%s] read %zd bytes with %u bytes to process already in %s",
+			 __func__, con->name, read_c, get_buf_offset(buf),
+			 what);
 		log_flag_hex(NET_RAW,
-			     (get_buf_data(con->in) + get_buf_offset(con->in)),
+			     (get_buf_data(buf) + get_buf_offset(buf)),
 			     read_c, "%s: [%s] read", __func__, con->name);
 
-		set_buf_offset(con->in, (get_buf_offset(con->in) + read_c));
+		set_buf_offset(buf, (get_buf_offset(buf) + read_c));
 
 		if (con_flag(con, FLAG_WATCH_READ_TIMEOUT))
 			con->last_read = timespec_now();
 	}
+}
+
+extern void handle_read(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	conmgr_fd_t *con = conmgr_args.con;
+
+	xassert(con->magic == MAGIC_CON_MGR_FD);
+	xassert(!con_flag(con, FLAG_TLS_CLIENT) || !con->tls);
+	xassert(!con_flag(con, FLAG_TLS_SERVER) || !con->tls);
+	xassert(!con->tls);
+
+	read_input(con, con->in, "input buffer");
 }
 
 static int _foreach_add_writev_iov(void *x, void *arg)
@@ -242,7 +255,7 @@ static int _foreach_writev_flush_bytes(void *x, void *arg)
 	}
 }
 
-static void _handle_writev(conmgr_fd_t *con, const int out_count)
+extern void write_output(conmgr_fd_t *con, const int out_count, list_t *out)
 {
 	const int iov_count = MIN(IOV_MAX, out_count);
 	struct iovec iov_stack[IOV_STACK_COUNT];
@@ -257,7 +270,7 @@ static void _handle_writev(conmgr_fd_t *con, const int out_count)
 	if (iov_count > ARRAY_SIZE(iov_stack))
 		args.iov = xcalloc(iov_count, sizeof(*args.iov));
 
-	(void) list_for_each_ro(con->out, _foreach_add_writev_iov, &args);
+	(void) list_for_each_ro(out, _foreach_add_writev_iov, &args);
 	xassert(args.index == iov_count);
 
 	args.wrote = writev(con->output_fd, args.iov, iov_count);
@@ -270,7 +283,7 @@ static void _handle_writev(conmgr_fd_t *con, const int out_count)
 			error("%s: [%s] writev(%d) failed: %m",
 			      __func__, con->name, con->output_fd);
 			/* drop outbound data on the floor */
-			list_flush(con->out);
+			list_flush(out);
 			close_con(false, con);
 			close_con_output(false, con);
 		}
@@ -281,7 +294,7 @@ static void _handle_writev(conmgr_fd_t *con, const int out_count)
 			 __func__, con->name, args.wrote);
 
 		args.index = 0;
-		(void) list_delete_all(con->out, _foreach_writev_flush_bytes,
+		(void) list_delete_all(out, _foreach_writev_flush_bytes,
 				       &args);
 		xassert(!args.wrote);
 
@@ -299,12 +312,15 @@ extern void handle_write(conmgr_callback_args_t conmgr_args, void *arg)
 	int out_count;
 
 	xassert(con->magic == MAGIC_CON_MGR_FD);
+	xassert(!con_flag(con, FLAG_TLS_CLIENT) || !con->tls);
+	xassert(!con_flag(con, FLAG_TLS_SERVER));
+	xassert(!con->tls);
 
 	if (!(out_count = list_count(con->out)))
 		log_flag(CONMGR, "%s: [%s] skipping attempt with zero writes",
 			 __func__, con->name);
 	else
-		_handle_writev(con, out_count);
+		write_output(con, out_count, con->out);
 }
 
 extern void wrap_on_data(conmgr_callback_args_t conmgr_args, void *arg)
@@ -408,6 +424,10 @@ extern int conmgr_queue_write_data(conmgr_fd_t *con, const void *buffer,
 	buf_t *buf;
 
 	xassert(con->magic == MAGIC_CON_MGR_FD);
+
+	/* Ignore empty write requests */
+	if (!bytes)
+		return SLURM_SUCCESS;
 
 	buf = init_buf(bytes);
 

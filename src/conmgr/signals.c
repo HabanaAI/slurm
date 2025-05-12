@@ -204,7 +204,7 @@ static void _on_signal(int signal)
 
 extern void add_work_signal(work_t *work)
 {
-	xassert(!work->con);
+	xassert(!work->ref);
 	xassert(work->control.depend_type & CONMGR_WORK_DEP_SIGNAL);
 	xassert(work->control.on_signal_number > 0);
 
@@ -343,7 +343,7 @@ extern void signal_mgr_start(conmgr_callback_args_t conmgr_args, void *arg)
 	slurm_rwlock_unlock(&lock);
 
 	if (add_connection(CON_TYPE_RAW, NULL, fd[0], -1, &events,
-			    CON_FLAG_NONE, NULL, 0, false, NULL, NULL)) {
+			    CON_FLAG_NONE, NULL, 0, false, NULL, NULL, NULL)) {
 		fatal_abort("%s: [fd:%d] unable to a register new connection",
 			    __func__, fd[0]);
 	}

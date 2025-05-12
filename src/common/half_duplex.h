@@ -37,6 +37,12 @@
 #ifndef _SLURM_HALF_DUPLEX_H
 #define _SLURM_HALF_DUPLEX_H
 
+#include "src/interfaces/tls.h"
+
 extern struct io_operations half_duplex_ops;
+
+extern int half_duplex_add_objs_to_handle(eio_handle_t *eio_handle,
+					  int *local_fd, int *remote_fd,
+					  void *tls_conn);
 
 #endif

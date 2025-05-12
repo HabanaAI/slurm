@@ -117,6 +117,8 @@ static void *_monitor(void *arg)
 	rc = pthread_cond_timedwait(&cond, &lock, &ts);
 	if (rc == ETIMEDOUT) {
 		char entity[45], time_str[256];
+		char *drain_reason = NULL;
+		char stepid_str[33];
 		time_t now = time(NULL);
 
 		_call_external_program(step);
@@ -143,14 +145,23 @@ static void *_monitor(void *arg)
 		if (step->state < SLURMSTEPD_STEP_RUNNING) {
 			error("*** %s STEPD TERMINATED ON %s AT %s DUE TO JOB NOT RUNNING ***",
 			      entity, step->node_name, time_str);
-			rc = ESLURMD_JOB_NOTRUNNING;
+			rc = ESLURMD_STEP_NOTRUNNING;
 		} else {
 			error("*** %s STEPD TERMINATED ON %s AT %s DUE TO JOB NOT ENDING WITH SIGNALS ***",
 			      entity, step->node_name, time_str);
 			rc = ESLURMD_KILL_TASK_FAILED;
 		}
 
-		stepd_drain_node(slurm_strerror(rc));
+		log_build_step_id_str(&step->step_id,
+				      stepid_str,
+				      sizeof(stepid_str),
+				      STEP_ID_FLAG_NO_JOB);
+		xstrfmtcat(drain_reason, "%s (JobId=%u %s)",
+			   slurm_strerror(rc),
+			   step->step_id.job_id,
+			   stepid_str);
+		stepd_drain_node(drain_reason);
+		xfree(drain_reason);
 
 		if (!step->batch) {
 			/* Notify waiting sruns */
@@ -168,8 +179,7 @@ static void *_monitor(void *arg)
 			stepd_send_step_complete_msgs(step);
 		}
 
-		/* stepd_cleanup always returns rc as a pass-through */
-		(void) stepd_cleanup(NULL, step, NULL, rc, false);
+		stepd_cleanup(NULL, step, NULL, rc, false);
 	} else if (rc != 0) {
 		error("Error waiting on condition in _monitor: %m");
 	}

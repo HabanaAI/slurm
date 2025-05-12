@@ -290,13 +290,14 @@ extern int sacctmgr_list_runaway_jobs(int argc, char **argv)
 	list_t *format_list = list_create(xfree_ptr);
 	slurmdb_job_cond_t *job_cond = xmalloc(sizeof(slurmdb_job_cond_t));
 	char *ask_msg = "\nWould you like to fix these runaway jobs?\n"
-			"(This will set the end time for each job to the "
-			"latest out of the start, eligible, or submit times, "
-			"and set the state to completed.\n"
-			"Once corrected, this will trigger the rollup to "
-			"reroll usage from before the earliest submit time "
-			"of all the runaway jobs.)\n\n";
-
+			"(This sets the end time for each job to the latest of "
+			"the job's start, eligible, and submit times, and sets "
+			"the state to completed.\n"
+			"Once corrected, this triggers the SlurmDBD to "
+			"recalculate the usage from before the earliest submit "
+			"time of all the runaway jobs. "
+			"Warning: This could take a long time and sreport may "
+			"not return data until the recalculation is completed.)\n\n";
 
 	for (i=0; i<argc; i++) {
 		int command_len = strlen(argv[i]);
@@ -337,11 +338,17 @@ extern int sacctmgr_list_runaway_jobs(int argc, char **argv)
 	}
 
 	if (rc == SLURM_SUCCESS) {
-		if (commit_check(ask_msg))
-			slurmdb_connection_commit(db_conn, 1);
-		else {
+		if (commit_check(ask_msg)) {
+			rc = slurmdb_connection_commit(db_conn, 1);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error committing changes: %s\n",
+					slurm_strerror(rc));
+		} else {
 			printf("Changes Discarded\n");
-			slurmdb_connection_commit(db_conn, 0);
+			rc = slurmdb_connection_commit(db_conn, 0);
+			if (rc != SLURM_SUCCESS)
+				fprintf(stderr, " Error rolling back changes: %s\n",
+					slurm_strerror(rc));
 		}
 	} else
 		error("Failed to fix runaway job: %s\n",

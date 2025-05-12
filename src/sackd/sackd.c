@@ -45,8 +45,10 @@
 #include "src/common/env.h"
 #include "src/common/fd.h"
 #include "src/common/fetch_config.h"
+#include "src/common/proc_args.h"
 #include "src/common/read_config.h"
 #include "src/common/ref.h"
+#include "src/common/run_in_daemon.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
@@ -55,17 +57,26 @@
 #include "src/conmgr/conmgr.h"
 
 #include "src/interfaces/auth.h"
+#include "src/interfaces/certmgr.h"
 #include "src/interfaces/hash.h"
+#include "src/interfaces/tls.h"
+
+#define DEFAULT_RUN_DIR "/run/slurm"
 
 decl_static_data(usage_txt);
 
+uint32_t slurm_daemon = IS_SACKD;
+
 static bool daemonize = true;
+static bool disable_reconfig = false;
 static bool original = true;
 static bool registered = false;
 static bool under_systemd = false;
+static char *ca_cert_file = NULL;
 static char *conf_file = NULL;
 static char *conf_server = NULL;
-static char *dir = "/run/slurm/conf";
+static char *dir = NULL;
+static uint16_t port = 0;
 
 static char **main_argv = NULL;
 static int listen_fd = -1;
@@ -88,12 +99,18 @@ static void _parse_args(int argc, char **argv)
 
 	enum {
 		LONG_OPT_ENUM_START = 0x100,
+		LONG_OPT_CA_CERT_FILE,
 		LONG_OPT_CONF_SERVER,
+		LONG_OPT_DISABLE_RECONFIG,
+		LONG_OPT_PORT,
 		LONG_OPT_SYSTEMD,
 	};
 
 	static struct option long_options[] = {
+		{"ca-cert-file", required_argument, 0, LONG_OPT_CA_CERT_FILE},
 		{"conf-server", required_argument, 0, LONG_OPT_CONF_SERVER},
+		{ "disable-reconfig", no_argument, 0, LONG_OPT_DISABLE_RECONFIG },
+		{ "port", required_argument, 0, LONG_OPT_PORT },
 		{"systemd", no_argument, 0, LONG_OPT_SYSTEMD},
 		{NULL, no_argument, 0, 'v'},
 		{NULL, 0, 0, 0}
@@ -108,6 +125,14 @@ static void _parse_args(int argc, char **argv)
 
 		if (logopt.syslog_level == NO_VAL16)
 			fatal("Invalid env SACKD_DEBUG: %s", str);
+	}
+
+	if ((str = getenv("SACKD_DISABLE_RECONFIG")))
+		disable_reconfig = true;
+
+	if ((str = getenv("SACKD_PORT"))) {
+		if (parse_uint16(str, &port))
+			fatal("Invalid SACKD_PORT=%s", str);
 	}
 
 	if ((str = getenv("SACKD_SYSLOG_DEBUG"))) {
@@ -125,6 +150,15 @@ static void _parse_args(int argc, char **argv)
 	}
 
 	log_init(xbasename(argv[0]), logopt, 0, NULL);
+
+	if ((str = getenv("RUNTIME_DIRECTORY"))) {
+		if (!valid_runtime_directory(str))
+			fatal("%s: Invalid RUNTIME_DIRECTORY=%s environment variable",
+			      __func__, str);
+		xstrfmtcat(dir, "%s/conf", str);
+	} else {
+		xstrfmtcat(dir, "%s/conf", DEFAULT_RUN_DIR);
+	}
 
 	opterr = 0;
 	while ((c = getopt_long(argc, argv, "Df:hv",
@@ -145,9 +179,20 @@ static void _parse_args(int argc, char **argv)
 			logopt.stderr_level++;
 			log_alter(logopt, 0, NULL);
 			break;
+		case LONG_OPT_CA_CERT_FILE:
+			xfree(ca_cert_file);
+			ca_cert_file = xstrdup(optarg);
+			break;
 		case LONG_OPT_CONF_SERVER:
 			xfree(conf_server);
 			conf_server = xstrdup(optarg);
+			break;
+		case LONG_OPT_DISABLE_RECONFIG:
+			disable_reconfig = true;
+			break;
+		case LONG_OPT_PORT:
+			if (parse_uint16(optarg, &port))
+				fatal("Invalid port '%s'", optarg);
 			break;
 		case LONG_OPT_SYSTEMD:
 			under_systemd = true;
@@ -190,9 +235,40 @@ static bool _slurm_conf_file_exists(void)
 	return false;
 }
 
+static void _get_tls_cert_work(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	char hostname[HOST_NAME_MAX];
+	time_t delay_seconds;
+
+	if (conmgr_args.status != CONMGR_WORK_STATUS_RUN)
+		return;
+
+	if (gethostname(hostname, HOST_NAME_MAX)) {
+		fatal("Could not get hostname, cannot get TLS certificate from slurmctld.");
+	}
+
+	if (tls_get_cert_from_ctld(hostname)) {
+		/*
+		 * Don't do full delay between tries to get TLS certificate if
+		 * we failed to get it.
+		 */
+		delay_seconds = slurm_conf.msg_timeout;
+		debug("Retry getting TLS certificate in %lu seconds...",
+		      delay_seconds);
+	} else {
+		delay_seconds =
+			certmgr_get_renewal_period_mins() * MINUTE_SECONDS;
+	}
+
+	/* Periodically renew TLS certificate indefinitely */
+	conmgr_add_work_delayed_fifo(_get_tls_cert_work, NULL, delay_seconds,
+				     0);
+}
+
 static void _establish_config_source(void)
 {
 	config_response_msg_t *configs;
+	uint32_t fetch_type = CONFIG_REQUEST_SACKD;
 
 	if (!conf_server && _slurm_conf_file_exists()) {
 		debug("%s: config will load from file", __func__);
@@ -218,7 +294,21 @@ static void _establish_config_source(void)
 			      __func__, dir);
 	}
 
-	while (!(configs = fetch_config(conf_server, CONFIG_REQUEST_SACKD))) {
+	if (disable_reconfig)
+		fetch_type = CONFIG_REQUEST_SLURM_CONF;
+
+	/*
+	 * If --port / SACKD_PORT is not specified the default is to register
+	 * sackd for ctld reconfig updates with SlurmdPort, but at this point
+	 * the configuration hasn't been parsed yet so we pass 0 which will be
+	 * interpreted as SlurmdPort by slurmctld.
+	 *
+	 * This agreement needs to be in sync both in:
+	 * slurmctld/sack_mgr.c sackd_mgr_add_node() and
+	 * sackd/sackd.c _listen_for_reconf().
+	 */
+	while (!(configs = fetch_config(conf_server, fetch_type, port,
+					ca_cert_file))) {
 		error("Failed to load configs from slurmctld. Retrying in 10 seconds.");
 		sleep(10);
 	}
@@ -257,7 +347,7 @@ static int _on_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc, void *arg)
 
 	switch (msg->msg_type) {
 	case REQUEST_RECONFIGURE_SACKD:
-		info("reconfigure requested by slurmd");
+		info("reconfigure requested by slurmctld");
 		if (write_configs_to_conf_cache(msg->data, dir))
 			error("%s: failed to write configs to cache", __func__);
 		slurm_thread_create_detached(_try_to_reconfig, NULL);
@@ -276,14 +366,15 @@ static int _on_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc, void *arg)
 static void _listen_for_reconf(void)
 {
 	int rc = SLURM_SUCCESS;
+	uint16_t listen_port = port ? port : slurm_conf.slurmd_port;
 	static const conmgr_events_t events = {
 		.on_msg = _on_msg,
+		.on_fingerprint = on_fingerprint_tls,
 	};
 
 	if (getenv("SACKD_RECONF_LISTEN_FD")) {
 		listen_fd = atoi(getenv("SACKD_RECONF_LISTEN_FD"));
-	} else if ((listen_fd =
-		slurm_init_msg_engine_port(slurm_conf.slurmd_port)) < 0) {
+	} else if ((listen_fd = slurm_init_msg_engine_port(listen_port)) < 0) {
 		error("%s: failed to open port: %m", __func__);
 		return;
 	}
@@ -460,6 +551,10 @@ extern int main(int argc, char **argv)
 		fatal("auth_g_init() failed");
 	if (hash_g_init())
 		fatal("hash_g_init() failed");
+	if (tls_g_init())
+		fatal("tls_g_init() failed");
+	if (certmgr_g_init())
+		fatal("certmgr_g_init() failed");
 
 	if (registered)
 		_listen_for_reconf();
@@ -469,10 +564,22 @@ extern int main(int argc, char **argv)
 	else if (under_systemd)
 		xsystemd_change_mainpid(getpid());
 
+	/* Periodically renew TLS certificate indefinitely */
+	if (tls_enabled()) {
+		if (tls_g_own_cert_loaded()) {
+			log_flag(AUDIT_TLS, "Loaded static certificate key pair, will not do any certificate renewal.");
+		} else if (certmgr_enabled()) {
+			conmgr_add_work_fifo(_get_tls_cert_work, NULL);
+		} else {
+			fatal("No static TLS certificate key pair loaded, and the certmgr plugin is not enabled to get signed certificates.");
+		}
+	}
+
 	info("running");
 	conmgr_run(true);
 
 	xfree(conf_file);
 	xfree(conf_server);
+	xfree(dir);
 	return 0;
 }

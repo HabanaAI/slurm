@@ -396,6 +396,16 @@ static int _handle_task_cgroup(cgroup_ctl_type_t sub, stepd_step_rec_t *step,
 	common_cgroup_set_param(&task_cg_info->task_cg, "notify_on_release",
 				"0");
 
+	/* Initialize the cpuset cgroup before moving processes into it */
+	if (sub == CG_CPUS) {
+		rc = xcgroup_cpuset_init(&task_cg_info->task_cg);
+		if (rc != SLURM_SUCCESS) {
+			error("Unable to initialize the cpuset cgroup %s",
+			      task_cg_info->task_cg.path);
+			goto end;
+		}
+	}
+
 	/* Attach the pid to the corresponding step_x/task_y cgroup */
 	rc = common_cgroup_move_process(&task_cg_info->task_cg, pid);
 	if (rc != SLURM_SUCCESS)
@@ -405,6 +415,7 @@ static int _handle_task_cgroup(cgroup_ctl_type_t sub, stepd_step_rec_t *step,
 	if (need_to_add)
 		list_append(g_task_list[sub], task_cg_info);
 
+end:
 	xfree(task_cgroup_path);
 	return rc;
 }
@@ -880,11 +891,51 @@ extern bool cgroup_p_has_pid(pid_t pid)
 	return rc;
 }
 
+static void _get_mem_recursive(xcgroup_t *cg, cgroup_limits_t *limits)
+{
+	char *mem_max = NULL, *tmp_str = NULL;
+	size_t mem_sz;
+	unsigned long mem_lim;
+	unsigned long page_counter_max = LONG_MAX - sysconf(_SC_PAGE_SIZE) + 1;
+
+	if (!xstrcmp(cg->path, "/sys/fs/cgroup"))
+		goto end;
+
+	/* Break when there is no memory controller anymore */
+	if (common_cgroup_get_param(cg, "memory.limit_in_bytes",
+				    &mem_max, &mem_sz) != SLURM_SUCCESS)
+		goto end;
+
+	/* Check ancestor */
+	mem_lim = slurm_atoul(mem_max);
+	if (mem_lim == page_counter_max) {
+		tmp_str = xdirname(cg->path);
+		xfree(cg->path);
+		cg->path = tmp_str;
+		_get_mem_recursive(cg, limits);
+		if (limits->limit_in_bytes != NO_VAL64)
+			goto end;
+	} else {
+		/* found it! */
+		limits->limit_in_bytes = mem_lim;
+	}
+end:
+	xfree(mem_max);
+}
+
 extern cgroup_limits_t *cgroup_p_constrain_get(cgroup_ctl_type_t sub,
 					       cgroup_level_t level)
 {
 	int rc = SLURM_SUCCESS;
-	cgroup_limits_t *limits = xmalloc(sizeof(*limits));
+	cgroup_limits_t *limits;
+	xcgroup_t tmp_cg = { 0 };
+
+	/* Only initialize if not inited */
+	if (!g_cg_ns[sub].mnt_point && (rc = _cgroup_init(sub)))
+		return NULL;
+
+	limits = xmalloc(sizeof(*limits));
+	cgroup_init_limits(limits);
 
 	switch (sub) {
 	case CG_TRACK:
@@ -914,6 +965,10 @@ extern cgroup_limits_t *cgroup_p_constrain_get(cgroup_ctl_type_t sub,
 			goto fail;
 		break;
 	case CG_MEMORY:
+		tmp_cg.path = xstrdup(int_cg[sub][level].path);
+		_get_mem_recursive(&tmp_cg, limits);
+		xfree(tmp_cg.path);
+		break;
 	case CG_DEVICES:
 		break;
 	default:
@@ -942,6 +997,11 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 	case CG_TRACK:
 		break;
 	case CG_CPUS:
+		/* Do not try to set the cpuset limits of slurmd in this case */
+		if ((level == CG_LEVEL_SYSTEM) &&
+		    (slurm_conf.task_plugin_param & SLURMD_SPEC_OVERRIDE))
+			break;
+
 		if (level == CG_LEVEL_SYSTEM ||
 		    level == CG_LEVEL_USER ||
 		    level == CG_LEVEL_JOB ||
@@ -964,6 +1024,11 @@ extern int cgroup_p_constrain_set(cgroup_ctl_type_t sub, cgroup_level_t level,
 		}
 		break;
 	case CG_MEMORY:
+		/* Do not try to set the cpuset limits of slurmd in this case */
+		if ((level == CG_LEVEL_SYSTEM) &&
+		    (slurm_conf.task_plugin_param & SLURMD_SPEC_OVERRIDE))
+			break;
+
 		if ((level == CG_LEVEL_JOB) &&
 		    (limits->swappiness != NO_VAL64)) {
 			rc = common_cgroup_set_uint64_param(&int_cg[sub][level],
@@ -1552,4 +1617,15 @@ extern int cgroup_p_signal(int signal)
 {
 	error("%s not implemented in %s", __func__, plugin_name);
 	return SLURM_ERROR;
+}
+
+extern char *cgroup_p_get_task_empty_event_path(uint32_t taskid,
+						bool *on_modify)
+{
+	return NULL;
+}
+
+extern int cgroup_p_is_task_empty(uint32_t taskid)
+{
+	return ESLURM_NOT_SUPPORTED;
 }

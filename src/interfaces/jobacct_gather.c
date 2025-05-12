@@ -672,7 +672,7 @@ extern int jobacct_gather_add_task(pid_t pid, jobacct_id_t *jobacct_id,
 	jobacct = jobacctinfo_create(jobacct_id);
 
 	slurm_mutex_lock(&task_list_lock);
-	if (pid <= 0) {
+	if (pid < 0) {
 		error("invalid pid given (%d) for task acct", pid);
 		goto error;
 	} else if (!task_list) {
@@ -698,6 +698,62 @@ error:
 	return SLURM_ERROR;
 }
 
+static int _foreach_aggregate_usage(void *x, void *arg)
+{
+	struct jobacctinfo *jobacct = x;
+	struct jobacctinfo *ret_jobacct = arg;
+
+	log_flag(JAG, "%s: found task %u pid %d",
+		 __func__, jobacct->id.taskid, jobacct->pid);
+
+	jobacctinfo_aggregate(ret_jobacct, jobacct);
+
+	return 0;
+}
+
+/*
+ * Aggregate usage of all tasks of this step into ret_jobacct. Each task
+ * will have some pids added (e.g. by REQUEST_ADD_EXTERN_PID) which will
+ * be the ones aggregated and accounted for.
+ */
+extern void jobacct_gather_stat_all_task(jobacctinfo_t *ret_jobacct)
+{
+	if ((plugin_inited == PLUGIN_NOOP) || _jobacct_shutdown_test())
+		return;
+
+	/*
+	 * As this is used mainly in the extern step this is called only once,
+	 * as there is only one task, so refresh data here unconditionally.
+	 */
+	_poll_data(0);
+
+	slurm_mutex_lock(&task_list_lock);
+	if (!task_list) {
+		error("%s: no task list created!", __func__);
+		goto error;
+	}
+
+	log_flag(JAG, "%s: aggregating usage of all tasks of this step",
+		 __func__);
+
+	list_for_each(task_list, _foreach_aggregate_usage, ret_jobacct);
+
+error:
+	slurm_mutex_unlock(&task_list_lock);
+	return;
+}
+
+static int _jobacct_gather_find_task_by_pid(void *x, void *key)
+{
+	struct jobacctinfo *jobacct = x;
+	pid_t *pid = key;
+
+	if (jobacct->pid == *pid)
+		return 1;
+
+	return 0;
+}
+
 extern jobacctinfo_t *jobacct_gather_stat_task(pid_t pid, bool update_data)
 {
 	if ((plugin_inited == PLUGIN_NOOP) || _jobacct_shutdown_test())
@@ -709,7 +765,6 @@ extern jobacctinfo_t *jobacct_gather_stat_task(pid_t pid, bool update_data)
 	if (pid) {
 		struct jobacctinfo *jobacct = NULL;
 		struct jobacctinfo *ret_jobacct = NULL;
-		list_itr_t *itr = NULL;
 
 		slurm_mutex_lock(&task_list_lock);
 		if (!task_list) {
@@ -717,14 +772,15 @@ extern jobacctinfo_t *jobacct_gather_stat_task(pid_t pid, bool update_data)
 			goto error;
 		}
 
-		itr = list_iterator_create(task_list);
-		while ((jobacct = list_next(itr))) {
-			if (jobacct->pid == pid)
-				break;
-		}
-		list_iterator_destroy(itr);
+		jobacct = list_find_first(task_list,
+					  _jobacct_gather_find_task_by_pid,
+					  &pid);
+
 		if (jobacct == NULL)
 			goto error;
+
+		log_flag(JAG, "%s: task %u pid %d found",
+			 __func__, jobacct->id.taskid, pid);
 
 		_copy_tres_usage(&ret_jobacct, jobacct);
 
@@ -739,7 +795,6 @@ extern jobacctinfo_t *jobacct_gather_stat_task(pid_t pid, bool update_data)
 extern jobacctinfo_t *jobacct_gather_remove_task(pid_t pid)
 {
 	struct jobacctinfo *jobacct = NULL;
-	list_itr_t *itr = NULL;
 
 	if (plugin_inited == PLUGIN_NOOP)
 		return NULL;
@@ -757,20 +812,18 @@ extern jobacctinfo_t *jobacct_gather_remove_task(pid_t pid)
 		goto error;
 	}
 
-	itr = list_iterator_create(task_list);
-	while((jobacct = list_next(itr))) {
-		if (!pid || (jobacct->pid == pid)) {
-			list_remove(itr);
-			break;
-		}
-	}
-	list_iterator_destroy(itr);
+	if (!pid)
+		jobacct = list_pop(task_list);
+	else
+		jobacct = list_remove_first(task_list,
+					    _jobacct_gather_find_task_by_pid,
+					    &pid);
+
 	if (jobacct) {
 		debug2("removing task %u pid %d from jobacct",
 		       jobacct->id.taskid, jobacct->pid);
-	} else {
-		if (pid)
-			debug2("pid(%d) not being watched in jobacct!", pid);
+	} else if (pid) {
+		debug2("pid(%d) not being watched in jobacct!", pid);
 	}
 error:
 	slurm_mutex_unlock(&task_list_lock);
@@ -1170,19 +1223,21 @@ extern void jobacctinfo_aggregate(jobacctinfo_t *dest, jobacctinfo_t *from)
 	if (!from)
 		return;
 
-	dest->user_cpu_sec	+= from->user_cpu_sec;
-	dest->user_cpu_usec	+= from->user_cpu_usec;
-	if (dest->user_cpu_usec >= 1E6) {
-		dest->user_cpu_sec += dest->user_cpu_usec / 1E6;
-		dest->user_cpu_usec = dest->user_cpu_usec % (int)1E6;
+	if (from->pid) {
+		dest->user_cpu_sec += from->user_cpu_sec;
+		dest->user_cpu_usec += from->user_cpu_usec;
+		if (dest->user_cpu_usec >= 1E6) {
+			dest->user_cpu_sec += dest->user_cpu_usec / 1E6;
+			dest->user_cpu_usec = dest->user_cpu_usec % (int) 1E6;
+		}
+		dest->sys_cpu_sec += from->sys_cpu_sec;
+		dest->sys_cpu_usec += from->sys_cpu_usec;
+		if (dest->sys_cpu_usec >= 1E6) {
+			dest->sys_cpu_sec += dest->sys_cpu_usec / 1E6;
+			dest->sys_cpu_usec = dest->sys_cpu_usec % (int) 1E6;
+		}
+		dest->act_cpufreq += from->act_cpufreq;
 	}
-	dest->sys_cpu_sec	+= from->sys_cpu_sec;
-	dest->sys_cpu_usec	+= from->sys_cpu_usec;
-	if (dest->sys_cpu_usec >= 1E6) {
-		dest->sys_cpu_sec += dest->sys_cpu_usec / 1E6;
-		dest->sys_cpu_usec = dest->sys_cpu_usec % (int)1E6;
-	}
-	dest->act_cpufreq 	+= from->act_cpufreq;
 	if (dest->energy.consumed_energy != NO_VAL64) {
 		if (from->energy.consumed_energy == NO_VAL64)
 			dest->energy.consumed_energy = NO_VAL64;

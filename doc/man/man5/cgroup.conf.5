@@ -39,6 +39,9 @@ the cgroups, "cgroup/v1" which supports the legacy interface of cgroup v1,
 to determine which cgroup version does your system provide. "autodetect" is
 useful to have a single configuration in clusters where nodes can have different
 cgroup versions. The default value is "autodetect".
+
+NOTE: cgroup/v1 plugin is deprecated and no new features will be added to it.
+It is recommended that you switch to cgroup/v2 at your earliest convenience.
 .IP
 
 .TP
@@ -73,6 +76,15 @@ the available controllers from root's cgroup.controllers file
 (\fBCgroupMountPoint\fR, by default /sys/fs/cgroup/cgroup.controllers) and makes
 them available in all levels of the cgroup tree until it reaches Slurm's cgroup
 leaf.
+.IP
+
+.TP
+\fBEnableExtraControllers\fR=\fI<all|controller1[,controller2,...]>\fR
+This will enable extra controllers not natively used by Slurm in the job cgroup
+subtree. If combined with EnableControllers it will enable them in all the
+levels of the cgroup tree from the OS root cgroup. The controllers that can be
+enabled are io, pids, rdma, hugetlb and misc or all. If they do not exist in the
+system an error is logged. Only for cgroup/v2.
 .IP
 
 .SH "TASK/CGROUP PLUGIN"

@@ -33,8 +33,6 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#include <sys/un.h>
-
 #include "src/common/fd.h"
 #include "src/common/read_config.h"
 #include "src/common/slurm_protocol_api.h"
@@ -43,12 +41,16 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/tls.h"
+
 #include "src/scrun/scrun.h"
 
 extern int send_rpc(slurm_msg_t *msg, slurm_msg_t **ptr_resp, const char *id,
 		    int *conn_fd)
 {
-	int rc;
+	int rc = SLURM_ERROR;
+	void *tls_conn = NULL;
+	tls_conn_args_t tls_args = { 0 };
 	slurm_msg_t *resp_msg = NULL;
 	int fd = conn_fd ? *conn_fd : -1;
 	const char *sock = state.anchor_socket;
@@ -62,33 +64,24 @@ extern int send_rpc(slurm_msg_t *msg, slurm_msg_t **ptr_resp, const char *id,
 	xassert(ptr_resp && !*ptr_resp);
 	xassert(!msg->conn);
 
-	if (fd == -1) {
-		struct sockaddr_un addr = {
-			.sun_family = AF_UNIX,
-		};
-
-		if (strlcpy(addr.sun_path, sock, sizeof(addr.sun_path)) !=
-		    strlen(sock)) {
-			debug("Unable to copy socket path: %s", sock);
-			rc = ESLURMD_INVALID_SOCKET_NAME_LEN;
-			goto cleanup;
-		}
-		if ((fd = socket(AF_UNIX, (SOCK_STREAM|SOCK_CLOEXEC), 0)) == -1) {
-			rc = errno;
-			debug("Unable to create socket: %m");
-			goto cleanup;
-		}
-		if ((connect(fd, (struct sockaddr*) &addr, sizeof(addr))) < 0) {
-			rc = errno;
-			debug("Unable to connect to socket %s: %m", sock);
-			goto cleanup;
-		}
+	if ((fd == -1) &&
+	    (rc = slurm_open_unix_stream(state.anchor_socket, SOCK_CLOEXEC,
+					 &fd))) {
+		debug("Failed to set up socket %s: %s",
+		      sock, slurm_strerror(rc));
+		goto cleanup;
 	}
 
 	fd_set_blocking(fd);
 	fd_set_close_on_exec(fd);
 
-	if ((rc = slurm_send_node_msg(fd, msg)) == -1) {
+	tls_args.input_fd = tls_args.output_fd = fd;
+	if (!(tls_conn = tls_g_create_conn(&tls_args))) {
+		rc = SLURM_ERROR;
+		goto cleanup;
+	}
+
+	if ((rc = slurm_send_node_msg(tls_conn, msg)) == -1) {
 		/* capture real error */
 		rc = errno;
 
@@ -113,7 +106,7 @@ extern int send_rpc(slurm_msg_t *msg, slurm_msg_t **ptr_resp, const char *id,
 
 	wait_fd_readable(fd, slurm_conf.msg_timeout);
 
-	if ((rc = slurm_receive_msg(fd, resp_msg, INFINITE))) {
+	if ((rc = slurm_receive_msg(tls_conn, resp_msg, INFINITE))) {
 		/* capture real error */
 		rc = errno;
 
@@ -137,13 +130,7 @@ cleanup:
 		*ptr_resp = resp_msg;
 	}
 
-	if (!conn_fd && close(fd)) {
-		if (!rc)
-			rc = errno;
-
-		debug("%s: unable to close RPC socket %s: %m",
-		      __func__, sock);
-	}
+	tls_g_destroy_conn(tls_conn, true);
 
 	return rc;
 }

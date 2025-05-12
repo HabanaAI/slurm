@@ -152,6 +152,7 @@ typedef struct {
 	char *req_mem;
 	char *restart_cnt;
 	char *resvid;
+	char *resv_req;
 	char *script_hash_inx;
 	char *segment_size;
 	char *start;
@@ -232,6 +233,7 @@ static void _free_local_job_members(local_job_t *object)
 		xfree(object->req_mem);
 		xfree(object->restart_cnt);
 		xfree(object->resvid);
+		xfree(object->resv_req);
 		xfree(object->script_hash_inx);
 		xfree(object->segment_size);
 		xfree(object->start);
@@ -298,6 +300,7 @@ typedef struct {
 	char *nodes;
 	char *node_inx;
 	char *time_end;
+	char *time_force;
 	char *time_start;
 	char *tres_str;
 	char *unused_wall;
@@ -315,6 +318,7 @@ static void _free_local_resv_members(local_resv_t *object)
 		xfree(object->nodes);
 		xfree(object->node_inx);
 		xfree(object->time_end);
+		xfree(object->time_force);
 		xfree(object->time_start);
 		xfree(object->tres_str);
 		xfree(object->unused_wall);
@@ -327,6 +331,7 @@ typedef struct {
 	char *exit_code;
 	char *consumed_energy;
 	char *container;
+	char *cwd;
 	char *job_db_inx;
 	char *kill_requid;
 	char *name;
@@ -342,6 +347,9 @@ typedef struct {
 	char *state;
 	char *stepid;
 	char *step_het_comp;
+	char *std_err;
+	char *std_in;
+	char *std_out;
 	char *submit_line;
 	char *sys_sec;
 	char *sys_usec;
@@ -377,6 +385,7 @@ static void _free_local_step_members(local_step_t *object)
 		xfree(object->exit_code);
 		xfree(object->consumed_energy);
 		xfree(object->container);
+		xfree(object->cwd);
 		xfree(object->job_db_inx);
 		xfree(object->kill_requid);
 		xfree(object->name);
@@ -392,6 +401,9 @@ static void _free_local_step_members(local_step_t *object)
 		xfree(object->state);
 		xfree(object->stepid);
 		xfree(object->step_het_comp);
+		xfree(object->std_err);
+		xfree(object->std_in);
+		xfree(object->std_out);
 		xfree(object->submit_line);
 		xfree(object->sys_sec);
 		xfree(object->sys_usec);
@@ -594,6 +606,7 @@ static char *job_req_inx[] = {
 	"mem_req",
 	"restart_cnt",
 	"id_resv",
+	"resv_req",
 	"segment_size",
 	"time_start",
 	"state",
@@ -658,6 +671,7 @@ enum {
 	JOB_REQ_REQ_MEM,
 	JOB_REQ_RESTART_CNT,
 	JOB_REQ_RESVID,
+	JOB_REQ_RESV_REQ,
 	JOB_REQ_SEGMENT_SIZE,
 	JOB_REQ_START,
 	JOB_REQ_STATE,
@@ -722,6 +736,7 @@ char *resv_req_inx[] = {
 	"resv_name",
 	"time_start",
 	"time_end",
+	"time_force",
 	"unused_wall",
 	"comment",
 };
@@ -737,6 +752,7 @@ enum {
 	RESV_REQ_NAME,
 	RESV_REQ_START,
 	RESV_REQ_END,
+	RESV_REQ_FORCE,
 	RESV_REQ_UNUSED,
 	RESV_REQ_COMMENT,
 	RESV_REQ_COUNT
@@ -771,6 +787,10 @@ static char *step_req_inx[] = {
 	"req_cpufreq_min",
 	"req_cpufreq",
 	"req_cpufreq_gov",
+	"cwd",
+	"std_err",
+	"std_in",
+	"std_out",
 	"submit_line",
 	"tres_alloc",
 	"tres_usage_in_ave",
@@ -820,6 +840,10 @@ enum {
 	STEP_REQ_REQ_CPUFREQ_MIN,
 	STEP_REQ_REQ_CPUFREQ_MAX,
 	STEP_REQ_REQ_CPUFREQ_GOV,
+	STEP_REQ_CWD,
+	STEP_REQ_STDERR,
+	STEP_REQ_STDIN,
+	STEP_REQ_STDOUT,
 	STEP_REQ_SUBMIT_LINE,
 	STEP_REQ_TRES,
 	STEP_TRES_USAGE_IN_AVE,
@@ -1061,6 +1085,7 @@ static void _pack_local_job(local_job_t *object, buf_t *buffer)
 	packstr(object->req_mem, buffer);
 	packstr(object->restart_cnt, buffer);
 	packstr(object->resvid, buffer);
+	packstr(object->resv_req, buffer);
 	packstr(object->segment_size, buffer);
 	packstr(object->start, buffer);
 	packstr(object->state, buffer);
@@ -1134,6 +1159,7 @@ static int _unpack_local_job(local_job_t *object, uint16_t rpc_version,
 		safe_unpackstr(&object->req_mem, buffer);
 		safe_unpackstr(&object->restart_cnt, buffer);
 		safe_unpackstr(&object->resvid, buffer);
+		safe_unpackstr(&object->resv_req, buffer);
 		safe_unpackstr(&object->segment_size, buffer);
 		safe_unpackstr(&object->start, buffer);
 		safe_unpackstr(&object->state, buffer);
@@ -2047,6 +2073,7 @@ static void _pack_local_resv(local_resv_t *object, buf_t *buffer)
 	packstr(object->nodes, buffer);
 	packstr(object->node_inx, buffer);
 	packstr(object->time_end, buffer);
+	packstr(object->time_force, buffer);
 	packstr(object->time_start, buffer);
 	packstr(object->tres_str, buffer);
 	packstr(object->unused_wall, buffer);
@@ -2059,7 +2086,21 @@ static int _unpack_local_resv(local_resv_t *object, uint16_t rpc_version,
 {
 	char *tmp_char;
 
-	if (rpc_version >= SLURM_23_02_PROTOCOL_VERSION) {
+	if (rpc_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		safe_unpackstr(&object->assocs, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->deleted, buffer);
+		safe_unpackstr(&object->flags, buffer);
+		safe_unpackstr(&object->id, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->nodes, buffer);
+		safe_unpackstr(&object->node_inx, buffer);
+		safe_unpackstr(&object->time_end, buffer);
+		safe_unpackstr(&object->time_force, buffer);
+		safe_unpackstr(&object->time_start, buffer);
+		safe_unpackstr(&object->tres_str, buffer);
+		safe_unpackstr(&object->unused_wall, buffer);
+	} else if (rpc_version >= SLURM_23_02_PROTOCOL_VERSION) {
 		safe_unpackstr(&object->assocs, buffer);
 		safe_unpackstr(&object->comment, buffer);
 		safe_unpackstr(&object->deleted, buffer);
@@ -2149,6 +2190,10 @@ static void _pack_local_step(local_step_t *object, buf_t *buffer)
 	packstr(object->state, buffer);
 	packstr(object->stepid, buffer);
 	packstr(object->step_het_comp, buffer);
+	packstr(object->cwd, buffer);
+	packstr(object->std_err, buffer);
+	packstr(object->std_in, buffer);
+	packstr(object->std_out, buffer);
 	packstr(object->submit_line, buffer);
 	packstr(object->sys_sec, buffer);
 	packstr(object->sys_usec, buffer);
@@ -2204,6 +2249,10 @@ static int _unpack_local_step(local_step_t *object, uint16_t rpc_version,
 		safe_unpackstr(&object->state, buffer);
 		safe_unpackstr(&object->stepid, buffer);
 		safe_unpackstr(&object->step_het_comp, buffer);
+		safe_unpackstr(&object->cwd, buffer);
+		safe_unpackstr(&object->std_err, buffer);
+		safe_unpackstr(&object->std_in, buffer);
+		safe_unpackstr(&object->std_out, buffer);
 		safe_unpackstr(&object->submit_line, buffer);
 		safe_unpackstr(&object->sys_sec, buffer);
 		safe_unpackstr(&object->sys_usec, buffer);
@@ -3736,6 +3785,7 @@ static buf_t *_pack_archive_jobs(MYSQL_RES *result, char *cluster_name,
 		job.req_mem = row[JOB_REQ_REQ_MEM];
 		job.restart_cnt = row[JOB_REQ_RESTART_CNT];
 		job.resvid = row[JOB_REQ_RESVID];
+		job.resv_req = row[JOB_REQ_RESV_REQ];
 		job.segment_size = row[JOB_REQ_SEGMENT_SIZE];
 		job.start = row[JOB_REQ_START];
 		job.state = row[JOB_REQ_STATE];
@@ -3832,6 +3882,7 @@ static char *_load_jobs(uint16_t rpc_version, buf_t *buffer,
 		JOB_REQ_SUBMIT_LINE,
 		JOB_REQ_SYSTEM_COMMENT,
 		JOB_REQ_QOS_REQ,
+		JOB_REQ_RESV_REQ,
 		JOB_REQ_COUNT };
 
 	local_job_t object;
@@ -3930,6 +3981,10 @@ static char *_load_jobs(uint16_t rpc_version, buf_t *buffer,
 			xstrcatat(format, &format_pos, ", %s");
 		else
 			xstrcatat(format, &format_pos, ", '%s'");
+		if (object.resv_req == NULL)
+			xstrcatat(format, &format_pos, ", %s");
+		else
+			xstrcatat(format, &format_pos, ", '%s'");
 
 		xstrcatat(format, &format_pos, ")");
 
@@ -4010,7 +4065,9 @@ static char *_load_jobs(uint16_t rpc_version, buf_t *buffer,
 			     (object.system_comment == NULL) ?
 			     "NULL" : object.system_comment,
 			     (object.qos_req == NULL) ?
-			     "NULL" : object.qos_req);
+			     "NULL" : object.qos_req,
+			     (object.resv_req == NULL) ?
+			     "NULL" : object.resv_req);
 
 		_free_local_job_members(&object);
 		format_pos = NULL;
@@ -4270,6 +4327,7 @@ static buf_t *_pack_archive_resvs(MYSQL_RES *result, char *cluster_name,
 		resv.node_inx = row[RESV_REQ_NODE_INX];
 		resv.time_end = row[RESV_REQ_END];
 		resv.time_start = row[RESV_REQ_START];
+		resv.time_force = row[RESV_REQ_FORCE];
 		resv.tres_str = row[RESV_REQ_TRES];
 		resv.unused_wall = row[RESV_REQ_UNUSED];
 		resv.comment = row[RESV_REQ_COMMENT];
@@ -4299,6 +4357,7 @@ static char *_load_resvs(uint16_t rpc_version, buf_t *buffer,
 		RESV_REQ_NAME,
 		RESV_REQ_START,
 		RESV_REQ_END,
+		RESV_REQ_FORCE,
 		RESV_REQ_UNUSED,
 		RESV_REQ_COUNT
 	};
@@ -4358,6 +4417,7 @@ static char *_load_resvs(uint16_t rpc_version, buf_t *buffer,
 			     object.name,
 			     object.time_start,
 			     object.time_end,
+			     object.time_force,
 			     object.unused_wall,
 			     object.comment ? object.comment : "NULL");
 
@@ -4414,6 +4474,10 @@ static buf_t *_pack_archive_steps(MYSQL_RES *result, char *cluster_name,
 		step.state = row[STEP_REQ_STATE];
 		step.stepid = row[STEP_REQ_STEPID];
 		step.step_het_comp = row[STEP_REQ_STEP_HET_COMP];
+		step.cwd = row[STEP_REQ_CWD];
+		step.std_err = row[STEP_REQ_STDERR];
+		step.std_in = row[STEP_REQ_STDIN];
+		step.std_out = row[STEP_REQ_STDOUT];
 		step.submit_line = row[STEP_REQ_SUBMIT_LINE];
 		step.sys_sec = row[STEP_REQ_SYS_SEC];
 		step.sys_usec = row[STEP_REQ_SYS_USEC];
@@ -4480,6 +4544,10 @@ static char *_load_steps(uint16_t rpc_version, buf_t *buffer,
 		STEP_REQ_TASKDIST,
 		STEP_REQ_USER_SEC,
 		STEP_REQ_USER_USEC,
+		STEP_REQ_CWD,
+		STEP_REQ_STDERR,
+		STEP_REQ_STDIN,
+		STEP_REQ_STDOUT,
 		STEP_REQ_SYS_SEC,
 		STEP_REQ_SYS_USEC,
 		STEP_REQ_ACT_CPUFREQ,
@@ -4584,6 +4652,10 @@ static char *_load_steps(uint16_t rpc_version, buf_t *buffer,
 			     object.task_dist,
 			     object.user_sec,
 			     object.user_usec,
+			     object.cwd,
+			     object.std_err,
+			     object.std_in,
+			     object.std_out,
 			     object.sys_sec,
 			     object.sys_usec,
 			     object.act_cpufreq,
@@ -5080,90 +5152,85 @@ static char *_load_cluster_usage(uint16_t rpc_version, buf_t *buffer,
 
 /* Mark records for the archive */
 static uint32_t _purge_mark(purge_type_t type, mysql_conn_t *mysql_conn,
-                               time_t period_end, char *cluster_name,
-			       char *col_name, char *sql_table)
+			    time_t period_end, char *cluster_name,
+			    char *col_name, char *sql_table)
 {
-        char *cols = NULL, *query = NULL,
-             *parent_table = NULL, *hash_col = NULL;
+	char *cols = NULL, *query = NULL,
+		*parent_table = NULL, *hash_col = NULL;
 
-        cols = _get_archive_columns(type);
+	cols = _get_archive_columns(type);
 
-        switch (type) {
-        case PURGE_JOB_ENV:
-                parent_table = job_table;
-                hash_col = "env_hash_inx";
-                break;
-        case PURGE_JOB_SCRIPT:
-                parent_table = job_table;
-                hash_col = "script_hash_inx";
-                break;
-        default:
-                break;
-        }
+	switch (type) {
+	case PURGE_JOB_ENV:
+		parent_table = job_table;
+		hash_col = "env_hash_inx";
+		break;
+	case PURGE_JOB_SCRIPT:
+		parent_table = job_table;
+		hash_col = "script_hash_inx";
+		break;
+	default:
+		break;
+	}
 
-        switch (type) {
-        case PURGE_TXN:
-                query = xstrdup_printf("update \"%s\" set deleted = 1 where "
+	switch (type) {
+	case PURGE_TXN:
+		query = xstrdup_printf("update \"%s\" set deleted = 1 where "
 				       "%s <= %ld && cluster='%s' "
 				       "order by %s asc LIMIT %d",
 				       sql_table,col_name, period_end,
 				       cluster_name, col_name,
 				       MAX_PURGE_LIMIT);
 
-                break;
+		break;
 
-        case PURGE_USAGE:
-        case PURGE_CLUSTER_USAGE:
-                query = xstrdup_printf("update \"%s_%s\" set deleted = 1 where "
+	case PURGE_USAGE:
+	case PURGE_CLUSTER_USAGE:
+		query = xstrdup_printf("update \"%s_%s\" set deleted = 1 where "
 				       "%s <= %ld order by %s asc LIMIT %d",
 				       cluster_name, sql_table, col_name,
 				       period_end, col_name, MAX_PURGE_LIMIT);
-                break;
+		break;
 
-        case PURGE_JOB_ENV:
-        case PURGE_JOB_SCRIPT:
-                query = xstrdup_printf("update \"%s_%s\" set deleted = 1 "
-                                       "where hash_inx in "
-                                       "(select distinct hash_inx from "
-				       "\"%s_%s\" inner join (select %s from "
+	case PURGE_JOB_ENV:
+	case PURGE_JOB_SCRIPT:
+		query = xstrdup_printf("update \"%s_%s\" e "
+				       "inner join (select distinct %s from "
 				       "\"%s_%s\" where %s <= %ld && "
 				       "time_end != 0 "
-                                       "order by %s asc LIMIT %d) as j "
-                                       "on hash_inx = j.%s "
-                                       "order by hash_inx asc) "
-				       "order by hash_inx",
-                                       cluster_name, sql_table,
-                                       cluster_name, sql_table, hash_col,
-                                       cluster_name, parent_table, col_name,
-                                       period_end, col_name, MAX_PURGE_LIMIT,
-                                       hash_col);
-                break;
-        default:
-                query = xstrdup_printf("update \"%s_%s\" set deleted = 1 where "
-                                       "%s <= %ld && time_end != 0 "
-                                       "order by %s asc LIMIT %d",
-				       cluster_name,sql_table,col_name,
+				       "order by %s asc LIMIT %d) as j "
+				       "on e.hash_inx = j.%s set "
+				       "e.deleted = 1",
+				       cluster_name, sql_table, hash_col,
+				       cluster_name, parent_table, col_name,
+				       period_end, col_name, MAX_PURGE_LIMIT,
+				       hash_col);
+		break;
+	default:
+		query = xstrdup_printf("update \"%s_%s\" set deleted = 1 where "
+				       "%s <= %ld && time_end != 0 "
+				       "order by %s asc LIMIT %d",
+				       cluster_name, sql_table, col_name,
 				       period_end, col_name, MAX_PURGE_LIMIT);
 
-                break;
-        }
+		break;
+	}
 
-        xfree(cols);
+	xfree(cols);
 
-        DB_DEBUG(DB_ARCHIVE, mysql_conn->conn, "update\n%s", query);
-        if (mysql_db_query(mysql_conn, query) != SLURM_SUCCESS) {
-                xfree(query);
-                error("Couldn't mark records for archive");
-                return SLURM_ERROR;
-        }
-        xfree(query);
-        if (mysql_db_commit(mysql_conn)) {
-                error("Couldn't commit cluster (%s) mark", cluster_name);
-                return SLURM_ERROR;
-        }
-        return SLURM_SUCCESS;
+	DB_DEBUG(DB_ARCHIVE, mysql_conn->conn, "update\n%s", query);
+	if (mysql_db_query(mysql_conn, query) != SLURM_SUCCESS) {
+		xfree(query);
+		error("Couldn't mark records for archive");
+		return SLURM_ERROR;
+	}
+	xfree(query);
+	if (mysql_db_commit(mysql_conn)) {
+		error("Couldn't commit cluster (%s) mark", cluster_name);
+		return SLURM_ERROR;
+	}
+	return SLURM_SUCCESS;
 }
-
 
 /* returns count of events archived or SLURM_ERROR on error */
 static uint32_t _archive_table(purge_type_t type, mysql_conn_t *mysql_conn,
@@ -5229,10 +5296,10 @@ static uint32_t _archive_table(purge_type_t type, mysql_conn_t *mysql_conn,
 
 		break;
 	default:
-                query = xstrdup_printf("select %s from \"%s_%s\" where "
-                                       "deleted = 1 LIMIT %d",
-                                       cols, cluster_name, sql_table,
-                                       MAX_PURGE_LIMIT);
+		query = xstrdup_printf("select %s from \"%s_%s\" where "
+				       "deleted = 1 LIMIT %d",
+				       cols, cluster_name, sql_table,
+				       MAX_PURGE_LIMIT);
 
 		break;
 	}
@@ -5790,7 +5857,7 @@ static int _process_archive_data(char **data_in, uint32_t data_size,
 
 	safe_unpack16(&ver, buffer);
 	DB_DEBUG(DB_ARCHIVE, mysql_conn->conn,
-	         "Version in archive header is %u", ver);
+		 "Version in archive header is %u", ver);
 	/*
 	 * Don't verify the lower limit as we should be keeping all
 	 * older versions around here just to support super old
@@ -5978,7 +6045,7 @@ extern int as_mysql_jobacct_process_archive_load(
 		      slurm_strerror(error_code));
 	else
 		DB_DEBUG(DB_ARCHIVE, mysql_conn->conn,
-		         "%s: archive loaded successfully.", __func__);
+			 "%s: archive loaded successfully.", __func__);
 
 	return error_code;
 }

@@ -1,4 +1,4 @@
-.TH sbatch "1" "Slurm Commands" "February 2025" "Slurm Commands"
+.TH sbatch "1" "Slurm Commands" "April 2025" "Slurm Commands"
 
 .SH "NAME"
 sbatch \- Submit a batch script to Slurm.
@@ -14,10 +14,14 @@ https://slurm.schedmd.com/heterogeneous_jobs.html
 .SH "DESCRIPTION"
 sbatch submits a batch script to Slurm. The batch script may be given to
 sbatch through a file name on the command line, or if no file name is specified,
-sbatch will read in a script from standard input. The batch script may contain
-options preceded with "#SBATCH" before any executable commands in the script.
-sbatch will stop processing further #SBATCH directives once the first
-non\-comment non\-whitespace line has been reached in the script.
+sbatch will read in a script from standard input.
+
+The batch script may contain one or more lines beginning with "#SBATCH" followed
+by any of the CLI options documented on this page. #SBATCH directives are read
+directly by Slurm, so shell\-specific syntax including variable names will be
+read as literal text. Once the first non\-comment, non\-whitespace line has been
+reached in the script, no more #SBATCH directives will be processed. See example
+below.
 
 sbatch exits immediately after the script is successfully transferred to the
 Slurm controller and assigned a Slurm job ID. The batch script is not
@@ -1060,7 +1064,7 @@ was not specified) as one task per requested thread.
 .IP
 
 .TP
-\fB\-\-get\-user\-env\fR[=\fItimeout\fR][\fImode\fR]
+\fB\-\-get\-user\-env\fR
 This option will tell sbatch to retrieve the
 login environment variables for the user specified in the \fB\-\-uid\fR option.
 The environment variables are retrieved by running something of this sort
@@ -1068,16 +1072,8 @@ The environment variables are retrieved by running something of this sort
 Be aware that any environment variables already set in sbatch's environment
 will take precedence over any environment variables in the user's
 login environment. Clear any environment variables before calling sbatch
-that you do not want propagated to the spawned program.
-The optional \fItimeout\fR value is in seconds. Default value is 8 seconds.
-The optional \fImode\fR value control the "su" options.
-With a \fImode\fR value of "S", "su" is executed without the "\-" option.
-With a \fImode\fR value of "L", "su" is executed with the "\-" option,
-replicating the login environment.
-If \fImode\fR not specified, the mode established at Slurm build time
-is used.
-Example of use include "\-\-get\-user\-env", "\-\-get\-user\-env=10"
-"\-\-get\-user\-env=10L", and "\-\-get\-user\-env=S".
+that you do not want propagated to the spawned program. If the user environment
+retrieval fails or times out, the job will be aborted, requeued and held.
 
 \fBNOTE\fR: The explicit or implicit use of \fB--get-user-env\fR relies in
 the capability of being able to create PID and mount namespaces. It is very
@@ -1368,8 +1364,11 @@ Specification of licenses (or other resources available on all
 nodes of the cluster) which must be allocated to this job.
 License names can be followed by a colon and count
 (the default count is one).
-Multiple license names should be comma separated (e.g.
-"\-\-licenses=foo:4,bar").
+Multiple licenses can be requested. If they are separated by a comma (','
+meaning AND), then all requested licenses are required for the job. For example,
+"\-\-licenses=foo:4,bar". If they are separated by a pipe ('|' meaning OR),
+then only one of the license requests are required for the job. For example,
+"\-\-licenses=foo:4\|bar". AND and OR cannot both be used.
 To submit jobs using remote licenses, those served by the slurmdbd, specify
 the name of the server providing the licenses.
 For example "\-\-license=nastran@slurmdb:12".
@@ -1377,6 +1376,16 @@ For example "\-\-license=nastran@slurmdb:12".
 \fBNOTE\fR: When submitting heterogeneous jobs, license requests
 may only be made on the first component job.
 For example "sbatch \-L ansys:2 : script.sh".
+
+\fBNOTE\fR: If licenses are tracked in AccountingStorageTres and OR is used,
+ReqTRES will display all requested tres separated by commas. AllocTRES will
+display only the license that was allocated to the job.
+
+\fBNOTE\fR: When a job requests OR'd licenses, Slurm will attempt to allocate
+the licenses in the order in which they are requested. This specified order
+will take precedence even if the rest of requested licenses could be satisfied
+on a requested reservation. This also applies to backfill planning when
+\fBSchedulerParameters=bf_licenses\fR is configured.
 .IP
 
 .TP
@@ -3313,6 +3322,12 @@ Quality Of Service (QOS) of the job allocation.
 .TP
 \fBSLURM_JOB_RESERVATION\fR
 Advanced reservation containing the job allocation, if any.
+.IP
+
+.TP
+\fBSLURM_JOB_SEGMENT_SIZE\fR
+The size of the segments that was used to create the job allocation.
+Only set if \-\-segment\fR is specified.
 .IP
 
 .TP

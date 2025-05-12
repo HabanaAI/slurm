@@ -47,6 +47,7 @@
 #include "src/common/env.h"
 #include "src/common/slurmdbd_defs.h"
 #include "src/interfaces/auth.h"
+#include "src/interfaces/tls.h"
 #include "src/common/slurm_time.h"
 #include "src/common/xstring.h"
 #include "src/slurmdbd/read_config.h"
@@ -416,7 +417,7 @@ extern void dump_update_list(list_t *update_list)
 extern int cluster_first_reg(char *host, uint16_t port, uint16_t rpc_version)
 {
 	slurm_addr_t ctld_address;
-	int fd;
+	void *tls_conn = NULL;
 	int rc = SLURM_SUCCESS;
 
 	info("First time to register cluster requesting "
@@ -424,8 +425,7 @@ extern int cluster_first_reg(char *host, uint16_t port, uint16_t rpc_version)
 
 	memset(&ctld_address, 0, sizeof(ctld_address));
 	slurm_set_addr(&ctld_address, port, host);
-	fd = slurm_open_msg_conn(&ctld_address);
-	if (fd < 0) {
+	if (!(tls_conn = slurm_open_msg_conn(&ctld_address, NULL))) {
 		error("can not open socket back to slurmctld "
 		      "%s(%u): %m", host, port);
 		rc = SLURM_ERROR;
@@ -443,12 +443,12 @@ extern int cluster_first_reg(char *host, uint16_t port, uint16_t rpc_version)
 		out_msg.flags = SLURM_GLOBAL_AUTH_KEY;
 		out_msg.data = &update;
 		slurm_msg_set_r_uid(&out_msg, SLURM_AUTH_UID_ANY);
-		slurm_send_node_msg(fd, &out_msg);
+		slurm_send_node_msg(tls_conn, &out_msg);
 		/* We probably need to add matching recv_msg function
 		 * for an arbitrary fd or should these be fire
 		 * and forget?  For this, that we can probably
 		 * forget about it */
-		close(fd);
+		tls_g_destroy_conn(tls_conn, true);
 	}
 	return rc;
 }
@@ -525,6 +525,7 @@ extern int set_usage_information(char **usage_table,
 	if (start_tm.tm_hour || end_tm.tm_hour || (end-start < 86400)
 	   || (end > my_time)) {
 		switch (type) {
+		case DBD_GET_ASSOC_NG_USAGE:
 		case DBD_GET_ASSOC_USAGE:
 			my_usage_table = assoc_hour_table;
 			break;
@@ -1001,6 +1002,13 @@ extern int as_build_step_start_msg(dbd_step_start_msg_t *req,
 
 	req->total_tasks = tasks;
 
+	if (!(slurm_conf.conf_flags & CONF_FLAG_NO_STDIO)) {
+		req->cwd = step_ptr->cwd;
+		req->std_err = step_ptr->std_err;
+		req->std_in = step_ptr->std_in;
+		req->std_out = step_ptr->std_out;
+	}
+
 	req->submit_line = step_ptr->submit_line;
 	req->tres_alloc_str = step_ptr->tres_alloc_str;
 
@@ -1043,17 +1051,7 @@ extern int as_build_step_comp_msg(dbd_step_comp_msg_t *req,
 	req->db_index    = step_ptr->job_ptr->db_index;
 	req->end_time    = time(NULL);	/* called at step completion */
 	req->exit_code   = step_ptr->exit_code;
-#ifndef HAVE_FRONT_END
-	/* Only send this info on a non-frontend system since this
-	 * information is of no use on systems that run on a front-end
-	 * node.  Since something else is running the job.
-	 */
 	req->jobacct     = step_ptr->jobacct;
-#else
-	if (step_ptr->step_id.step_id == SLURM_BATCH_SCRIPT)
-		req->jobacct     = step_ptr->jobacct;
-#endif
-
 	req->req_uid     = step_ptr->requid;
 	if (step_ptr->start_time > step_ptr->job_ptr->resize_time)
 		req->start_time = step_ptr->start_time;

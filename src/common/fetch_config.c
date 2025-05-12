@@ -51,6 +51,8 @@
 #include "src/common/xstring.h"
 #include "src/common/xmalloc.h"
 
+#include "src/interfaces/tls.h"
+
 static char *slurmd_config_files[] = {
 	"slurm.conf", "acct_gather.conf", "cgroup.conf",
 	"cli_filter.lua", "gres.conf", "helpers.conf",
@@ -113,7 +115,8 @@ rwfail:
 	return NULL;
 }
 
-static void _fetch_child(list_t *controllers, uint32_t flags)
+static void _fetch_child(list_t *controllers, uint32_t flags, uint16_t port,
+			 char *ca_cert_file)
 {
 	config_response_msg_t *config;
 	ctl_entry_t *ctl = NULL;
@@ -131,6 +134,21 @@ static void _fetch_child(list_t *controllers, uint32_t flags)
 	 */
 	slurm_conf_unlock();
 
+	if (ca_cert_file) {
+		slurm_conf.plugindir = xstrdup(default_plugin_path);
+		slurm_conf.tls_type = xstrdup("tls/s2n");
+
+		/* certmgr plugin will be loaded after getting configuration */
+		if (tls_g_init()) {
+			error("--ca-cert-file was specified but TLS plugin failed to load");
+			goto rwfail;
+		}
+		if (tls_g_load_ca_cert(ca_cert_file)) {
+			error("Failed to load certificate file '%s'", ca_cert_file);
+			goto rwfail;
+		}
+	}
+
 	ctl = list_peek(controllers);
 
 	if (ctl->has_ipv6 && !ctl->has_ipv4)
@@ -138,13 +156,13 @@ static void _fetch_child(list_t *controllers, uint32_t flags)
 	else
 		_init_minimal_conf_server_config(controllers, false, false);
 
-	config = fetch_config_from_controller(flags);
+	config = fetch_config_from_controller(flags, port);
 
 	if (!config && ctl->has_ipv6 && ctl->has_ipv4) {
 		warning("%s: failed to fetch remote configs via IPv4, retrying with IPv6: %m",
 			__func__);
 		_init_minimal_conf_server_config(controllers, true, true);
-		config = fetch_config_from_controller(flags);
+		config = fetch_config_from_controller(flags, port);
 	}
 
 	if (!config) {
@@ -176,7 +194,9 @@ static int _get_controller_addr_type(void *x, void *arg)
 	return SLURM_SUCCESS;
 }
 
-extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags)
+extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags,
+					   uint16_t sackd_port,
+					   char *ca_cert_file)
 {
 	char *env_conf_server = getenv("SLURM_CONF_SERVER");
 	list_t *controllers = NULL;
@@ -268,11 +288,12 @@ extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags)
 		return _fetch_parent(pid);
 	}
 
-	_fetch_child(controllers, flags);
+	_fetch_child(controllers, flags, sackd_port, ca_cert_file);
 	_exit(0);
 }
 
-extern config_response_msg_t *fetch_config_from_controller(uint32_t flags)
+extern config_response_msg_t *fetch_config_from_controller(uint32_t flags,
+							   uint16_t port)
 {
 	int rc;
 	slurm_msg_t req_msg;
@@ -285,6 +306,7 @@ extern config_response_msg_t *fetch_config_from_controller(uint32_t flags)
 
 	memset(&req, 0, sizeof(req));
 	req.flags = flags;
+	req.port = port;
 	req_msg.msg_type = REQUEST_CONFIG;
 	req_msg.data = &req;
 

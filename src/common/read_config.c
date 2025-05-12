@@ -117,7 +117,6 @@ static s_p_hashtbl_t *conf_hashtbl = NULL;
 static buf_t *conf_buf = NULL;
 static slurm_conf_t *conf_ptr = &slurm_conf;
 static bool conf_initialized = false;
-static s_p_hashtbl_t *default_frontend_tbl;
 static s_p_hashtbl_t *default_nodename_tbl;
 static s_p_hashtbl_t *default_partition_tbl;
 static list_t *config_files = NULL;
@@ -153,13 +152,8 @@ typedef struct slurm_conf_server {
 static slurm_conf_node_t *_create_conf_node(void);
 static void _pack_node_conf_lite(void *n, buf_t *buffer);
 static void *_unpack_node_conf_lite(buf_t *buffer);
-static void _pack_frontend_conf_lite(void *n, buf_t *buffer);
-static void *_unpack_frontend_conf_lite(buf_t *buffer);
 static void _init_conf_node(slurm_conf_node_t *conf_node);
 static void _destroy_nodename(void *ptr);
-static int _parse_frontend(void **dest, slurm_parser_enum_t type,
-			   const char *key, const char *value,
-			   const char *line, char **leftover);
 static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 			   const char *key, const char *value,
 			   const char *line, char **leftover);
@@ -196,7 +190,7 @@ static uint16_t *_parse_srun_ports(const char *);
 
 static void _push_to_hashtbls(char *alias, char *hostname, char *address,
 			      char *bcast_address, uint16_t port,
-			      bool front_end, slurm_addr_t *addr,
+			      slurm_addr_t *addr,
 			      bool initialized, bool dynamic, bool cloud);
 
 static s_p_options_t slurm_conf_stepd_options[] = {
@@ -207,16 +201,9 @@ static s_p_options_t slurm_conf_stepd_options[] = {
 	 .pack = _pack_node_conf_lite,
 	 .unpack = _unpack_node_conf_lite,
 	},
-	{.key = "FrontendName",
-	 .type = S_P_ARRAY,
-	 .handler = _parse_frontend,
-	 .destroy = destroy_frontend,
-	 .pack = _pack_frontend_conf_lite,
-	 .unpack = _unpack_frontend_conf_lite,
-	},
 	{NULL}
 };
-static int slurm_conf_stepd_options_cnt = 2;
+static int slurm_conf_stepd_options_cnt = 1;
 
 s_p_options_t slurm_conf_options[] = {
 	{"AccountingStorageBackupHost", S_P_STRING},
@@ -250,6 +237,8 @@ s_p_options_t slurm_conf_options[] = {
 	{"BcastParameters", S_P_STRING},
 	{"BurstBufferParameters", S_P_STRING},
 	{"BurstBufferType", S_P_STRING},
+	{"CertgenType", S_P_STRING},
+	{"CertgenParameters", S_P_STRING},
 	{"CertmgrType", S_P_STRING},
 	{"CertmgrParameters", S_P_STRING},
 	{"CliFilterPlugins", S_P_STRING},
@@ -276,13 +265,14 @@ s_p_options_t slurm_conf_options[] = {
 	{"Epilog", S_P_ARRAY},
 	{"EpilogMsgTime", S_P_UINT32},
 	{"EpilogSlurmctld", S_P_ARRAY},
+	{"EpilogTimeout", S_P_UINT16},
 	{"ExtSensorsFreq", S_P_UINT16, _defunct_option},
 	{"ExtSensorsType", S_P_STRING, _defunct_option},
 	{"FairShareDampeningFactor", S_P_UINT16},
 	{"FastSchedule", S_P_UINT16},
 	{"FederationParameters", S_P_STRING},
 	{"FirstJobId", S_P_UINT32},
-	{"GetEnvTimeout", S_P_UINT16},
+	{"GetEnvTimeout", S_P_UINT16, _defunct_option},
 	{"GpuFreqDef", S_P_STRING},
 	{"GresTypes", S_P_STRING},
 	{"GroupUpdateForce", S_P_UINT16},
@@ -369,6 +359,7 @@ s_p_options_t slurm_conf_options[] = {
 	{"PrologEpilogTimeout", S_P_UINT16},
 	{"PrologFlags", S_P_STRING},
 	{"PrologSlurmctld", S_P_ARRAY},
+	{"PrologTimeout", S_P_UINT16},
 	{"PropagatePrioProcess", S_P_UINT16},
 	{"PropagateResourceLimits", S_P_STRING},
 	{"PropagateResourceLimitsExcept", S_P_STRING},
@@ -448,7 +439,6 @@ s_p_options_t slurm_conf_options[] = {
 	{"X11Parameters", S_P_STRING},
 
 	{"DownNodes", S_P_ARRAY, _parse_downnodes, _destroy_downnodes},
-	{"FrontendName", S_P_ARRAY, _parse_frontend, destroy_frontend},
 	{"NodeName", S_P_ARRAY, _parse_nodename, _destroy_nodename},
 	{"NodeSet", S_P_ARRAY, _parse_nodeset, _destroy_nodeset},
 	{"PartitionName", S_P_ARRAY, _parse_partitionname,
@@ -506,100 +496,6 @@ static int _defunct_option(void **dest, slurm_parser_enum_t type,
 	return 0;
 }
 
-static int _parse_frontend(void **dest, slurm_parser_enum_t type,
-			   const char *key, const char *value,
-			   const char *line, char **leftover)
-{
-	s_p_hashtbl_t *tbl, *dflt;
-	slurm_conf_frontend_t *n;
-	char *node_state = NULL;
-	static s_p_options_t _frontend_options[] = {
-		{"AllowGroups", S_P_STRING},
-		{"AllowUsers", S_P_STRING},
-		{"DenyGroups", S_P_STRING},
-		{"DenyUsers", S_P_STRING},
-		{"FrontendAddr", S_P_STRING},
-		{"Port", S_P_UINT16},
-		{"Reason", S_P_STRING},
-		{"State", S_P_STRING},
-		{NULL}
-	};
-
-#ifndef HAVE_FRONT_END
-	fatal("Use of FrontendName in slurm.conf without Slurm being configured/built with the --enable-front-end option");
-#endif
-
-	tbl = s_p_hashtbl_create(_frontend_options);
-	s_p_parse_line(tbl, *leftover, leftover);
-	/* s_p_dump_values(tbl, _frontend_options); */
-
-	if (xstrcasecmp(value, "DEFAULT") == 0) {
-		char *tmp;
-		if (s_p_get_string(&tmp, "FrontendAddr", tbl)) {
-			error("FrontendAddr not allowed with "
-			      "FrontendName=DEFAULT");
-			xfree(tmp);
-			s_p_hashtbl_destroy(tbl);
-			return -1;
-		}
-
-		if (default_frontend_tbl != NULL) {
-			s_p_hashtbl_merge(tbl, default_frontend_tbl);
-			s_p_hashtbl_destroy(default_frontend_tbl);
-		}
-		default_frontend_tbl = tbl;
-
-		return 0;
-	} else {
-		n = xmalloc(sizeof(slurm_conf_frontend_t));
-		dflt = default_frontend_tbl;
-
-		n->frontends = xstrdup(value);
-
-		(void) s_p_get_string(&n->allow_groups, "AllowGroups", tbl);
-		(void) s_p_get_string(&n->allow_users,  "AllowUsers", tbl);
-		(void) s_p_get_string(&n->deny_groups,  "DenyGroups", tbl);
-		(void) s_p_get_string(&n->deny_users,   "DenyUsers", tbl);
-		if (n->allow_groups && n->deny_groups)
-			fatal("FrontEnd options AllowGroups and DenyGroups are incompatible");
-		if (n->allow_users && n->deny_users)
-			fatal("FrontEnd options AllowUsers and DenyUsers are incompatible");
-
-		if (!s_p_get_string(&n->addresses, "FrontendAddr", tbl))
-			n->addresses = xstrdup(n->frontends);
-
-		if (!s_p_get_uint16(&n->port, "Port", tbl) &&
-		    !s_p_get_uint16(&n->port, "Port", dflt)) {
-			/*
-			 * This gets resolved in slurm_conf_get_addr().
-			 * For now just leave with a value of zero.
-			 */
-			n->port = 0;
-		}
-
-		if (!s_p_get_string(&n->reason, "Reason", tbl))
-			s_p_get_string(&n->reason, "Reason", dflt);
-
-		if (!s_p_get_string(&node_state, "State", tbl) &&
-		    !s_p_get_string(&node_state, "State", dflt)) {
-			n->node_state = NODE_STATE_UNKNOWN;
-		} else {
-			n->node_state = state_str2int(node_state,
-						      (char *) value);
-			if (n->node_state == NO_VAL16)
-				n->node_state = NODE_STATE_UNKNOWN;
-			xfree(node_state);
-		}
-
-		*dest = (void *)n;
-
-		s_p_hashtbl_destroy(tbl);
-		return 1;
-	}
-
-	/* should not get here */
-}
-
 static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 			   const char *key, const char *value,
 			   const char *line, char **leftover)
@@ -630,6 +526,7 @@ static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 		{"State", S_P_STRING},
 		{"ThreadsPerCore", S_P_UINT16},
 		{"TmpDisk", S_P_UINT32},
+		{"Topology", S_P_STRING},
 		{"TRESWeights", S_P_STRING},
 		{"Weight", S_P_UINT32},
 		{NULL}
@@ -772,6 +669,9 @@ static int _parse_nodename(void **dest, slurm_parser_enum_t type,
 
 		if (!s_p_get_uint32(&n->tmp_disk, "TmpDisk", tbl))
 			s_p_get_uint32(&n->tmp_disk, "TmpDisk", dflt);
+
+		if (!s_p_get_string(&n->topology_str, "Topology", tbl))
+			s_p_get_string(&n->topology_str, "Topology", dflt);
 
 		if (!s_p_get_string(&n->tres_weights_str, "TRESWeights", tbl))
 			s_p_get_string(&n->tres_weights_str, "TRESWeights",
@@ -938,33 +838,6 @@ unpack_error:
 	return NULL;
 }
 
-/* This should only be going to the stepd, no protocol version needed */
-static void _pack_frontend_conf_lite(void *ptr, buf_t *buffer)
-{
-	slurm_conf_frontend_t *n = ptr;
-
-	xassert(n);
-
-	packstr(n->frontends, buffer);
-	packstr(n->addresses, buffer);
-	pack16(n->port, buffer);
-}
-
-static void *_unpack_frontend_conf_lite(buf_t *buffer)
-{
-	slurm_conf_frontend_t *n = xmalloc(sizeof(*n));
-
-	safe_unpackstr(&n->frontends, buffer);
-	safe_unpackstr(&n->addresses, buffer);
-	safe_unpack16(&n->port, buffer);
-
-	return n;
-
-unpack_error:
-	_destroy_nodename(n);
-	return NULL;
-}
-
 /*
  * Sync _init_config_record().
  *
@@ -993,38 +866,6 @@ static slurm_conf_node_t *_create_conf_node(void)
 	return n;
 }
 
-/* Destroy a front_end record built by slurm_conf_frontend_array() */
-extern void destroy_frontend(void *ptr)
-{
-	slurm_conf_frontend_t *n = (slurm_conf_frontend_t *) ptr;
-	xfree(n->addresses);
-	xfree(n->allow_groups);
-	xfree(n->allow_users);
-	xfree(n->deny_groups);
-	xfree(n->deny_users);
-	xfree(n->frontends);
-	xfree(n->reason);
-	xfree(ptr);
-}
-
-/*
- * _list_find_frontend - find an entry in the front_end list, see list.h for
- *	documentation
- * IN key - is frontend name
- * RET 1 if found, 0 otherwise
- */
-#ifdef HAVE_FRONT_END
-static int _list_find_frontend(void *front_end_entry, void *key)
-{
-	slurm_conf_frontend_t *front_end_ptr =
-		(slurm_conf_frontend_t *) front_end_entry;
-
-	if (xstrcmp(front_end_ptr->frontends, (char *) key) == 0)
-		return 1;
-	return 0;
-}
-#endif
-
 static void _destroy_nodename(void *ptr)
 {
 	slurm_conf_node_t *n = (slurm_conf_node_t *)ptr;
@@ -1038,6 +879,7 @@ static void _destroy_nodename(void *ptr)
 	xfree(n->port_str);
 	xfree(n->reason);
 	xfree(n->state);
+	xfree(n->topology_str);
 	xfree(n->tres_weights_str);
 	xfree(ptr);
 }
@@ -1086,59 +928,6 @@ hosed:
 
 	return NULL;
 }
-
-int slurm_conf_frontend_array(slurm_conf_frontend_t **ptr_array[])
-{
-	int count = 0;
-	slurm_conf_frontend_t **ptr;
-
-	if (s_p_get_array((void ***)&ptr, &count, "FrontendName",
-			  conf_hashtbl)) {
-		*ptr_array = ptr;
-		return count;
-	} else {
-#ifdef HAVE_FRONT_END
-		/* No FrontendName in slurm.conf. Take the NodeAddr and
-		 * NodeHostName from the first node's record and use that to
-		 * build an equivalent structure to that constructed when
-		 * FrontendName is configured. This is intended for backward
-		 * compatibility with Slurm version 2.2. */
-		static slurm_conf_frontend_t local_front_end;
-		static slurm_conf_frontend_t *local_front_end_array[2] =
-			{NULL, NULL};
-		static char addresses[1024], hostnames[1024];
-
-		if (local_front_end_array[0] == NULL) {
-			slurm_conf_node_t **node_ptr;
-			int node_count = 0;
-			if (!s_p_get_array((void ***)&node_ptr, &node_count,
-					   "NodeName", conf_hashtbl) ||
-			    (node_count == 0)) {
-				fatal("No front end nodes configured");
-			}
-			strlcpy(addresses, node_ptr[0]->addresses,
-				sizeof(addresses));
-			strlcpy(hostnames, node_ptr[0]->hostnames,
-				sizeof(hostnames));
-			local_front_end.addresses = addresses;
-			local_front_end.frontends = hostnames;
-			if (node_ptr[0]->port_str) {
-				local_front_end.port = atoi(node_ptr[0]->
-							    port_str);
-			}
-			local_front_end.reason = NULL;
-			local_front_end.node_state = NODE_STATE_UNKNOWN;
-			local_front_end_array[0] = &local_front_end;
-		}
-		*ptr_array = local_front_end_array;
-		return 1;
-#else
-		*ptr_array = NULL;
-		return 0;
-#endif
-	}
-}
-
 
 int slurm_conf_nodename_array(slurm_conf_node_t **ptr_array[])
 {
@@ -1367,10 +1156,10 @@ static int _parse_partitionname(void **dest, slurm_parser_enum_t type,
 		{"State", S_P_STRING}, /* UP, DOWN, INACTIVE or DRAIN */
 		{"SuspendTime", S_P_STRING},
 		{"SuspendTimeout", S_P_UINT16},
+		{"Topology", S_P_STRING},
 		{"TRESBillingWeights", S_P_STRING},
 		{NULL}
 	};
-
 
 	tbl = s_p_hashtbl_create(_partition_options);
 	s_p_parse_line(tbl, *leftover, leftover);
@@ -1749,6 +1538,9 @@ static int _parse_partitionname(void **dest, slurm_parser_enum_t type,
 			xfree(tmp);
 		}
 
+		if (!s_p_get_string(&p->topology_name, "Topology", tbl))
+			s_p_get_string(&p->topology_name, "Topology", dflt);
+
 		s_p_hashtbl_destroy(tbl);
 
 		*dest = (void *)p;
@@ -1813,6 +1605,7 @@ static void _destroy_partitionname(void *ptr)
 	xfree(p->name);
 	xfree(p->nodes);
 	xfree(p->qos_char);
+	xfree(p->topology_name);
 	xfree(ptr);
 }
 
@@ -2183,7 +1976,7 @@ static int _get_hash_idx(const char *name)
 
 static void _push_to_hashtbls(char *alias, char *hostname, char *address,
 			      char *bcast_address, uint16_t port,
-			      bool front_end, slurm_addr_t *addr,
+			      slurm_addr_t *addr,
 			      bool initialized, bool dynamic, bool cloud)
 {
 	int hostname_idx, alias_idx;
@@ -2192,7 +1985,7 @@ static void _push_to_hashtbls(char *alias, char *hostname, char *address,
 	alias_idx = _get_hash_idx(alias);
 	hostname_idx = _get_hash_idx(hostname);
 
-#if !defined(HAVE_FRONT_END) && !defined(MULTIPLE_SLURMD)
+#if !defined(MULTIPLE_SLURMD)
 	/* Ensure only one slurmd configured on each host */
 	p = host_to_node_hashtbl[hostname_idx];
 	while (p) {
@@ -2208,11 +2001,8 @@ static void _push_to_hashtbls(char *alias, char *hostname, char *address,
 	p = node_to_host_hashtbl[alias_idx];
 	while (p) {
 		if (xstrcmp(p->alias, alias) == 0) {
-			if (front_end)
-				fatal("Frontend not configured correctly in slurm.conf. See FrontEndName in slurm.conf man page.");
-			else
-				fatal("Duplicated NodeName %s in the config file",
-				      p->alias);
+			fatal("Duplicated NodeName %s in the config file",
+			      p->alias);
 		}
 		p = p->next_alias;
 	}
@@ -2253,54 +2043,6 @@ static void _push_to_hashtbls(char *alias, char *hostname, char *address,
 	}
 }
 
-static int _register_front_ends(slurm_conf_frontend_t *front_end_ptr)
-{
-	hostlist_t *hostname_list = NULL;
-	hostlist_t *address_list = NULL;
-	char *hostname = NULL;
-	char *address = NULL;
-	int error_code = SLURM_SUCCESS;
-
-	if ((front_end_ptr->frontends == NULL) ||
-	    (front_end_ptr->frontends[0] == '\0'))
-		return -1;
-
-	if ((hostname_list = hostlist_create(front_end_ptr->frontends))
-	     == NULL) {
-		error("Unable to create FrontendNames list from %s",
-		      front_end_ptr->frontends);
-		error_code = errno;
-		goto cleanup;
-	}
-	if ((address_list = hostlist_create(front_end_ptr->addresses))
-	     == NULL) {
-		error("Unable to create FrontendAddr list from %s",
-		      front_end_ptr->addresses);
-		error_code = errno;
-		goto cleanup;
-	}
-	if (hostlist_count(address_list) != hostlist_count(hostname_list)) {
-		error("Node count mismatch between FrontendNames and "
-		      "FrontendAddr");
-		goto cleanup;
-	}
-
-	while ((hostname = hostlist_shift(hostname_list))) {
-		address = hostlist_shift(address_list);
-		_push_to_hashtbls(hostname, hostname, address, NULL,
-				  front_end_ptr->port, true, NULL, false,
-				  false, false);
-		free(hostname);
-		free(address);
-	}
-
-	/* free allocated storage */
-cleanup:
-	FREE_NULL_HOSTLIST(hostname_list);
-	FREE_NULL_HOSTLIST(address_list);
-	return error_code;
-}
-
 static int _check_callback(char *alias, char *hostname, char *address,
 			   char *bcast_address, uint16_t port, int state_val,
 			   slurm_conf_node_t *node_ptr,
@@ -2328,14 +2070,13 @@ static int _check_callback(char *alias, char *hostname, char *address,
 		cloud_node = true;
 
 	_push_to_hashtbls(alias, hostname, address, bcast_address, port,
-			  false, NULL, false, dynamic_addr, cloud_node);
+			  NULL, false, dynamic_addr, cloud_node);
 	return SLURM_SUCCESS;
 }
 
 static void _init_slurmd_nodehash(void)
 {
 	slurm_conf_node_t **ptr_array;
-	slurm_conf_frontend_t **ptr_front_end;
 	int count, i;
 
 	if (nodehash_initialized)
@@ -2352,10 +2093,6 @@ static void _init_slurmd_nodehash(void)
 	for (i = 0; i < count; i++) {
 		expand_nodeline_info(ptr_array[i], NULL, NULL, _check_callback);
 	}
-
-	count = slurm_conf_frontend_array(&ptr_front_end);
-	for (i = 0; i < count; i++)
-		_register_front_ends(ptr_front_end[i]);
 }
 
 /*
@@ -2405,26 +2142,8 @@ extern char *slurm_conf_get_nodename(const char *node_hostname)
 	char *alias = NULL;
 	int idx;
 	names_ll_t *p;
-#ifdef HAVE_FRONT_END
-	slurm_conf_frontend_t *front_end_ptr = NULL;
 
- 	slurm_conf_lock();
-	if (!front_end_list) {
-		debug("front_end_list is NULL");
-	} else {
-		front_end_ptr = list_find_first(front_end_list,
-						_list_find_frontend,
-						(char *) node_hostname);
-		if (front_end_ptr) {
-			alias = xstrdup(front_end_ptr->frontends);
-			slurm_conf_unlock();
-			return alias;
-		}
-	}
-#else
 	slurm_conf_lock();
-#endif
-
 	_init_slurmd_nodehash();
 	idx = _get_hash_idx(node_hostname);
 	p = host_to_node_hashtbl[idx];
@@ -2728,7 +2447,7 @@ extern void slurm_reset_alias(char *node_name, char *node_addr,
 	}
 	if (!p) {
 		_push_to_hashtbls(node_name, node_hostname, node_addr,
-				  NULL, 0, false, NULL, false, false, false);
+				  NULL, 0, NULL, false, false, false);
 	}
 	slurm_conf_unlock();
 
@@ -2873,6 +2592,8 @@ extern void free_slurm_conf(slurm_conf_t *ctl_conf_ptr, bool purge_node_hash)
 	xfree (ctl_conf_ptr->bb_type);
 	xfree(ctl_conf_ptr->bcast_exclude);
 	xfree (ctl_conf_ptr->bcast_parameters);
+	xfree(ctl_conf_ptr->certgen_params);
+	xfree(ctl_conf_ptr->certgen_type);
 	xfree(ctl_conf_ptr->certmgr_params);
 	xfree(ctl_conf_ptr->certmgr_type);
 	FREE_NULL_LIST(ctl_conf_ptr->cgroup_conf);
@@ -3022,6 +2743,8 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	xfree (ctl_conf_ptr->bb_type);
 	xfree(ctl_conf_ptr->bcast_exclude);
 	xfree(ctl_conf_ptr->bcast_parameters);
+	xfree(ctl_conf_ptr->certgen_params);
+	xfree(ctl_conf_ptr->certgen_type);
 	xfree(ctl_conf_ptr->certmgr_params);
 	xfree(ctl_conf_ptr->certmgr_type);
 	xfree(ctl_conf_ptr->cli_filter_plugins);
@@ -3048,7 +2771,6 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	ctl_conf_ptr->epilog_msg_time		= NO_VAL;
 	xfree(ctl_conf_ptr->fed_params);
 	ctl_conf_ptr->first_job_id		= NO_VAL;
-	ctl_conf_ptr->get_env_timeout		= 0;
 	xfree(ctl_conf_ptr->gres_plugins);
 	ctl_conf_ptr->group_time		= 0;
 	ctl_conf_ptr->group_force		= 0;
@@ -3185,7 +2907,8 @@ void init_slurm_conf(slurm_conf_t *ctl_conf_ptr)
 	ctl_conf_ptr->vsize_factor              = 0;
 	ctl_conf_ptr->wait_time			= NO_VAL16;
 	xfree (ctl_conf_ptr->x11_params);
-	ctl_conf_ptr->prolog_epilog_timeout = NO_VAL16;
+	ctl_conf_ptr->prolog_timeout = NO_VAL16;
+	ctl_conf_ptr->epilog_timeout = NO_VAL16;
 
 	_free_name_hashtbl();
 
@@ -3274,10 +2997,6 @@ _destroy_slurm_conf(void)
 
 	s_p_hashtbl_destroy(conf_hashtbl);
 	FREE_NULL_BUFFER(conf_buf);
-	if (default_frontend_tbl != NULL) {
-		s_p_hashtbl_destroy(default_frontend_tbl);
-		default_frontend_tbl = NULL;
-	}
 	if (default_nodename_tbl != NULL) {
 		s_p_hashtbl_destroy(default_nodename_tbl);
 		default_nodename_tbl = NULL;
@@ -3355,7 +3074,8 @@ static int _establish_config_source(char **config_file, bool *memfd)
 	 * One last shot - try the SLURM_CONF_SERVER envvar or DNS SRV
 	 * entries to fetch the configs from the slurmctld.
 	 */
-	if (!(config = fetch_config(NULL, CONFIG_REQUEST_SLURM_CONF)) ||
+	if (!(config =
+		      fetch_config(NULL, CONFIG_REQUEST_SLURM_CONF, 0, NULL)) ||
 	    !config->config_files) {
 		error("%s: failed to fetch config", __func__);
 		return SLURM_ERROR;
@@ -4063,6 +3783,10 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 
 	(void) s_p_get_string(&conf->bb_type, "BurstBufferType", hashtbl);
 
+	(void) s_p_get_string(&conf->certgen_params, "CertgenParameters",
+			      hashtbl);
+	(void) s_p_get_string(&conf->certgen_type, "CertgenType", hashtbl);
+
 	(void) s_p_get_string(&conf->certmgr_params, "CertmgrParameters",
 			      hashtbl);
 	(void) s_p_get_string(&conf->certmgr_type, "CertmgrType", hashtbl);
@@ -4344,9 +4068,6 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 
 	(void) s_p_get_string(&conf->job_submit_plugins, "JobSubmitPlugins",
 			      hashtbl);
-
-	if (!s_p_get_uint16(&conf->get_env_timeout, "GetEnvTimeout", hashtbl))
-		conf->get_env_timeout = DEFAULT_GET_ENV_TIMEOUT;
 
 	(void) s_p_get_uint16(&conf->health_check_interval,
 			      "HealthCheckInterval", hashtbl);
@@ -4757,6 +4478,7 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	} else if (xstrcmp(conf->preempt_type, "preempt/qos") == 0) {
 		int preempt_mode = conf->preempt_mode & (~PREEMPT_MODE_GANG);
 		preempt_mode &= ~PREEMPT_MODE_WITHIN;
+		preempt_mode &= ~PREEMPT_MODE_PRIORITY;
 		if (preempt_mode == PREEMPT_MODE_OFF) {
 			error("PreemptType and PreemptMode values "
 			      "incompatible");
@@ -4765,6 +4487,7 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	} else if (xstrcmp(conf->preempt_type, "preempt/partition_prio") == 0) {
 		int preempt_mode = conf->preempt_mode & (~PREEMPT_MODE_GANG);
 		preempt_mode &= ~PREEMPT_MODE_WITHIN;
+		preempt_mode &= ~PREEMPT_MODE_PRIORITY;
 		if (preempt_mode == PREEMPT_MODE_OFF) {
 			error("PreemptType and PreemptMode values "
 			      "incompatible");
@@ -4823,7 +4546,9 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		if (xstrcasestr(temp_str, "INCR_ONLY"))
 			conf->priority_flags |= PRIORITY_FLAGS_INCR_ONLY;
 
-		if (xstrcasestr(temp_str, "MAX_TRES"))
+		if (xstrcasestr(temp_str, "MAX_TRES_GRES"))
+			conf->priority_flags |= PRIORITY_FLAGS_MAX_TRES_GRES;
+		else if (xstrcasestr(temp_str, "MAX_TRES"))
 			conf->priority_flags |= PRIORITY_FLAGS_MAX_TRES;
 
 		if (xstrcasestr(temp_str, "NO_NORMAL_ALL"))
@@ -4998,12 +4723,6 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		if (conf->prolog_flags & PROLOG_FLAG_NOHOLD) {
 			conf->prolog_flags |= PROLOG_FLAG_ALLOC;
 		}
-#ifdef HAVE_FRONT_END
-		if (conf->prolog_flags & PROLOG_FLAG_ALLOC) {
-			/* Batch job launches will fail without enhancements */
-			fatal("PrologFlags=alloc not supported on FrontEnd configurations");
-		}
-#endif
 		xfree(temp_str);
 	} else { /* Default: no Prolog Flags are set */
 		conf->prolog_flags = 0;
@@ -5140,7 +4859,8 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		conf->slurm_user_id   = 0;
 	} else {
 		uid_t my_uid;
-		if (uid_from_string (conf->slurm_user_name, &my_uid) < 0) {
+		if (uid_from_string(conf->slurm_user_name, &my_uid) !=
+		    SLURM_SUCCESS) {
 			error ("Invalid user for SlurmUser %s, ignored",
 			       conf->slurm_user_name);
 			xfree(conf->slurm_user_name);
@@ -5155,7 +4875,8 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		conf->slurmd_user_id   = 0;
 	} else {
 		uid_t my_uid;
-		if (uid_from_string (conf->slurmd_user_name, &my_uid) < 0) {
+		if (uid_from_string(conf->slurmd_user_name, &my_uid) !=
+		    SLURM_SUCCESS) {
 			error("Invalid user for SlurmdUser %s, ignored",
 			       conf->slurmd_user_name);
 			xfree(conf->slurmd_user_name);
@@ -5371,12 +5092,6 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 		xfree(conf->task_plugin);
 
 	_sort_task_plugin(&conf->task_plugin);
-#ifdef HAVE_FRONT_END
-	if (conf->task_plugin) {
-		error("On FrontEnd systems no TaskPlugin should be configured");
-		return SLURM_ERROR;
-	}
-#endif
 
 	conf->task_plugin_param = 0;
 	if (s_p_get_string(&temp_str, "TaskPluginParam", hashtbl)) {
@@ -5454,6 +5169,17 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 					return SLURM_ERROR;
 				}
 				conf->task_plugin_param |= OOM_KILL_STEP;
+			} else if (!xstrcasecmp(tok, "SlurmdSpecOverride")) {
+				if (!xstrstr(conf->task_plugin,
+					     "task/cgroup")) {
+					error("TaskPluginParam=SlurmdSpecOverride must be used with task/cgroup");
+					return SLURM_ERROR;
+				}
+				if (!xstrstr(conf->select_type, "cons_tres")) {
+					error("TaskPluginParam=SlurmdSpecOverride must be used with cons/tres");
+					return SLURM_ERROR;
+				}
+				conf->task_plugin_param |= SLURMD_SPEC_OVERRIDE;
 			} else {
 				error("Bad TaskPluginParam: %s", tok);
 				return SLURM_ERROR;
@@ -5461,6 +5187,12 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 			tok = strtok_r(NULL, ",", &last);
 		}
 		xfree(temp_str);
+	}
+
+	if ((conf->task_plugin_param & SLURMD_OFF_SPEC) &&
+	    (conf->task_plugin_param & SLURMD_SPEC_OVERRIDE)) {
+		error("TaskPluginParams SlurmdOffSpec and SlurmdSpecOverride are mutually exclusive");
+		return SLURM_ERROR;
 	}
 
 	(void) s_p_get_string(&conf->task_epilog, "TaskEpilog", hashtbl);
@@ -5504,11 +5236,14 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	if (!s_p_get_string(&conf->topology_plugin,
 			    "TopologyPlugin", hashtbl)) {
 		/* empty */
-	} else if (xstrcasestr(conf->topology_plugin, "none"))
+	} else if (!xstrcasecmp(conf->topology_plugin, "none") ||
+		   !xstrcasecmp(conf->topology_plugin, "default") ||
+		   !xstrcasecmp(conf->topology_plugin, "topology/none") ||
+		   !xstrcasecmp(conf->topology_plugin, "topology/default"))
 		xfree(conf->topology_plugin);
 
 	if (!conf->topology_plugin)
-		conf->topology_plugin = xstrdup("topology/default");
+		conf->topology_plugin = xstrdup("topology/flat");
 
 	if (!xstrcasecmp(conf->select_type, "select/linear") &&
 	    !xstrcasecmp(conf->topology_plugin, "topology/tree"))
@@ -5559,13 +5294,12 @@ static int _validate_and_set_defaults(slurm_conf_t *conf,
 	if (!s_p_get_uint16(&conf->eio_timeout, "EioTimeout", hashtbl))
 		conf->eio_timeout = DEFAULT_EIO_SHUTDOWN_WAIT;
 
-	if (!s_p_get_uint16(&conf->prolog_epilog_timeout,
-			    "PrologEpilogTimeout",
-			    hashtbl)) {
-		/* The default value is wait forever
-		 */
-		conf->prolog_epilog_timeout = NO_VAL16;
-	}
+	if (!s_p_get_uint16(&uint16_tmp, "PrologEpilogTimeout", hashtbl))
+		uint16_tmp = NO_VAL16; /* default - wait forever */
+	if (!s_p_get_uint16(&conf->prolog_timeout, "PrologTimeout", hashtbl))
+		conf->prolog_timeout = uint16_tmp; /* PrologEpilogTimeout */
+	if (!s_p_get_uint16(&conf->epilog_timeout, "EpilogTimeout", hashtbl))
+		conf->epilog_timeout = uint16_tmp; /* PrologEpilogTimeout */
 
 	return SLURM_SUCCESS;
 }
@@ -5750,6 +5484,11 @@ extern char * debug_flags2str(uint64_t debug_flags)
 			xstrcat(rc, ",");
 		xstrcat(rc, "AuditRPCs");
 	}
+	if (debug_flags & DEBUG_FLAG_AUDIT_TLS) {
+		if (rc)
+			xstrcat(rc, ",");
+		xstrcat(rc, "AuditTLS");
+	}
 	if (debug_flags & DEBUG_FLAG_BACKFILL) {
 		if (rc)
 			xstrcat(rc, ",");
@@ -5864,11 +5603,6 @@ extern char * debug_flags2str(uint64_t debug_flags)
 		if (rc)
 			xstrcat(rc, ",");
 		xstrcat(rc, "Federation");
-	}
-	if (debug_flags & DEBUG_FLAG_FRONT_END) {
-		if (rc)
-			xstrcat(rc, ",");
-		xstrcat(rc, "FrontEnd");
 	}
 	if (debug_flags & DEBUG_FLAG_GANG) {
 		if (rc)
@@ -6040,6 +5774,8 @@ extern int debug_str2flags(const char *debug_flags, uint64_t *flags_out)
 			(*flags_out) |= DEBUG_FLAG_AGENT;
 		else if (!xstrcasecmp(tok, "AuditRPCs"))
 			(*flags_out) |= DEBUG_FLAG_AUDIT_RPCS;
+		else if (!xstrcasecmp(tok, "AuditTLS"))
+			(*flags_out) |= DEBUG_FLAG_AUDIT_TLS;
 		else if (xstrcasecmp(tok, "Backfill") == 0)
 			(*flags_out) |= DEBUG_FLAG_BACKFILL;
 		else if (xstrcasecmp(tok, "BackfillMap") == 0)
@@ -6084,8 +5820,6 @@ extern int debug_str2flags(const char *debug_flags, uint64_t *flags_out)
 			(*flags_out) |= DEBUG_FLAG_ENERGY;
 		else if (xstrcasecmp(tok, "Federation") == 0)
 			(*flags_out) |= DEBUG_FLAG_FEDR;
-		else if (xstrcasecmp(tok, "FrontEnd") == 0)
-			(*flags_out) |= DEBUG_FLAG_FRONT_END;
 		else if (xstrcasecmp(tok, "Gang") == 0)
 			(*flags_out) |= DEBUG_FLAG_GANG;
 		else if (!xstrcasecmp(tok, "GLOB_SILENCE"))
@@ -6143,7 +5877,7 @@ extern int debug_str2flags(const char *debug_flags, uint64_t *flags_out)
 		else if (xstrcasecmp(tok, "Task") == 0)
 			error("DebugFlag Task has been removed, please use CPU_Bind");
 		else if (xstrcasecmp(tok, "TLS") == 0)
-			(*flags_out) |= DEBUG_FLAG_TLS;
+			(*flags_out) |= DEBUG_FLAG_TLS | DEBUG_FLAG_AUDIT_TLS;
 		else if (xstrcasecmp(tok, "TraceJobs") == 0)
 			(*flags_out) |= DEBUG_FLAG_TRACE_JOBS;
 		else if (xstrcasecmp(tok, "Trigger") == 0)
@@ -6491,7 +6225,7 @@ extern int add_remote_nodes_to_conf_tbls(char *node_list,
 	while ((hostname = hostlist_shift(host_list))) {
 		_internal_conf_remove_node(hostname);
 		_push_to_hashtbls(hostname, hostname, NULL, NULL, 0,
-				  false, &node_addrs[i++], true, true, false);
+				  &node_addrs[i++], true, true, false);
 		free(hostname);
 	}
 	slurm_conf_unlock();
@@ -6508,7 +6242,7 @@ extern void slurm_conf_add_node(node_record_t *node_ptr)
 
 	_push_to_hashtbls(node_ptr->name, node_ptr->node_hostname,
 			  node_ptr->comm_name, node_ptr->bcast_address,
-			  node_ptr->port, false, NULL, false, false, false);
+			  node_ptr->port, NULL, false, false, false);
 	slurm_conf_unlock();
 }
 
@@ -6549,31 +6283,6 @@ extern void slurm_conf_remove_node(char *node_name)
 	_internal_conf_remove_node(node_name);
 	slurm_conf_unlock();
 }
-
-#ifdef HAVE_FRONT_END
-extern uint16_t slurm_conf_get_frontend_port(char *node_hostname)
-{
-	uint16_t port = 0;
-	slurm_conf_frontend_t *front_end_ptr = NULL;
-
-	slurm_conf_lock();
-	_init_slurmd_nodehash();
-
-	if (!front_end_list) {
-		debug("front_end_list is NULL");
-	} else if ((front_end_ptr = list_find_first(front_end_list,
-						    _list_find_frontend,
-						    node_hostname))) {
-		if (front_end_ptr->port)
-			port = front_end_ptr->port;
-		else
-			port = conf_ptr->slurmd_port;
-	}
-	slurm_conf_unlock();
-
-	return port;
-}
-#endif
 
 extern char *conf_get_opt_str(const char *opts, const char *arg)
 {

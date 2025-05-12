@@ -226,6 +226,7 @@ static void _parse_exc_states(void)
 					  NODE_STATE_DRAIN |
 					  NODE_STATE_DYNAMIC_FUTURE |
 					  NODE_STATE_DYNAMIC_NORM |
+					  NODE_STATE_EXTERNAL |
 					  NODE_STATE_FAIL |
 					  NODE_STATE_INVALID_REG |
 					  NODE_STATE_MAINT |
@@ -674,6 +675,7 @@ static void _do_power_work(time_t now)
 		 * Down nodes as if not resumed by ResumeTimeout
 		 */
 		if (bit_test(booting_node_bitmap, node_ptr->index) &&
+		    (node_ptr->resume_timeout != INFINITE16) &&
 		    (now >
 		     (node_ptr->boot_req_time + node_ptr->resume_timeout)) &&
 		    IS_NODE_POWERING_UP(node_ptr) &&
@@ -736,15 +738,18 @@ static void _do_power_work(time_t now)
 	}
 
 	if (wake_node_bitmap) {
+		int rc;
 		char *nodes, *json = NULL;
 		nodes = bitmap2node_name(wake_node_bitmap);
 
 		data_set_string(data_key_set(resume_json_data,
 					     "all_nodes_resume"),
 				nodes);
-		if (serialize_g_data_to_string(&json, NULL, resume_json_data,
-					       MIME_TYPE_JSON,
-					       SER_FLAGS_COMPACT))
+		rc = serialize_g_data_to_string(&json, NULL, resume_json_data,
+						MIME_TYPE_JSON,
+						SER_FLAGS_COMPACT);
+		if ((rc != SLURM_SUCCESS) &&
+		    (rc != ESLURM_DATA_UNKNOWN_MIME_TYPE))
 			error("failed to generate json for resume job/node list");
 
 		if (nodes)

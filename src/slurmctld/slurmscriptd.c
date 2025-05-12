@@ -475,18 +475,9 @@ static void _incr_script_cnt(void)
 static void _change_proc_name(int argc, char **argv, char *proc_name)
 {
 	char *log_prefix;
-	/*
-	 * Since running_in_slurmctld() is called before we fork()'d,
-	 * the result is cached in static variables, so calling it now
-	 * would return true even though we're now slurmscriptd.
-	 * Reset those cached variables so running_in_slurmctld()
-	 * returns false if called from slurmscriptd.
-	 * But first change slurm_prog_name since that is
-	 * read by run_in_daemon().
-	 */
-	xfree(slurm_prog_name);
-	slurm_prog_name = xstrdup(proc_name);
-	running_in_slurmctld_reset();
+
+	/* Update slurm_daemon to ensure run_in_daemon() works properly. */
+	slurm_daemon = IS_SLURMSCRIPTD;
 
 	/*
 	 * Change the process name to slurmscriptd.
@@ -1084,6 +1075,11 @@ static void _on_sigterm(conmgr_callback_args_t conmgr_args, void *arg)
 	log_flag(SCRIPT, "Caught SIGTERM. Ignoring.");
 }
 
+static void _on_sigchld(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	log_flag(SCRIPT, "Caught SIGCHLD. Ignoring");
+}
+
 static void _on_sigquit(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	log_flag(SCRIPT, "Caught SIGQUIT. Ignoring.");
@@ -1092,6 +1088,11 @@ static void _on_sigquit(conmgr_callback_args_t conmgr_args, void *arg)
 static void _on_sighup(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	log_flag(SCRIPT, "Caught SIGHUP. Ignoring.");
+}
+
+static void _on_sigusr1(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	log_flag(SCRIPT, "Caught SIGUSR1. Ignoring.");
 }
 
 static void _on_sigusr2(conmgr_callback_args_t conmgr_args, void *arg)
@@ -1105,6 +1106,20 @@ static void _on_sigpipe(conmgr_callback_args_t conmgr_args, void *arg)
 	debug5("Caught SIGPIPE. Ignoring.");
 }
 
+static void _on_sigxcpu(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	log_flag(SCRIPT, "Caught SIGXCPU. Ignoring.");
+}
+
+static void _on_sigabrt(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	log_flag(SCRIPT, "Caught SIGABRT. Ignoring.");
+}
+
+static void _on_sigalrm(conmgr_callback_args_t conmgr_args, void *arg)
+{
+	log_flag(SCRIPT, "Caught SIGALRM. Ignoring.");
+}
 
 static void _init_slurmscriptd_conmgr(void)
 {
@@ -1121,10 +1136,15 @@ static void _init_slurmscriptd_conmgr(void)
 	 */
 	conmgr_add_work_signal(SIGINT, _on_sigint, NULL);
 	conmgr_add_work_signal(SIGTERM, _on_sigterm, NULL);
+	conmgr_add_work_signal(SIGCHLD, _on_sigchld, NULL);
 	conmgr_add_work_signal(SIGQUIT, _on_sigquit, NULL);
 	conmgr_add_work_signal(SIGHUP, _on_sighup, NULL);
+	conmgr_add_work_signal(SIGUSR1, _on_sigusr1, NULL);
 	conmgr_add_work_signal(SIGUSR2, _on_sigusr2, NULL);
 	conmgr_add_work_signal(SIGPIPE, _on_sigpipe, NULL);
+	conmgr_add_work_signal(SIGXCPU, _on_sigxcpu, NULL);
+	conmgr_add_work_signal(SIGABRT, _on_sigabrt, NULL);
+	conmgr_add_work_signal(SIGALRM, _on_sigalrm, NULL);
 
 	conmgr_run(false);
 }
@@ -1155,8 +1175,8 @@ extern void slurmscriptd_run_slurmscriptd(int argc, char **argv,
 		      __func__);
 		_exit(1);
 	} else if (i != sizeof(int)) {
-		error("%s: slurmscriptd: slurmctld failed to send ack: %m",
-		      __func__);
+		error("%s: slurmscriptd: slurmctld failed to send expected ack: received %zd bytes when %zd bytes was expected.",
+		      __func__, i, sizeof(int));
 		_exit(1);
 	}
 
@@ -1551,6 +1571,8 @@ extern void slurmscriptd_run_prepilog(uint32_t job_id, bool is_epilog,
 	slurmscriptd_msg_t *send_args = xmalloc(sizeof(*send_args));
 	char *script_name;
 	script_type_t script_type;
+	int timeout = is_epilog ?
+		slurm_conf.epilog_timeout : slurm_conf.prolog_timeout;
 
 	if (is_epilog) {
 		script_name = "EpilogSlurmctld";
@@ -1561,8 +1583,7 @@ extern void slurmscriptd_run_prepilog(uint32_t job_id, bool is_epilog,
 	}
 
 	run_script_msg = _init_run_script_msg(env, script_name, script,
-					      script_type,
-					      slurm_conf.prolog_epilog_timeout);
+					      script_type, timeout);
 	run_script_msg->argc = 1;
 	run_script_msg->argv = xcalloc(2, sizeof(char *)); /* NULL terminated */
 	run_script_msg->argv[0] = xstrdup(script);

@@ -39,7 +39,6 @@
 #define _GNU_SOURCE
 #include <glob.h>
 #include <limits.h>
-#include <sched.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -50,7 +49,6 @@
 #include "src/common/xstring.h"
 #include "src/interfaces/cgroup.h"
 #include "src/interfaces/gres.h"
-#include "src/slurmd/common/xcpuinfo.h"
 #include "src/slurmd/slurmd/slurmd.h"
 #include "src/slurmd/slurmstepd/slurmstepd_job.h"
 
@@ -112,37 +110,17 @@ static int _handle_device_access(void *x, void *arg)
 
 extern int task_cgroup_devices_init(void)
 {
-	uint16_t cpunum;
-
-	/* initialize cpuinfo internal data */
-	if (xcpuinfo_init() != SLURM_SUCCESS)
-		return SLURM_ERROR;
-
-	if (get_procs(&cpunum) != 0) {
-		error("unable to get a number of CPU");
-		goto error;
-	}
-
 	if (cgroup_g_initialize(CG_DEVICES) != SLURM_SUCCESS) {
 		error("unable to create devices namespace");
-		goto error;
+		return SLURM_ERROR;
 	}
 
 	return SLURM_SUCCESS;
-
-error:
-	xcpuinfo_fini();
-	return SLURM_ERROR;
 }
 
 extern int task_cgroup_devices_fini(void)
 {
-	int rc;
-
-	rc = cgroup_g_step_destroy(CG_DEVICES);
-	xcpuinfo_fini();
-
-	return rc;
+	return cgroup_g_step_destroy(CG_DEVICES);
 }
 
 extern int task_cgroup_devices_create(stepd_step_rec_t *step)
@@ -176,7 +154,12 @@ extern int task_cgroup_devices_create(stepd_step_rec_t *step)
 			rc = SLURM_ERROR;
 			goto fini;
 		}
-		cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_JOB, NO_VAL);
+		if (cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_JOB,
+					     NO_VAL) != SLURM_SUCCESS) {
+			error("Could not apply device constrain to job");
+			rc = SLURM_ERROR;
+			goto fini;
+		}
 	}
 
 	if ((step->step_id.step_id != SLURM_BATCH_SCRIPT) &&
@@ -202,8 +185,12 @@ extern int task_cgroup_devices_create(stepd_step_rec_t *step)
 				rc = SLURM_ERROR;
 				goto fini;
 			}
-			cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_STEP,
-						 NO_VAL);
+			if (cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_STEP,
+						     NO_VAL) != SLURM_SUCCESS) {
+				error("Could not apply device constrain to step");
+				rc = SLURM_ERROR;
+				goto fini;
+			}
 		}
 	}
 
@@ -260,7 +247,12 @@ extern int task_cgroup_devices_constrain(stepd_step_rec_t *step,
 		if (tmp < 0)
 			return SLURM_ERROR;
 
-		cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_TASK, global_tid);
+		if (cgroup_g_constrain_apply(CG_DEVICES, CG_LEVEL_TASK,
+					     global_tid) != SLURM_SUCCESS) {
+			error("Could not apply device constrain to task %u",
+			      global_tid);
+			return SLURM_ERROR;
+		}
 	}
 
 	return SLURM_SUCCESS;

@@ -93,7 +93,6 @@ slurmdbapi_src =	\
 slurmapi_src =           \
 	allocate.c       \
 	allocate_msg.c   \
-	block_info.c     \
 	burst_buffer_info.c \
 	assoc_mgr_info.c    \
 	cancel.c         \
@@ -102,7 +101,6 @@ slurmapi_src =           \
 	config_info.c    \
 	crontab.c        \
 	federation_info.c \
-	front_end_info.c \
 	init.c           \
 	init_msg.c       \
 	job_info.c       \

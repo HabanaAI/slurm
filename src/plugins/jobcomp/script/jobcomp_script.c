@@ -188,8 +188,11 @@ struct jobcomp_info {
 
 static struct jobcomp_info *_jobcomp_info_create(job_record_t *job)
 {
+	char *partition = NULL;
 	enum job_states state;
 	struct jobcomp_info *j = xmalloc(sizeof(struct jobcomp_info));
+
+	partition = job->part_ptr ? job->part_ptr->name : job->partition;
 
 	j->jobid = job->job_id;
 	j->exit_code = job->exit_code;
@@ -247,7 +250,7 @@ static struct jobcomp_info *_jobcomp_info_create(job_record_t *job)
 		j->end = job->end_time;
 	}
 
-	j->partition = xstrdup (job->partition);
+	j->partition = xstrdup(partition);
 	if ((job->time_limit == NO_VAL) && job->part_ptr)
 		j->limit = job->part_ptr->max_time;
 	else
@@ -634,7 +637,7 @@ extern int jobcomp_p_set_location(void)
 	return SLURM_SUCCESS;
 }
 
-extern int jobcomp_p_log_record(job_record_t *record)
+extern int jobcomp_p_record_job_end(job_record_t *record, uint32_t event)
 {
 	struct jobcomp_info * job;
 
@@ -683,4 +686,9 @@ extern list_t *jobcomp_p_get_jobs(slurmdb_job_cond_t *job_cond)
 
 	info("This function is not implemented.");
 	return NULL;
+}
+
+extern int jobcomp_p_record_job_start(job_record_t *job_ptr, uint32_t event)
+{
+	return SLURM_SUCCESS;
 }

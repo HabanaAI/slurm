@@ -455,7 +455,7 @@ extern int initialize_and_process_args(int argc, char **argv, int *argc_off)
 		if (opt.verbose)
 			slurm_print_set_options(&opt);
 
-		if (spank_init_post_opt() < 0) {
+		if (spank_init_post_opt()) {
 			error("Plugin stack post-option processing failed.");
 			exit(error_exit);
 		}
@@ -1617,6 +1617,8 @@ static void _help(void)
 "      --use-min-nodes         if a range of node counts is given, prefer the\n"
 "                              smaller count\n"
 "  -v, --verbose               verbose mode (multiple -v's increase verbosity)\n"
+"      --wait-for-children     wait for all children processes in a task to\n"
+"                              close before considering the task ended.\n"
 "  -W, --wait=sec              seconds to wait after first task exits\n"
 "                              before killing job\n"
 "      --wckey=wckey           wckey to run job under\n"

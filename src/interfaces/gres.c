@@ -41,16 +41,9 @@
 
 #define _GNU_SOURCE
 
-#ifdef __FreeBSD__
-#  include <sys/param.h>
-#  include <sys/cpuset.h>
-typedef cpuset_t cpu_set_t;
-#endif
-
 #include <ctype.h>
 #include <inttypes.h>
 #include <limits.h>
-#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,12 +56,6 @@ typedef cpuset_t cpu_set_t;
 #endif
 #ifdef MAJOR_IN_SYSMACROS
 #  include <sys/sysmacros.h>
-#endif
-
-#ifdef __NetBSD__
-#define CPU_ZERO(c) cpuset_zero(*(c))
-#define CPU_ISSET(i,c) cpuset_isset((i),*(c))
-#define sched_getaffinity sched_getaffinity_np
 #endif
 
 #include "slurm/slurm.h"
@@ -93,6 +80,7 @@ typedef cpuset_t cpu_set_t;
 #include "src/common/slurm_protocol_pack.h"
 #include "src/common/strlcpy.h"
 #include "src/common/xmalloc.h"
+#include "src/common/xsched.h"
 #include "src/common/xstring.h"
 
 #define MAX_GRES_BITMAP 1024
@@ -873,8 +861,7 @@ extern int gres_init(void)
 	}
 
 fini:
-	if (have_shared && running_in_slurmctld() &&
-	    (slurm_select_cr_type() != SELECT_TYPE_CONS_TRES)) {
+	if (have_shared && running_in_slurmctld() && !running_cons_tres()) {
 		fatal("Use of shared gres requires the use of select/cons_tres");
 	}
 
@@ -3560,6 +3547,25 @@ static void _node_config_init(char *orig_config, slurm_gres_context_t *gres_ctx,
 	}
 }
 
+/* Set up the shared/sharing pointers for easy look up later */
+static void _set_alt_gres(gres_state_t *gres_state_node_shared,
+			  gres_state_t *gres_state_node_sharing)
+{
+	if (gres_state_node_shared) {
+		if (!gres_state_node_sharing) {
+			error("we have a shared gres of '%s' but no gres that is sharing",
+			      gres_state_node_shared->gres_name);
+		} else {
+			gres_node_state_t *gres_ns_shared =
+				gres_state_node_shared->gres_data;
+			gres_node_state_t *gres_ns_sharing =
+				gres_state_node_sharing->gres_data;
+			gres_ns_shared->alt_gres = gres_state_node_sharing;
+			gres_ns_sharing->alt_gres = gres_state_node_shared;
+		}
+	}
+}
+
 /*
  * Build a node's gres record based only upon the slurm.conf contents
  * IN orig_config - Gres information supplied from slurm.conf
@@ -3601,20 +3607,7 @@ extern void gres_init_node_config(char *orig_config, list_t **gres_list)
 	}
 	slurm_mutex_unlock(&gres_context_lock);
 
-	/* Set up the shared/sharing pointers for easy look up later */
-	if (gres_state_node_shared) {
-		if (!gres_state_node_sharing) {
-			error("we have a shared gres of '%s' but no gres that is sharing",
-			      gres_state_node_shared->gres_name);
-		} else {
-			gres_node_state_t *gres_ns_shared =
-				gres_state_node_shared->gres_data;
-			gres_node_state_t *gres_ns_sharing =
-				gres_state_node_sharing->gres_data;
-			gres_ns_shared->alt_gres = gres_state_node_sharing;
-			gres_ns_sharing->alt_gres = gres_state_node_shared;
-		}
-	}
+	_set_alt_gres(gres_state_node_shared, gres_state_node_sharing);
 }
 
 static int _foreach_get_tot_from_slurmd_conf(void *x, void *arg)
@@ -5553,6 +5546,19 @@ static int _foreach_node_state_dup(void *x, void *arg)
 		new_gres = gres_create_state(
 			gres_state_node, GRES_STATE_SRC_STATE_PTR,
 			GRES_STATE_TYPE_NODE, gres_ns);
+		/*
+		 * Because "gres/'shared'" follows "gres/gpu" (see gres_init)
+		 * the sharing gres will be in new list already.
+		 */
+		if (gres_id_shared(new_gres->config_flags)) {
+			/*
+			 * gres_id_sharing currently only includes gpus so we
+			 * can just search for that.
+			 */
+			_set_alt_gres(new_gres,
+				      list_find_first(new_list, gres_find_id,
+						      &gpu_plugin_id));
+		}
 		list_append(new_list, new_gres);
 	}
 	return 0;
@@ -6718,8 +6724,7 @@ extern int gres_job_state_validate(gres_job_state_validate_t *gres_js_val)
 	tres_per_socket = gres_js_val->tres_per_socket;
 	tres_per_task = gres_js_val->tres_per_task;
 
-	if (tres_per_task && running_in_slurmctld() &&
-	    (slurm_select_cr_type() != SELECT_TYPE_CONS_TRES)) {
+	if (tres_per_task && running_in_slurmctld() && !running_cons_tres()) {
 		char *tmp = xstrdup(tres_per_task);
 		/*
 		 * Check if cpus_per_task is the only part of tres_per_task. If
@@ -6733,8 +6738,7 @@ extern int gres_job_state_validate(gres_job_state_validate_t *gres_js_val)
 		}
 	}
 
-	if (running_in_slurmctld() &&
-	    (slurm_select_cr_type() != SELECT_TYPE_CONS_TRES) &&
+	if (running_in_slurmctld() && !running_cons_tres() &&
 	    (cpus_per_tres || tres_per_job || tres_per_socket || mem_per_tres))
 		return ESLURM_UNSUPPORTED_GRES;
 
@@ -6845,9 +6849,8 @@ extern int gres_job_state_validate(gres_job_state_validate_t *gres_js_val)
 			} else if ((*gres_js_val->num_tasks != NO_VAL) &&
 				   (*gres_js_val->ntasks_per_socket !=
 				    NO_VAL16)) {
-				cnt *= ((*gres_js_val->num_tasks +
-					 *gres_js_val->ntasks_per_socket - 1) /
-					*gres_js_val->ntasks_per_socket);
+				cnt *= ROUNDUP(*gres_js_val->num_tasks,
+					       *gres_js_val->ntasks_per_socket);
 			} else if (*gres_js_val->sockets_per_node != NO_VAL16) {
 				/* default 1 node */
 				cnt *= *gres_js_val->sockets_per_node;
@@ -7032,7 +7035,7 @@ static int _find_gres_per_jst(void *x, void *arg)
  */
 extern int gres_job_revalidate(list_t *gres_list)
 {
-	if (!gres_list || (slurm_select_cr_type() == SELECT_TYPE_CONS_TRES))
+	if (!gres_list || running_cons_tres())
 		return SLURM_SUCCESS;
 
 	if (list_find_first(gres_list, _find_gres_per_jst, NULL))
@@ -9165,8 +9168,7 @@ extern int gres_step_state_validate(char *cpus_per_tres,
 			//	cnt *= *sockets_per_node;
 			// } else if ((*num_tasks != NO_VAL) &&
 			//	   (*ntasks_per_socket != NO_VAL16)) {
-			//	cnt *= ((*num_tasks + *ntasks_per_socket - 1) /
-			//		*ntasks_per_socket);
+			//	cnt *= ROUNDUP(*num_tasks, *ntasks_per_socket);
 			// }
 			// gres_ss->total_gres =
 			//	MAX(gres_ss->total_gres, cnt);
@@ -10038,7 +10040,6 @@ end:
 			_translate_step_to_global_device_index(
 				&usable_gres, gres_bit_alloc);
 		else{
-			bit_and(usable_gres, gres_bit_alloc);
 			bit_consolidate(usable_gres);
 		}
 	} else {

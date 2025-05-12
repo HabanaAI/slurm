@@ -49,6 +49,8 @@
 #include "src/common/slurm_protocol_api.h"
 #include "src/interfaces/cred.h"
 
+#define MAX_CPU_CNT 1024
+
 extern int devnull;
 extern bool get_reg_resp;
 extern bool refresh_cached_features;
@@ -111,7 +113,6 @@ typedef struct slurmd_config {
 	uint16_t     block_map_size;	/* size of block map               */
 	uint16_t     *block_map;	/* abstract->machine block map     */
 	uint16_t     *block_map_inv;	/* machine->abstract (inverse) map */
-	char         *hwloc_xml;	/* path of hwloc xml file if using */
 	int           nice;		/* command line nice value spec    */
 	char         *node_name;	/* node name                       */
 	char         *node_topo_addr;   /* node's topology address         */
@@ -136,7 +137,6 @@ typedef struct slurmd_config {
 	time_t	      boot_time;	/* Use this as node boot time if set */
 	bool	      daemonize;	/* daemonize flag (-D)		   */
 	bool          setwd;		/* setwd flag (-s)		   */
-	bool          def_config;       /* We haven't read in the config yet */
 	bool	      cleanstart;	/* clean start requested (-c)      */
 	bool	      mlock_pages;	/* mlock() slurmd  */
 

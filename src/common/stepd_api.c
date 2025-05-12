@@ -48,11 +48,9 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include "src/common/fd.h"
@@ -63,6 +61,7 @@
 #include "src/interfaces/auth.h"
 #include "src/interfaces/cred.h"
 #include "src/interfaces/jobacct_gather.h"
+#include "src/interfaces/tls.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/stepd_api.h"
 #include "src/common/strlcpy.h"
@@ -146,8 +145,7 @@ _step_connect(const char *directory, const char *nodename,
 	      slurm_step_id_t *step_id)
 {
 	int fd;
-	int len;
-	struct sockaddr_un addr;
+	int rc;
 	char *name = NULL, *pos = NULL;
 	uint32_t stepid = step_id->step_id;
 
@@ -156,33 +154,10 @@ _step_connect(const char *directory, const char *nodename,
 	if (step_id->step_het_comp != NO_VAL)
 		xstrfmtcatat(name, &pos, ".%u", step_id->step_het_comp);
 
-	/*
-	 * If socket name would be truncated, emit error and exit
-	 */
-	if (strlen(name) >= sizeof(addr.sun_path)) {
-		error("%s: Unix socket path '%s' is too long. (%ld > %ld)",
-		      __func__, name, (long int)(strlen(name) + 1),
-		      (long int)sizeof(addr.sun_path));
-		xfree(name);
-		return -1;
-	}
-
-	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
-		error("%s: socket() failed for %s: %m",
-		      __func__, name);
-		xfree(name);
-		return -1;
-	}
-
-	memset(&addr, 0, sizeof(addr));
-	addr.sun_family = AF_UNIX;
-	strlcpy(addr.sun_path, name, sizeof(addr.sun_path));
-	len = strlen(addr.sun_path) + 1 + sizeof(addr.sun_family);
-
-	if (connect(fd, (struct sockaddr *) &addr, len) < 0) {
+	if ((rc = slurm_open_unix_stream(name, 0, &fd))) {
 		/* Can indicate race condition at step termination */
-		debug("%s: connect() failed for %s: %m",
-		      __func__, name);
+		debug("%s: failed for %s: %s",
+		      __func__, name, slurm_strerror(rc));
 		if (errno == ECONNREFUSED && running_in_slurmd()) {
 			_handle_stray_socket(name);
 
@@ -278,7 +253,7 @@ extern int stepd_connect(const char *directory, const char *nodename,
 	return fd;
 
 rwfail:
-	close(fd);
+	fd_close(&fd);
 fail1:
 	xfree(local_nodename);
 	return fd;
@@ -398,14 +373,33 @@ rwfail:
  * resp->gtids, resp->ntasks, and resp->executable.
  */
 extern int stepd_attach(int fd, uint16_t protocol_version, slurm_addr_t *ioaddr,
-			slurm_addr_t *respaddr, char *io_key, uid_t uid,
-			reattach_tasks_response_msg_t *resp)
+			slurm_addr_t *respaddr, char *cert, char *io_key,
+			uid_t uid, reattach_tasks_response_msg_t *resp)
 {
 	int req = REQUEST_ATTACH;
 	uint32_t io_key_len = strlen(io_key) + 1;
+	uint32_t cert_len;
 	int rc = SLURM_SUCCESS;
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		safe_write(fd, &req, sizeof(int)); /* needs to be first */
+
+		if (cert) {
+			cert_len = strlen(cert) + 1;
+			safe_write(fd, &cert_len, sizeof(uint32_t));
+			safe_write(fd, cert, cert_len);
+		} else {
+			cert_len = 0;
+			safe_write(fd, &cert_len, sizeof(uint32_t));
+		}
+
+		safe_write(fd, ioaddr, sizeof(slurm_addr_t));
+		safe_write(fd, respaddr, sizeof(slurm_addr_t));
+		safe_write(fd, &io_key_len, sizeof(uint32_t));
+		safe_write(fd, io_key, io_key_len);
+		safe_write(fd, &uid, sizeof(uid_t));
+		safe_write(fd, &protocol_version, sizeof(uint16_t));
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_write(fd, &req, sizeof(int));
 		safe_write(fd, ioaddr, sizeof(slurm_addr_t));
 		safe_write(fd, respaddr, sizeof(slurm_addr_t));
@@ -1396,7 +1390,7 @@ extern int stepd_relay_msg(int fd, slurm_msg_t *msg, uint16_t protocol_version)
 	buf_size = get_buf_offset(msg->buffer) - msg->body_offset;
 
 	safe_write(fd, &msg->protocol_version, sizeof(uint16_t));
-	send_fd_over_socket(fd, msg->conn_fd);
+	send_fd_over_socket(fd, tls_g_get_conn_fd(msg->tls_conn));
 	safe_write(fd, &buf_size, sizeof(uint32_t));
 	safe_write(fd, &msg->buffer->head[msg->body_offset], buf_size);
 

@@ -51,10 +51,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include "slurm/slurm.h"
@@ -81,8 +79,11 @@
 #include "src/common/xstring.h"
 
 #include "src/interfaces/auth.h"
+#include "src/interfaces/certgen.h"
+#include "src/interfaces/certmgr.h"
 #include "src/interfaces/cred.h"
 #include "src/interfaces/mpi.h"
+#include "src/interfaces/tls.h"
 
 #include "src/srun/step_ctx.h"
 
@@ -170,10 +171,6 @@ static void _rebuild_mpi_layout(slurm_step_ctx_t *ctx,
 	new_step_layout = xmalloc(sizeof(slurm_step_layout_t));
 	orig_step_layout = ctx->launch_state->mpi_step->step_layout;
 	ctx->launch_state->mpi_step->step_layout = new_step_layout;
-	if (orig_step_layout->front_end) {
-		new_step_layout->front_end =
-			xstrdup(orig_step_layout->front_end);
-	}
 	new_step_layout->node_cnt = params->het_job_nnodes;
 	new_step_layout->node_list = xstrdup(params->het_job_node_list);
 	new_step_layout->plane_size = orig_step_layout->plane_size;
@@ -264,6 +261,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	launch.het_job_nnodes = params->het_job_nnodes;
 	launch.het_job_ntasks = params->het_job_ntasks;
 	launch.het_job_offset = params->het_job_offset;
+	launch.het_job_step_task_cnts = params->het_job_step_task_cnts;
 	launch.het_job_task_offset = params->het_job_task_offset;
 	launch.het_job_task_cnts = params->het_job_task_cnts;
 	launch.het_job_tids = params->het_job_tids;
@@ -333,6 +331,8 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 		launch.flags |= LAUNCH_EXT_LAUNCHER;
 	if (ctx->step_req->flags & SSF_GRES_ALLOW_TASK_SHARING)
 		launch.flags |= LAUNCH_GRES_ALLOW_TASK_SHARING;
+	if (ctx->step_req->flags & SSF_WAIT_FOR_CHILDREN)
+		launch.flags |= LAUNCH_WAIT_FOR_CHILDREN;
 
 	launch.task_dist	= params->task_dist;
 	if (params->pty)
@@ -349,8 +349,6 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 	launch.tasks_to_launch = ctx->step_resp->step_layout->tasks;
 	launch.global_task_ids = ctx->step_resp->step_layout->tids;
 
-	launch.select_jobinfo  = ctx->step_resp->select_jobinfo;
-
 	launch.ofname = params->remote_output_filename;
 	launch.efname = params->remote_error_filename;
 	launch.ifname = params->remote_input_filename;
@@ -365,6 +363,14 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 		launch.flags |= LAUNCH_LABEL_IO;
 
 	io_key = slurm_cred_get_signature(ctx->step_resp->cred);
+
+	if (tls_enabled()) {
+		if (!(launch.alloc_tls_cert = tls_g_get_own_public_cert())) {
+			error("Could not get self signed certificate for step IO");
+			rc = SLURM_ERROR;
+			goto fail1;
+		}
+	}
 
 	ctx->launch_state->io =
 		client_io_handler_create(params->local_fds,
@@ -413,6 +419,7 @@ fail1:
 	xfree(launch.complete_nodelist);
 	xfree(launch.cwd);
 	xfree(launch.stepmgr);
+	xfree(launch.alloc_tls_cert);
 	env_array_free(env);
 	FREE_NULL_LIST(launch.options);
 	return rc;
@@ -467,6 +474,7 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 	launch.spank_job_env_size = params->spank_job_env_size;
 	launch.cred = ctx->step_resp->cred;
 	launch.het_job_step_cnt = params->het_job_step_cnt;
+	launch.het_job_step_task_cnts = params->het_job_step_task_cnts;
 	launch.het_job_id = params->het_job_id;
 	launch.het_job_nnodes = params->het_job_nnodes;
 	launch.het_job_ntasks = params->het_job_ntasks;
@@ -540,8 +548,6 @@ extern int slurm_step_launch_add(slurm_step_ctx_t *ctx,
 
 	launch.tasks_to_launch = ctx->step_resp->step_layout->tasks;
 	launch.global_task_ids = ctx->step_resp->step_layout->tids;
-
-	launch.select_jobinfo  = ctx->step_resp->select_jobinfo;
 
 	launch.ofname = params->remote_output_filename;
 	launch.efname = params->remote_error_filename;
@@ -849,16 +855,9 @@ extern void slurm_step_launch_fwd_signal(slurm_step_ctx_t *ctx, int signo)
 		if (!active)
 			continue;
 
-		if (ctx->step_resp->step_layout->front_end) {
-			hostlist_push_host(hl,
-				      ctx->step_resp->step_layout->front_end);
-			break;
-		} else {
-			name = nodelist_nth_host(sls->layout->node_list,
-						 node_id);
-			hostlist_push_host(hl, name);
-			free(name);
-		}
+		name = nodelist_nth_host(sls->layout->node_list, node_id);
+		hostlist_push_host(hl, name);
+		free(name);
 	}
 
 	slurm_mutex_unlock(&sls->lock);
@@ -898,7 +897,7 @@ RESEND:	slurm_msg_t_init(&req);
 		 * probably just means the tasks exited in the meanwhile.
 		 */
 		if ((rc != 0) && (rc != ESLURM_INVALID_JOB_ID) &&
-		    (rc != ESLURMD_JOB_NOTRUNNING) && (rc != ESRCH) &&
+		    (rc != ESLURMD_STEP_NOTRUNNING) && (rc != ESRCH) &&
 		    (rc != EAGAIN) &&
 		    (rc != ESLURM_TRANSITION_STATE_NO_UPDATE)) {
 			error("Failure sending signal %d to %ps on node %s: %s",
@@ -1012,36 +1011,14 @@ void step_launch_state_destroy(struct step_launch_state *sls)
 /* connect to srun_cr */
 static int _connect_srun_cr(char *addr)
 {
-	struct sockaddr_un sa;
-	unsigned int sa_len;
-	int fd, rc;
+	int fd = -1, rc;
 
 	if (!addr) {
 		error("%s: socket path name is NULL", __func__);
 		return -1;
 	}
-	if (strlen(addr) >= sizeof(sa.sun_path)) {
-		error("%s: socket path name too long (%s)", __func__, addr);
-		return -1;
-	}
-
-	fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (fd < 0) {
-		error("failed creating cr socket: %m");
-		return -1;
-	}
-	memset(&sa, 0, sizeof(sa));
-
-	sa.sun_family = AF_UNIX;
-	strlcpy(sa.sun_path, addr, sizeof(sa.sun_path));
-	sa_len = strlen(sa.sun_path) + sizeof(sa.sun_family);
-
-	while (((rc = connect(fd, (struct sockaddr *)&sa, sa_len)) < 0) &&
-	       (errno == EINTR));
-
-	if (rc < 0) {
-		debug2("failed connecting cr socket: %m");
-		close(fd);
+	if ((rc = slurm_open_unix_stream(addr, 0, &fd))) {
+		debug2("failed connecting cr socket: %s", slurm_strerror(rc));
 		return -1;
 	}
 	return fd;
@@ -1320,9 +1297,6 @@ _node_fail_handler(struct step_launch_state *sls, slurm_msg_t *fail_msg)
 	all_nodes = hostlist_create(sls->layout->node_list);
 	/* find the index number of each down node */
 	for (i = 0; i < num_node_ids; i++) {
-#ifdef HAVE_FRONT_END
-		node_id = 0;
-#else
 		char *node = hostlist_next(fail_itr);
 		node_id = node_ids[i] = hostlist_find(all_nodes, node);
 		if (node_id < 0) {
@@ -1332,7 +1306,6 @@ _node_fail_handler(struct step_launch_state *sls, slurm_msg_t *fail_msg)
 			continue;
 		}
 		free(node);
-#endif
 
 		/* find all of the tasks that should run on this node and
 		 * mark them as having started and exited.  If they haven't
@@ -1608,13 +1581,8 @@ static int _fail_step_tasks(slurm_step_ctx_t *ctx, char *node, int ret_code)
 	slurm_msg_t req;
 	step_complete_msg_t msg;
 	int rc = -1;
-	int nodeid = 0;
 	struct step_launch_state *sls = ctx->launch_state;
-
-#ifndef HAVE_FRONT_END
-	/* It is always 0 for front end systems */
-	nodeid = nodelist_find(ctx->step_resp->step_layout->node_list, node);
-#endif
+	int nodeid = nodelist_find(ctx->step_resp->step_layout->node_list, node);
 
 	slurm_mutex_lock(&sls->lock);
 	for (int i = 0; i < sls->layout->tasks[nodeid]; i++) {
@@ -1651,9 +1619,6 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 			 launch_tasks_request_msg_t *launch_msg,
 			 uint32_t timeout, uint16_t tree_width, char *nodelist)
 {
-#ifdef HAVE_FRONT_END
-	slurm_cred_arg_t *cred_args;
-#endif
 	slurm_msg_t msg;
 	list_t *ret_list = NULL;
 	list_itr_t *ret_itr;
@@ -1693,14 +1658,7 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 	else
 		msg.protocol_version = SLURM_PROTOCOL_VERSION;
 
-#ifdef HAVE_FRONT_END
-	cred_args = slurm_cred_get_args(ctx->step_resp->cred);
-	//info("hostlist=%s", cred_args->step_hostlist);
-	ret_list = slurm_send_recv_msgs(cred_args->step_hostlist, &msg, timeout);
-	slurm_cred_unlock_args(ctx->step_resp->cred);
-#else
 	ret_list = slurm_send_recv_msgs(nodelist, &msg, timeout);
-#endif
 	if (ret_list == NULL) {
 		error("slurm_send_recv_msgs failed miserably: %m");
 		return SLURM_ERROR;

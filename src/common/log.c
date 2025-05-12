@@ -139,8 +139,6 @@ typedef struct {
 	uint16_t fmt;            /* Flag for specifying timestamp format */
 }	log_t;
 
-char *slurm_prog_name = NULL;
-
 /* static variables */
 static pthread_mutex_t  log_lock = PTHREAD_MUTEX_INITIALIZER;
 static log_t            *log = NULL;
@@ -322,10 +320,6 @@ _log_init(char *prog, log_options_t opt, log_facility_t fac, char *logfile )
 			short_name = default_name;
 		log->argv0 = xstrdup(short_name);
 	}
-
-	/* Only take the first one here.  In some situations it can change. */
-	if (!slurm_prog_name && log->argv0 && (strlen(log->argv0) > 0))
-		slurm_prog_name = xstrdup(log->argv0);
 
 	if (!log->prefix)
 		log->prefix = xstrdup("");
@@ -541,7 +535,6 @@ void log_fini(void)
 		syslog_open = false;
 	}
 	xfree(log);
-	xfree(slurm_prog_name);
 	slurm_mutex_unlock(&log_lock);
 }
 
@@ -1449,11 +1442,8 @@ static void _log_msg(log_level_t level, bool sched, bool spank, bool warn,
 
 		/* Avoid changing errno if syslog fails */
 		int orig_errno = errno;
-		xlogfmtcat(&msgbuf, "%s%s%s", log->prefix, pfx, buf);
-		syslog(priority, "%.500s", msgbuf);
+		syslog(priority, "%s%s%s", log->prefix, pfx, buf);
 		errno = orig_errno;
-
-		xfree(msgbuf);
 	}
 
 	slurm_mutex_unlock(&log_lock);
@@ -1499,6 +1489,9 @@ void fatal(const char *fmt, ...)
 {
 	LOG_MACRO(LOG_LEVEL_FATAL, false, fmt);
 	log_flush();
+
+	if (getenv("ABORT_ON_FATAL"))
+		abort();
 
 	exit(1);
 }

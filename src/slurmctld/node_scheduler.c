@@ -58,6 +58,7 @@
 #include "src/common/id_util.h"
 #include "src/common/job_features.h"
 #include "src/common/list.h"
+#include "src/common/node_features.h"
 #include "src/common/port_mgr.h"
 #include "src/common/slurm_protocol_pack.h"
 #include "src/common/xassert.h"
@@ -67,6 +68,7 @@
 #include "src/interfaces/accounting_storage.h"
 #include "src/interfaces/burst_buffer.h"
 #include "src/interfaces/gres.h"
+#include "src/interfaces/jobcomp.h"
 #include "src/interfaces/mcs.h"
 #include "src/interfaces/node_features.h"
 #include "src/interfaces/preempt.h"
@@ -77,7 +79,6 @@
 
 #include "src/slurmctld/acct_policy.h"
 #include "src/slurmctld/agent.h"
-#include "src/slurmctld/front_end.h"
 #include "src/slurmctld/gang.h"
 #include "src/slurmctld/job_scheduler.h"
 #include "src/slurmctld/licenses.h"
@@ -106,10 +107,11 @@ struct node_set {		/* set of nodes with same configuration */
 					 * node_weight and flags */
 };
 
-#define NODE_SET_NOFLAG		0x00
-#define NODE_SET_REBOOT		0x01
-#define NODE_SET_OUTSIDE_FLEX	0x02
-#define NODE_SET_POWER_DN	0x04
+#define NODE_SET_NOFLAG SLURM_BIT(0)
+#define NODE_SET_REBOOT SLURM_BIT(1)
+#define NODE_SET_OUTSIDE_FLEX SLURM_BIT(2)
+#define NODE_SET_POWER_DN SLURM_BIT(3)
+#define NODE_SET_POWERING_UP SLURM_BIT(4)
 
 enum {
 	IN_FL,		/* Inside flex reservation */
@@ -323,9 +325,6 @@ extern void deallocate_nodes(job_record_t *job_ptr, bool timeout,
 	hostlist_t *hostlist = NULL;
 	uint16_t use_protocol_version = 0;
 	uint16_t msg_flags = 0;
-#ifdef HAVE_FRONT_END
-	front_end_record_t *front_end_ptr;
-#endif
 
 	xassert(job_ptr);
 	xassert(job_ptr->details);
@@ -347,57 +346,6 @@ extern void deallocate_nodes(job_record_t *job_ptr, bool timeout,
 	if (!job_ptr->details->prolog_running)
 		hostlist = hostlist_create(NULL);
 
-#ifdef HAVE_FRONT_END
-	if (job_ptr->batch_host &&
-	    (front_end_ptr = job_ptr->front_end_ptr)) {
-		use_protocol_version = front_end_ptr->protocol_version;
-		if (IS_NODE_DOWN(front_end_ptr)) {
-			/* Issue the KILL RPC, but don't verify response */
-			front_end_ptr->job_cnt_comp = 0;
-			front_end_ptr->job_cnt_run  = 0;
-			if (job_ptr->node_bitmap_cg) {
-				bit_clear_all(job_ptr->node_bitmap_cg);
-			} else {
-				error("deallocate_nodes: node_bitmap_cg is "
-				      "not set");
-				/* Create empty node_bitmap_cg */
-				job_ptr->node_bitmap_cg =
-					bit_alloc(node_record_count);
-			}
-			job_ptr->cpu_cnt  = 0;
-			job_ptr->node_cnt = 0;
-		} else {
-			bool set_fe_comp = false;
-			if (front_end_ptr->job_cnt_run) {
-				front_end_ptr->job_cnt_run--;
-			} else {
-				error("%s: front_end %s job_cnt_run underflow",
-				      __func__, front_end_ptr->name);
-			}
-			if (front_end_ptr->job_cnt_run == 0) {
-				uint32_t state_flags;
-				state_flags = front_end_ptr->node_state &
-					      NODE_STATE_FLAGS;
-				front_end_ptr->node_state = NODE_STATE_IDLE |
-							    state_flags;
-			}
-			for (int i = 0; (node_ptr = next_node_bitmap(
-					     job_ptr->node_bitmap, &i));
-			     i++) {
-				make_node_comp(node_ptr, job_ptr, suspended);
-				set_fe_comp = true;
-			}
-			if (set_fe_comp) {
-				front_end_ptr->job_cnt_comp++;
-				front_end_ptr->node_state |=
-					NODE_STATE_COMPLETING;
-			}
-		}
-
-		if (hostlist)
-			hostlist_push_host(hostlist, job_ptr->batch_host);
-	}
-#else
 	if (!job_ptr->node_bitmap_cg)
 		build_cg_bitmap(job_ptr);
 	use_protocol_version = SLURM_PROTOCOL_VERSION;
@@ -437,7 +385,7 @@ extern void deallocate_nodes(job_record_t *job_ptr, bool timeout,
 				msg_flags |= SLURM_PACK_ADDRS;
 		}
 	}
-#endif
+
 	if (job_ptr->details->prolog_running) {
 		/*
 		 * Job was configuring when it was cancelled and epilog wasn't
@@ -475,6 +423,18 @@ extern void deallocate_nodes(job_record_t *job_ptr, bool timeout,
 	resv_replace_update(job_ptr);
 
 	if (!hostlist || !hostlist_count(hostlist)) {
+		hostlist_destroy(hostlist);
+		return;
+	}
+
+	if (job_ptr->bit_flags & EXTERNAL_JOB) {
+		debug("%s: %pJ is external, no need to wait to complete",
+		      __func__, job_ptr);
+		for (int i = 0;
+		     (node_ptr = next_node_bitmap(job_ptr->node_bitmap_cg, &i));
+		     i++) {
+			make_node_idle(node_ptr, job_ptr);
+		}
 		hostlist_destroy(hostlist);
 		return;
 	}
@@ -818,7 +778,7 @@ static int _resolve_shared_status(job_record_t *job_ptr,
 		return 1;
 	}
 
-	if (slurm_select_cr_type()) {
+	if (running_cons_tres()) {
 		if ((job_ptr->details->share_res  == 0) ||
 		    (job_ptr->details->whole_node & WHOLE_NODE_REQUIRED)) {
 			job_ptr->details->share_res = 0;
@@ -1154,6 +1114,10 @@ static int _get_req_features(struct node_set *node_set_ptr, int node_set_size,
 	if (!test_only) {
 		mcs_select = slurm_mcs_get_select(job_ptr);
 		filter_by_node_mcs(job_ptr, mcs_select, share_node_bitmap);
+	}
+
+	if (!test_only) {
+		hres_filter(job_ptr, avail_node_bitmap);
 	}
 
 	/* save job and request state */
@@ -1619,12 +1583,6 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 	 */
 	uint64_t smallest_min_mem = INFINITE64;
 	uint64_t orig_req_mem = job_ptr->details->pn_min_memory;
-	static int loc_topo_record_cnt = -1;
-
-	if (loc_topo_record_cnt == -1) {
-		loc_topo_record_cnt = 0;
-		(void) topology_g_get(TOPO_DATA_REC_CNT, &loc_topo_record_cnt);
-	}
 
 	if (test_only)
 		select_mode = SELECT_MODE_TEST_ONLY;
@@ -1731,7 +1689,7 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 	       __func__, job_ptr, bit_set_count(idle_node_bitmap),
 		bit_set_count(share_node_bitmap));
 
-	if (slurm_select_cr_type() == SELECT_TYPE_CONS_TRES)
+	if (running_cons_tres())
 		_sync_node_weight(node_set_ptr, node_set_size);
 	/*
 	 * Accumulate resources for this job based upon its required
@@ -1839,8 +1797,12 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 					    cg_node_bitmap);
 			}
 
+			/*
+			 * We must skip the node *only* in the case it is
+			 * rebooted with ASAP flag.
+			 */
 			bit_and_not(node_set_ptr[i].my_bitmap,
-				    rs_node_bitmap);
+				    asap_node_bitmap);
 
 			if (!nodes_busy) {
 				count2 = bit_set_count(node_set_ptr[i].
@@ -1858,8 +1820,7 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 
 			tried_sched = false;	/* need to test these nodes */
 
-			if ((slurm_select_cr_type() == SELECT_TYPE_CONS_TRES) &&
-			    ((i+1) < node_set_size)) {
+			if (running_cons_tres() && ((i + 1) < node_set_size)) {
 				/*
 				 * Execute select_g_job_test() _once_ using
 				 * sched_weight in node_record_t as set
@@ -1868,16 +1829,6 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 				continue;
 			}
 
-			if ((shared || preempt_flag ||
-			    (loc_topo_record_cnt > 1))     &&
-			    ((i+1) < node_set_size)	 &&
-			    (min_feature == max_feature) &&
-			    (node_set_ptr[i].sched_weight ==
-			     node_set_ptr[i+1].sched_weight)) {
-				/* Keep accumulating so we can pick the
-				 * most lightly loaded nodes */
-				continue;
-			}
 try_sched:
 			/* NOTE: select_g_job_test() is destructive of
 			 * avail_bitmap, so save a backup copy */
@@ -2284,6 +2235,7 @@ static void _end_null_job(job_record_t *job_ptr)
 	 * registered in the db then the start message.
 	 */
 	jobacct_storage_g_job_start(acct_db_conn, job_ptr);
+	jobcomp_g_record_job_start(job_ptr);
 	prolog_slurmctld(job_ptr);
 
 	job_ptr->end_time = now;
@@ -2953,6 +2905,12 @@ extern int select_nodes(job_node_select_t *job_node_select,
 
 	job_end_time_reset(job_ptr);
 
+	/*
+	 * job_array_post_sched() must happen before allocate_nodes() because
+	 * we need the pending job array state to be copied. For example,
+	 * allocate_nodes() calls license_job_get() which can modify the job's
+	 * license_list if the job requested OR'd licenses.
+	 */
 	tmp_job = job_array_post_sched(job_ptr, true);
 	if (tmp_job && (tmp_job != job_ptr) && (orig_resv_port_cnt == NO_VAL16))
 		tmp_job->resv_port_cnt = orig_resv_port_cnt;
@@ -3063,6 +3021,7 @@ extern int select_nodes(job_node_select_t *job_node_select,
 	 */
 	jobacct_storage_g_job_start(acct_db_conn, job_ptr);
 
+	jobcomp_g_record_job_start(job_ptr);
 	switch_g_job_start(job_ptr);
 	prolog_slurmctld(job_ptr);
 	reboot_job_nodes(job_ptr);
@@ -3243,23 +3202,13 @@ extern void launch_prolog(job_record_t *job_ptr)
 	agent_arg_t *agent_arg_ptr;
 	job_resources_t *job_resrcs_ptr;
 	slurm_cred_arg_t cred_arg;
-#ifndef HAVE_FRONT_END
 	node_record_t *node_ptr;
-#endif
 
 	xassert(job_ptr);
 
-#ifdef HAVE_FRONT_END
-	/* For a batch job the prolog will be
-	 * started synchronously by slurmd.
-	 */
-	if (job_ptr->batch_flag)
+	if (job_ptr->bit_flags & EXTERNAL_JOB)
 		return;
 
-	xassert(job_ptr->front_end_ptr);
-	if (protocol_version > job_ptr->front_end_ptr->protocol_version)
-		protocol_version = job_ptr->front_end_ptr->protocol_version;
-#else
 	for (int i = 0; (node_ptr = next_node_bitmap(job_ptr->node_bitmap, &i));
 	     i++) {
 		if (protocol_version > node_ptr->protocol_version)
@@ -3267,7 +3216,6 @@ extern void launch_prolog(job_record_t *job_ptr)
 		if (PACK_FANOUT_ADDRS(node_ptr))
 			msg_flags |= SLURM_PACK_ADDRS;
 	}
-#endif
 
 	prolog_msg_ptr = xmalloc(sizeof(prolog_launch_msg_t));
 
@@ -3275,12 +3223,11 @@ extern void launch_prolog(job_record_t *job_ptr)
 	if ((slurm_conf.prolog_flags & PROLOG_FLAG_ALLOC) &&
 	    !(slurm_conf.prolog_flags & PROLOG_FLAG_NOHOLD)) {
 		job_ptr->state_reason = WAIT_PROLOG;
-#ifndef HAVE_FRONT_END
 		FREE_NULL_BITMAP(job_ptr->node_bitmap_pr);
 		job_ptr->node_bitmap_pr = bit_copy(job_ptr->node_bitmap);
-#endif
 	}
 
+	prolog_msg_ptr->alloc_tls_cert = xstrdup(job_ptr->alloc_tls_cert);
 	prolog_msg_ptr->job_gres_prep =
 		 gres_g_prep_build_env(job_ptr->gres_list_alloc,
 				       job_ptr->nodes);
@@ -3369,14 +3316,10 @@ extern void launch_prolog(job_record_t *job_ptr)
 
 	cred_arg.step_core_bitmap    = job_resrcs_ptr->core_bitmap;
 
-#ifdef HAVE_FRONT_END
 	xassert(job_ptr->batch_host);
 	/* override */
 	cred_arg.job_hostlist    = job_ptr->batch_host;
 	cred_arg.step_hostlist   = job_ptr->batch_host;
-#else
-	cred_arg.step_hostlist   = job_ptr->job_resrcs->nodes;
-#endif
 
 	switch_g_extern_stepinfo(&cred_arg.switch_step, job_ptr);
 
@@ -3387,26 +3330,18 @@ extern void launch_prolog(job_record_t *job_ptr)
 	xfree(cred_arg.job_mem_alloc_rep_count);
 
 	if (!prolog_msg_ptr->cred) {
-		error("%s: slurm_cred_create failure for %pJ",
+		error("%s: slurm_cred_create failure for %pJ, holding job",
 		      __func__, job_ptr);
 		slurm_free_prolog_launch_msg(prolog_msg_ptr);
-		job_ptr->details->begin_time = time(NULL) + 120;
-		job_complete(job_ptr->job_id, slurm_conf.slurm_user_id,
-		             true, false, 0);
+		job_mgr_handle_cred_failure(job_ptr);
 		return;
 	}
 
 	agent_arg_ptr = xmalloc(sizeof(agent_arg_t));
 	agent_arg_ptr->retry = 0;
 	agent_arg_ptr->protocol_version = protocol_version;
-#ifdef HAVE_FRONT_END
-	xassert(job_ptr->front_end_ptr->name);
-	agent_arg_ptr->hostlist = hostlist_create(job_ptr->front_end_ptr->name);
-	agent_arg_ptr->node_count = 1;
-#else
 	agent_arg_ptr->hostlist = hostlist_create(job_ptr->nodes);
 	agent_arg_ptr->node_count = job_ptr->node_cnt;
-#endif
 	agent_arg_ptr->msg_type = REQUEST_LAUNCH_PROLOG;
 	agent_arg_ptr->msg_args = (void *) prolog_msg_ptr;
 	agent_arg_ptr->msg_flags = msg_flags;
@@ -3416,9 +3351,7 @@ extern void launch_prolog(job_record_t *job_ptr)
 	 */
 	if (slurm_conf.prolog_flags & PROLOG_FLAG_CONTAIN) {
 		step_record_t *step_ptr = build_extern_step(job_ptr);
-		if (step_ptr)
-			select_g_step_start(step_ptr);
-		else
+		if (!step_ptr)
 			error("%s: build_extern_step failure for %pJ",
 			      __func__, job_ptr);
 	}
@@ -3655,34 +3588,52 @@ extern int job_req_node_filter(job_record_t *job_ptr,
  * IN nset_node_bitmap - bitmap of nodes for the new node_set record
  * IN nset_flags - flags of nodes for the new node_set record
  */
-static void _split_node_set(struct node_set *node_set_ptr,
-			    config_record_t *config_ptr,
+static void _split_node_set(struct node_set *nset, config_record_t *config_ptr,
 			    int nset_inx_base, int nset_inx,
 			    bitstr_t *nset_feature_bits,
 			    bitstr_t *nset_node_bitmap, uint32_t nset_flags)
 {
-	node_set_ptr[nset_inx].cpus_per_node = config_ptr->cpus;
-	node_set_ptr[nset_inx].features = xstrdup(config_ptr->feature);
-	node_set_ptr[nset_inx].feature_bits = bit_copy(nset_feature_bits);
-	node_set_ptr[nset_inx].flags = nset_flags;
-	node_set_ptr[nset_inx].real_memory = config_ptr->real_memory;
-	node_set_ptr[nset_inx].node_weight =
-		node_set_ptr[nset_inx_base].node_weight;
+	nset[nset_inx].cpus_per_node = config_ptr->cpus;
+	nset[nset_inx].features = xstrdup(config_ptr->feature);
+	nset[nset_inx].feature_bits = bit_copy(nset_feature_bits);
+	nset[nset_inx].flags = nset_flags;
+	nset[nset_inx].real_memory = config_ptr->real_memory;
+	nset[nset_inx].node_weight = nset[nset_inx_base].node_weight;
 
 	/*
 	 * The bitmap of this new nodeset will contain only the nodes that
 	 * are present both in the original bitmap AND in the new bitmap.
 	 */
-	node_set_ptr[nset_inx].my_bitmap =
-		bit_copy(node_set_ptr[nset_inx_base].my_bitmap);
-	bit_and(node_set_ptr[nset_inx].my_bitmap, nset_node_bitmap);
-	node_set_ptr[nset_inx].node_cnt =
-		bit_set_count(node_set_ptr[nset_inx].my_bitmap);
+	nset[nset_inx].my_bitmap = bit_copy(nset[nset_inx_base].my_bitmap);
+	bit_and(nset[nset_inx].my_bitmap, nset_node_bitmap);
+	nset[nset_inx].node_cnt = bit_set_count(nset[nset_inx].my_bitmap);
 
 	/* Now we remove these nodes from the original bitmap */
-	bit_and_not(node_set_ptr[nset_inx_base].my_bitmap,
-		    nset_node_bitmap);
-	node_set_ptr[nset_inx_base].node_cnt -= node_set_ptr[nset_inx].node_cnt;
+	bit_and_not(nset[nset_inx_base].my_bitmap, nset_node_bitmap);
+	nset[nset_inx_base].node_cnt -= nset[nset_inx].node_cnt;
+}
+
+/* Split from an existing node_set */
+static void _split_node_set2(struct node_set *nset, int idx, int *last_inx,
+			     int cnt, bitstr_t *nset_bitmap,
+			     uint32_t nset_flags)
+{
+	nset[*last_inx].cpus_per_node = nset[idx].cpus_per_node;
+	nset[*last_inx].features = xstrdup(nset[idx].features);
+	nset[*last_inx].feature_bits = bit_copy(nset[idx].feature_bits);
+	nset[*last_inx].flags = nset_flags;
+	nset[*last_inx].real_memory = nset[idx].real_memory;
+	nset[*last_inx].node_weight = nset[idx].node_weight;
+
+	nset[*last_inx].my_bitmap = bit_copy(nset[idx].my_bitmap);
+	bit_and(nset[*last_inx].my_bitmap, nset_bitmap);
+	nset[*last_inx].node_cnt = cnt;
+
+	/* Remove the bits and count from the original set */
+	bit_and_not(nset[idx].my_bitmap, nset_bitmap);
+	nset[idx].node_cnt -= cnt;
+
+	(*last_inx)++;
 }
 
 static void _apply_extra_constraints(job_record_t *job_ptr,
@@ -3728,7 +3679,7 @@ static int _build_node_list(job_record_t *job_ptr,
 			    bool can_reboot)
 {
 	int adj_cpus, i, node_set_inx, node_set_len, node_set_inx_base;
-	int power_cnt, rc, qos_cnt;
+	int rc, qos_cnt;
 	struct node_set *node_set_ptr, *prev_node_set_ptr;
 	config_record_t *config_ptr;
 	part_record_t *part_ptr = job_ptr->part_ptr;
@@ -3804,6 +3755,10 @@ static int _build_node_list(job_record_t *job_ptr,
 		usable_node_mask = node_conf_get_active_bitmap();
 	}
 
+	if (!(job_ptr->bit_flags & EXTERNAL_JOB)) {
+		bit_and_not(usable_node_mask, external_node_bitmap);
+	}
+
 	if (!test_only && job_ptr->extra_constraints) {
 		_apply_extra_constraints(job_ptr, usable_node_mask);
 		if (!bit_set_count(usable_node_mask)) {
@@ -3837,7 +3792,7 @@ static int _build_node_list(job_record_t *job_ptr,
 	if (can_reboot)
 		reboot_bitmap = bit_alloc(node_record_count);
 	node_set_inx = 0;
-	node_set_len = list_count(config_list) * 16 + 1;
+	node_set_len = list_count(config_list) * 32 + 1;
 	node_set_ptr = xcalloc(node_set_len, sizeof(struct node_set));
 	config_iterator = list_iterator_create(config_list);
 	while ((config_ptr = list_next(config_iterator))) {
@@ -4131,13 +4086,34 @@ end_node_set:
 		xfree(*err_msg);
 
 	/*
-	 * If any nodes are powered down, put them into a new node_set
-	 * record with a higher scheduling weight. This means we avoid
-	 * scheduling jobs on powered down nodes where possible.
+	 * If any nodes are powered down or powering up, put them into a
+	 * new node_sets record with a higher scheduling weight. This means
+	 * we avoid scheduling jobs on powered down and powering up nodes where
+	 * possible. If those are required we prefer powering up nodes over
+	 * powered down nodes.
 	 */
+	for (i = (node_set_inx - 1); i >= 0; i--) {
+		int booting_cnt = bit_overlap(node_set_ptr[i].my_bitmap,
+					      booting_node_bitmap);
+		if (booting_cnt == 0)
+			continue; /* no nodes powering up */
+		if (booting_cnt == node_set_ptr[i].node_cnt) {
+			node_set_ptr[i].flags = NODE_SET_POWERING_UP;
+			continue; /* all nodes powering up */
+		}
+
+		/* Some nodes powering up, split record */
+		_split_node_set2(node_set_ptr, i, &node_set_inx, booting_cnt,
+				 booting_node_bitmap, NODE_SET_POWERING_UP);
+		if (node_set_inx >= node_set_len) {
+			error("%s: node_set buffer filled", __func__);
+			break;
+		}
+	}
+
 	for (i = (node_set_inx-1); i >= 0; i--) {
-		power_cnt = bit_overlap(node_set_ptr[i].my_bitmap,
-					power_down_node_bitmap);
+		int power_cnt = bit_overlap(node_set_ptr[i].my_bitmap,
+					    power_down_node_bitmap);
 		if (power_cnt == 0)
 			continue;	/* no nodes powered down */
 		if (power_cnt == node_set_ptr[i].node_cnt) {
@@ -4146,24 +4122,8 @@ end_node_set:
 		}
 
 		/* Some nodes powered down, others up, split record */
-		node_set_ptr[node_set_inx].cpus_per_node =
-			node_set_ptr[i].cpus_per_node;
-		node_set_ptr[node_set_inx].real_memory =
-			node_set_ptr[i].real_memory;
-		node_set_ptr[node_set_inx].node_cnt = power_cnt;
-		node_set_ptr[i].node_cnt -= power_cnt;
-		node_set_ptr[node_set_inx].flags = NODE_SET_POWER_DN;
-		node_set_ptr[node_set_inx].features =
-			xstrdup(node_set_ptr[i].features);
-		node_set_ptr[node_set_inx].feature_bits =
-			bit_copy(node_set_ptr[i].feature_bits);
-		node_set_ptr[node_set_inx].my_bitmap =
-			bit_copy(node_set_ptr[i].my_bitmap);
-		bit_and(node_set_ptr[node_set_inx].my_bitmap,
-			power_down_node_bitmap);
-		bit_and_not(node_set_ptr[i].my_bitmap, power_down_node_bitmap);
-
-		node_set_inx++;
+		_split_node_set2(node_set_ptr, i, &node_set_inx, power_cnt,
+				 power_down_node_bitmap, NODE_SET_POWER_DN);
 		if (node_set_inx >= node_set_len) {
 			error("%s: node_set buffer filled", __func__);
 			break;
@@ -4189,28 +4149,10 @@ end_node_set:
 				continue;	/* all nodes overlap */
 			}
 			/* Some nodes overlap, split record */
-			node_set_ptr[node_set_inx].cpus_per_node =
-				node_set_ptr[i].cpus_per_node;
-			node_set_ptr[node_set_inx].real_memory =
-				node_set_ptr[i].real_memory;
-			node_set_ptr[node_set_inx].node_cnt = qos_cnt;
-			node_set_ptr[i].node_cnt -= qos_cnt;
-			node_set_ptr[node_set_inx].node_weight =
-				node_set_ptr[i].node_weight;
+			_split_node_set2(node_set_ptr, i, &node_set_inx,
+					 qos_cnt, grp_node_bitmap,
+					 node_set_ptr[i].flags);
 			node_set_ptr[i].node_weight++;
-			node_set_ptr[node_set_inx].flags =
-				node_set_ptr[i].flags;
-			node_set_ptr[node_set_inx].features =
-				xstrdup(node_set_ptr[i].features);
-			node_set_ptr[node_set_inx].feature_bits =
-				bit_copy(node_set_ptr[i].feature_bits);
-			node_set_ptr[node_set_inx].my_bitmap =
-				bit_copy(node_set_ptr[i].my_bitmap);
-			bit_and(node_set_ptr[node_set_inx].my_bitmap,
-				grp_node_bitmap);
-			bit_and_not(node_set_ptr[i].my_bitmap, grp_node_bitmap);
-
-			node_set_inx++;
 			if (node_set_inx >= node_set_len) {
 				error("%s: node_set buffer filled", __func__);
 				break;
@@ -4240,8 +4182,11 @@ static void _set_sched_weight(struct node_set *node_set_ptr)
 	node_set_ptr->sched_weight |= 0xff;
 	if ((node_set_ptr->flags & NODE_SET_REBOOT) ||
 	    (node_set_ptr->flags & NODE_SET_POWER_DN))	/* Boot required */
+		node_set_ptr->sched_weight |= 0x30000000000;
+	else if ((node_set_ptr->flags & NODE_SET_POWERING_UP))
 		node_set_ptr->sched_weight |= 0x20000000000;
-	if (node_set_ptr->flags & NODE_SET_OUTSIDE_FLEX)
+	else if (node_set_ptr->flags & NODE_SET_OUTSIDE_FLEX ||
+		 node_set_ptr->flags & NODE_SET_POWERING_UP)
 		node_set_ptr->sched_weight |= 0x10000000000;
 }
 
@@ -4370,24 +4315,7 @@ extern void build_node_details(job_record_t *job_ptr, bool new_alloc)
 		fatal("hostlist_create error for %s: %m", job_ptr->nodes);
 	job_ptr->total_nodes = job_ptr->node_cnt = hostlist_count(host_list);
 
-#ifdef HAVE_FRONT_END
-	if (new_alloc) {
-		/* Find available front-end node and assign it to this job */
-		xfree(job_ptr->batch_host);
-		job_ptr->front_end_ptr = assign_front_end(job_ptr);
-		if (job_ptr->front_end_ptr) {
-			job_ptr->batch_host = xstrdup(job_ptr->
-						      front_end_ptr->name);
-		}
-	} else if (job_ptr->batch_host) {
-		/* Reset pointer to this job's front-end node */
-		job_ptr->front_end_ptr = assign_front_end(job_ptr);
-		if (!job_ptr->front_end_ptr)
-			xfree(job_ptr->batch_host);
-	}
-#else
 	xfree(job_ptr->batch_host);
-#endif
 
 	while ((this_node_name = hostlist_shift(host_list))) {
 		if ((node_ptr = find_node_record(this_node_name))) {
@@ -4665,11 +4593,6 @@ extern void re_kill_job(job_record_t *job_ptr)
 	char *host_str = NULL;
 	static uint32_t last_job_id = 0;
 	node_record_t *node_ptr;
-	step_record_t *step_ptr;
-	list_itr_t *step_iterator;
-#ifdef HAVE_FRONT_END
-	front_end_record_t *front_end_ptr;
-#endif
 
 	xassert(job_ptr);
 	xassert(job_ptr->details);
@@ -4682,56 +4605,6 @@ extern void re_kill_job(job_record_t *job_ptr)
 	agent_args->protocol_version = SLURM_PROTOCOL_VERSION;
 	agent_args->retry = 0;
 
-	/* On a Cray system this will start the NHC early so it is
-	 * able to gather any information it can from the apparent
-	 * unkillable processes.
-	 * NOTE: do not do a list_for_each here, that will hold on the list
-	 * lock while processing the entire list which could
-	 * potentially be needed to lock again in
-	 * select_g_step_finish which could potentially call
-	 * post_job_step which calls delete_step_record which locks
-	 * the list to create a list_iterator on the same list and
-	 * could cause deadlock :).
-	 */
-	step_iterator = list_iterator_create(job_ptr->step_list);
-	while ((step_ptr = list_next(step_iterator))) {
-		if (step_ptr->step_id.step_id == SLURM_PENDING_STEP)
-			continue;
-		select_g_step_finish(step_ptr, true);
-	}
-	list_iterator_destroy(step_iterator);
-
-#ifdef HAVE_FRONT_END
-	if (job_ptr->batch_host &&
-	    (front_end_ptr = find_front_end_record(job_ptr->batch_host))) {
-		agent_args->protocol_version = front_end_ptr->protocol_version;
-		if (IS_NODE_DOWN(front_end_ptr) &&
-		    job_ptr->node_bitmap_cg) {
-			for (int i = 0;
-			     (node_ptr =
-				next_node_bitmap(job_ptr->node_bitmap_cg, &i));
-			     i++) {
-				bit_clear(job_ptr->node_bitmap_cg,
-					  node_ptr->index);
-				job_update_tres_cnt(job_ptr, node_ptr->index);
-				if (node_ptr->comp_job_cnt)
-					(node_ptr->comp_job_cnt)--;
-				if ((job_ptr->node_cnt > 0) &&
-				    ((--job_ptr->node_cnt) == 0)) {
-					last_node_update = time(NULL);
-					cleanup_completing(job_ptr, true);
-					last_node_update = time(NULL);
-				}
-			}
-		} else if (!IS_NODE_NO_RESPOND(front_end_ptr)) {
-			(void) hostlist_push_host(kill_hostlist,
-						  job_ptr->batch_host);
-			hostlist_push_host(agent_args->hostlist,
-				      job_ptr->batch_host);
-			agent_args->node_count++;
-		}
-	}
-#else
 	if (job_ptr->node_bitmap_cg) {
 		for (int i = 0;
 		     (node_ptr = next_node_bitmap(job_ptr->node_bitmap_cg, &i));
@@ -4763,7 +4636,6 @@ extern void re_kill_job(job_record_t *job_ptr)
 				agent_args->msg_flags |= SLURM_PACK_ADDRS;
 		}
 	}
-#endif
 
 	if (agent_args->node_count == 0) {
 		FREE_NULL_HOSTLIST(agent_args->hostlist);

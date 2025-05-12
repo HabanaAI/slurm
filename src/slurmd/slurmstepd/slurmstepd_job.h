@@ -41,11 +41,6 @@
 #ifndef _SLURMSTEPD_JOB_H
 #define _SLURMSTEPD_JOB_H
 
-#ifdef __FreeBSD__
-#include <sys/cpuset.h>
-typedef cpuset_t cpu_set_t;
-#endif
-
 #define _GNU_SOURCE
 
 #include <pthread.h>
@@ -59,11 +54,16 @@ typedef cpuset_t cpu_set_t;
 #include "src/common/eio.h"
 #include "src/common/env.h"
 #include "src/common/stepd_api.h"
+#include "src/common/xsched.h"
+
+/* required for rusage */
+#include <sys/resource.h>
 
 #define STEP_CONTAINER_MAGIC 0xa0b9b2ba
 
 typedef struct {
 	char *key;                 /* srun key for IO verification         */
+	char *tls_cert;            /* srun public certificate if tls in use */
 	slurm_addr_t resp_addr;	   /* response addr for task exit msg      */
 	slurm_addr_t ioaddr;       /* Address to connect on for normal I/O.
 				      Spawn IO uses messages to the normal
@@ -106,6 +106,7 @@ typedef struct {
 	bool            esent;      /* true if exit status has been sent    */
 	bool            exited;     /* true if task has exited              */
 	int             estatus;    /* this task's exit status              */
+	struct rusage rusage;
 
 	uint32_t	argc;
 	char	      **argv;
@@ -142,6 +143,7 @@ typedef struct {
 	uint32_t       het_job_ntasks;	/* total task count for entire hetjob */
 	uint32_t       het_job_offset;	/* Hetjob offset or NO_VAL        */
 	uint32_t       het_job_step_cnt;  /* number of steps for entire hetjob */
+	uint32_t      *het_job_step_task_cnts; /* ntasks on each comp of hetjob */
 	uint32_t       het_job_task_offset;/* Hetjob task offset or NO_VAL   */
 	uint16_t      *het_job_task_cnts; /* Number of tasks on each node in hetjob */
 	uint32_t     **het_job_tids;       /* Task IDs on each node of hetjob */
@@ -266,9 +268,9 @@ stepd_step_rec_t * batch_stepd_step_rec_create(batch_job_launch_msg_t *msg);
 
 void stepd_step_rec_destroy(stepd_step_rec_t *step);
 
-srun_info_t * srun_info_create(slurm_cred_t *cred, slurm_addr_t *respaddr,
-			       slurm_addr_t *ioaddr, uid_t uid,
-			       uint16_t protocol_version);
+srun_info_t *srun_info_create(slurm_cred_t *cred, char *alloc_tls_cert,
+			      slurm_addr_t *respaddr, slurm_addr_t *ioaddr,
+			      uid_t uid, uint16_t protocol_version);
 
 void  srun_info_destroy(srun_info_t *srun);
 

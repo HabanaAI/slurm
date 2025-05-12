@@ -74,7 +74,7 @@ const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 /* Internal cgroup structs */
 static list_t *task_list;
 static uint16_t step_active_cnt;
-static xcgroup_ns_t int_cg_ns;
+static xcgroup_ns_t int_cg_ns = { 0 };
 static xcgroup_t int_cg[CG_LEVEL_CNT];
 static bpf_program_t p[CG_LEVEL_CNT];
 static char *stepd_scope_path = NULL;
@@ -86,6 +86,12 @@ static char *ctl_names[] = {
 	[CG_MEMORY] = "memory",
 	[CG_CPUACCT] = "cpu",
 	[CG_DEVICES] = "devices",
+	/* Below are extra controllers not explicitly tracked by Slurm. */
+	[CG_IO] = "io",
+	[CG_HUGETLB] = "hugetlb",
+	[CG_PIDS] = "pids",
+	[CG_RDMA] = "rdma",
+	[CG_MISC] = "misc"
 };
 
 typedef struct {
@@ -236,10 +242,16 @@ static bool _is_cgroup2_mount(char *path)
 		}
 	}
 
+	if (!rc) {
+		error("The cgroup mountpoint %s is not mounted", path);
+		goto end;
+	}
+
 	minfo = _get_root_mount_mountinfo(path, "self");
 	if (xstrcmp(minfo, "/"))
 		error("The cgroup mountpoint does not align with the current namespace. Please, ensure all namespaces are correctly mounted. Refer to the slurm cgroup_v2 documentation.");
 
+end:
 	xfree(minfo);
 	endmntent(fp);
 	return rc;
@@ -402,21 +414,29 @@ static char *_get_init_cg_path()
  */
 static void _set_int_cg_ns()
 {
-	char *init_cg_path = _get_init_cg_path();
+	int_cg_ns.init_cg_path = _get_init_cg_path();
+
+	/*
+	 * When started manually in a container and reconfiguring, if we are pid
+	 * 1 we can directly get the cgroup as it has been configured in our
+	 * previous instance.
+	 */
+	if (slurm_cgroup_conf.ignore_systemd && getenv("SLURMD_RECONF") &&
+	    (getpid() == 1)) {
+		stepd_scope_path = xdirname(int_cg_ns.init_cg_path);
+		int_cg_ns.mnt_point = xstrdup(int_cg_ns.init_cg_path);
+		return;
+	}
 
 #ifdef MULTIPLE_SLURMD
 	xstrfmtcat(stepd_scope_path, "%s/%s/%s_%s.scope",
-		   init_cg_path,
-		   SYSTEM_CGSLICE, conf->node_name,
+		   int_cg_ns.init_cg_path, SYSTEM_CGSLICE, conf->node_name,
 		   SYSTEM_CGSCOPE);
 #else
-	xstrfmtcat(stepd_scope_path, "%s/%s/%s.scope",
-		   init_cg_path,
+	xstrfmtcat(stepd_scope_path, "%s/%s/%s.scope", int_cg_ns.init_cg_path,
 		   SYSTEM_CGSLICE, SYSTEM_CGSCOPE);
 #endif
 	int_cg_ns.mnt_point = _get_proc_cg_path("self");
-
-	xfree(init_cg_path);
 }
 
 /*
@@ -470,10 +490,25 @@ static int _enable_subtree_control(char *path, bitstr_t *ctl_bitmap)
 
 static int _get_controllers(char *path, bitstr_t *ctl_bitmap)
 {
-	char *buf = NULL, *ptr, *save_ptr, *ctl_filepath = NULL;
+	char *buf = NULL, *ptr, *save_ptr, *ctl_filepath = NULL, *extra;
 	size_t sz;
 
 	xassert(ctl_bitmap);
+
+	/* Remove the extra controllers if not explicitly asked */
+	extra = slurm_cgroup_conf.enable_extra_controllers;
+	if (!xstrstr(extra, "all")) {
+		if (extra) {
+			for (int i = CG_IO; i < CG_CTL_CNT; i++) {
+				if (!xstrstr(extra, ctl_names[i])) {
+					ctl_names[i] = "";
+				}
+			}
+		} else {
+			for (int i = CG_IO; i < CG_CTL_CNT; i++)
+				ctl_names[i] = "";
+		}
+	}
 
 	xstrfmtcat(ctl_filepath, "%s/cgroup.controllers", path);
 	if (common_file_read_content(ctl_filepath, &buf, &sz) !=
@@ -504,7 +539,8 @@ static int _get_controllers(char *path, bitstr_t *ctl_bitmap)
 	for (int i = 0; i < CG_CTL_CNT; i++) {
 		if ((i == CG_DEVICES) || (i == CG_TRACK))
 			continue;
-		if (invoc_id && !bit_test(ctl_bitmap, i))
+		if (invoc_id && !bit_test(ctl_bitmap, i) &&
+		    xstrcmp(ctl_names[i], ""))
 			error("Controller %s is not enabled!", ctl_names[i]);
 	}
 	return SLURM_SUCCESS;
@@ -710,30 +746,69 @@ static int _find_pid_task(void *x, void *key)
 	return found;
 }
 
-static void _wait_cgroup_empty(xcgroup_t *cg, int timeout_ms)
+/*
+ * Check the "populated" key in the cgroup.events file
+ * Returns CGROUP_EMPTY, CGROUP_POPULATED, or SLURM_ERROR.
+ */
+static int _is_cgroup_empty(xcgroup_t *cg)
 {
-	char *cgroup_events = NULL, *events_content = NULL, *ptr;
-	int rc, fd, wd, populated = -1;
-	size_t sz;
-	struct pollfd pfd[1];
+	char *events_content = NULL, *ptr;
+	int rc;
+	int populated = -1;
+	size_t size;
 
 	/* Check if cgroup is empty in the first place. */
-	if (common_cgroup_get_param(
-		    cg, "cgroup.events", &events_content, &sz) != SLURM_SUCCESS)
+	if (common_cgroup_get_param(cg, "cgroup.events", &events_content,
+				    &size) != SLURM_SUCCESS) {
 		error("Cannot read %s/cgroup.events", cg->path);
-
-	if (events_content) {
-		if ((ptr = xstrstr(events_content, "populated"))) {
-			if (sscanf(ptr, "populated %u", &populated) != 1)
-				error("Cannot read populated counter from cgroup.events file.");
-		}
-		xfree(events_content);
+		return SLURM_ERROR;
 	}
 
-	if (populated < 0) {
+	if (!events_content) {
+		error("%s/cgroup.events is empty", cg->path);
+		return SLURM_ERROR;
+	}
+
+	if (!(ptr = xstrstr(events_content, "populated"))) {
+		error("Could not find \"populated\" field in %s/cgroup.events: \"%s\"",
+		      cg->path, events_content);
+		xfree(events_content);
+		return SLURM_ERROR;
+	}
+
+	if ((rc = sscanf(ptr, "populated %u", &populated) != 1)) {
+		error("Could not find value for \"populated\" field in %s/cgroup.events (\"%s\"): %s",
+		      cg->path, events_content, strerror(rc));
+		xfree(events_content);
+		return SLURM_ERROR;
+	}
+
+	xfree(events_content);
+
+	switch (populated) {
+	case 0:
+		return CGROUP_EMPTY;
+	case 1:
+		return CGROUP_POPULATED;
+	default:
+		error("Cannot determine if %s is empty.", cg->path);
+		break;
+	}
+	return SLURM_ERROR;
+}
+
+static void _wait_cgroup_empty(xcgroup_t *cg, int timeout_ms)
+{
+	char *cgroup_events = NULL;
+	int rc, fd, wd, populated = -1;
+	struct pollfd pfd[1];
+
+	populated = _is_cgroup_empty(cg);
+
+	if (populated == SLURM_ERROR) {
 		error("Cannot determine if %s is empty.", cg->path);
 		return;
-	} else if (populated == 0) //We're done
+	} else if (populated == CGROUP_EMPTY) //We're done
 		return;
 
 	/*
@@ -772,21 +847,11 @@ static void _wait_cgroup_empty(xcgroup_t *cg, int timeout_ms)
 		error("Timeout waiting for %s to become empty.", cgroup_events);
 
 	/* Check if cgroup is empty again. */
-	if (common_cgroup_get_param(cg, "cgroup.events",
-				    &events_content, &sz) != SLURM_SUCCESS)
-		error("Cannot read %s/cgroup.events", cg->path);
+	populated = _is_cgroup_empty(cg);
 
-	if (events_content) {
-		if ((ptr = xstrstr(events_content, "populated"))) {
-			if (sscanf(ptr, "populated %u", &populated) != 1)
-				error("Cannot read populated counter from cgroup.events file.");
-		}
-		xfree(events_content);
-	}
-
-	if (populated < 0)
+	if (populated == SLURM_ERROR)
 		error("Cannot determine if %s is empty.", cg->path);
-	else if (populated == 1)
+	else if (populated == CGROUP_POPULATED)
 		log_flag(CGROUP, "Cgroup %s is not empty.", cg->path);
 
 end_inotify:
@@ -1117,6 +1182,90 @@ static int _init_slurmd_system_scope()
 	return SLURM_SUCCESS;
 }
 
+static void _get_parent_effective_cpus_mems(char **cpus_effective,
+					    char **mems_effective,
+					    xcgroup_t *cg)
+{
+	size_t sz;
+	xcgroup_t parent_cg = { 0 };
+
+	/* Copy the settings from one level up on the hierarchy. */
+	parent_cg.path = xdirname(cg->path);
+
+	*cpus_effective = NULL;
+	*mems_effective = NULL;
+
+	if (common_cgroup_get_param(&parent_cg, "cpuset.cpus.effective",
+				    cpus_effective, &sz) != SLURM_SUCCESS) {
+		error("Cannot read scope %s/cpuset.cpus.effective",
+		      parent_cg.path);
+	}
+
+	if (common_cgroup_get_param(&parent_cg, "cpuset.mems.effective",
+				    mems_effective, &sz) != SLURM_SUCCESS) {
+		error("Cannot read scope %s/cpuset.mems.effective",
+		      parent_cg.path);
+	}
+
+	common_cgroup_destroy(&parent_cg);
+}
+
+/*
+ * Unset the limits applied to slurmd from _resource_spec_init(), namely
+ * cpuset.cpus, cpuset.mems and memory.max. If others are applied in the future
+ * this function can be extended to reset other limits.
+ *
+ * IN: cg - slurmd cgroup to reset the limits.
+ * RET: SLURM_SUCCESS or SLURM_ERROR if any limit could not be reset.
+ */
+static int _unset_cpu_mem_limits(xcgroup_t *cg)
+{
+	int rc = SLURM_SUCCESS;
+
+	if (!bit_test(cg->ns->avail_controllers, CG_CPUS)) {
+		log_flag(CGROUP, "Not resetting cpuset limits in %s as %s controller is not enabled",
+			 cg->path, ctl_names[CG_CPUS]);
+	} else if (!xstrcmp(cg->path, int_cg_ns.init_cg_path)) {
+		log_flag(CGROUP, "Not resetting cpuset limits in %s as we are already in the top cgroup",
+			 cg->path);
+	} else {
+		/*
+		 * Normally it should suffice to write a "" into cpuset.cpus to
+		 * reset the allowed cpus, but for some reason this seems to be
+		 * interpreted as an "empty" cpuset by the kernel and it does
+		 * not allow us to do it when there are process in it (e.g. in
+		 * a reconfigure when slurmd is started manually). Instead, the
+		 * kernel allows us to specify the full range of cpus so we
+		 * will grab here the parent cpuset.cpus and apply it to our
+		 * cgroup. The same is done for cpuset.mems, as this interface
+		 * suffers from the same problem.
+		 */
+		char *parent_cpus, *parent_mems;
+		int i;
+		_get_parent_effective_cpus_mems(&parent_cpus, &parent_mems, cg);
+		rc += common_cgroup_set_param(cg, "cpuset.cpus", parent_cpus);
+		rc += common_cgroup_set_param(cg, "cpuset.mems", parent_mems);
+		if ((i = strlen(parent_cpus)))
+			parent_cpus[i - 1] = '\0';
+		if ((i = strlen(parent_mems)))
+			parent_mems[i - 1] = '\0';
+		log_flag(CGROUP, "%s reset cpuset.cpus=%s cpuset.mems=%s",
+			 cg->path, parent_cpus, parent_mems);
+		xfree(parent_cpus);
+		xfree(parent_mems);
+	}
+
+	if (!bit_test(cg->ns->avail_controllers, CG_MEMORY)) {
+		log_flag(CGROUP, "Not resetting limits in %s as %s controller is not enabled",
+			 cg->path, ctl_names[CG_MEMORY]);
+	} else {
+		rc += common_cgroup_set_param(cg, "memory.max", "max");
+		log_flag(CGROUP, "%s reset memory.max=max", cg->path);
+	}
+
+	return (rc) ? SLURM_ERROR : SLURM_SUCCESS;
+}
+
 /*
  * Slurmd started manually may not remain in the actual scope. Normally there
  * are other pids there, like the terminal from where it's been launched, so
@@ -1132,8 +1281,8 @@ static int _migrate_to_stepd_scope()
 	pid_t slurmd_pid = getpid();
 
 	bit_clear_all(int_cg_ns.avail_controllers);
+	xfree(int_cg_ns.mnt_point);
 	common_cgroup_destroy(&int_cg[CG_LEVEL_ROOT]);
-	common_cgroup_ns_destroy(&int_cg_ns);
 
 	xstrfmtcat(new_home, "%s/slurmd", stepd_scope_path);
 	int_cg_ns.mnt_point = new_home;
@@ -1416,6 +1565,32 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
+static bool _pid_in_root(char *pid_str)
+{
+	char *cg_path, *tmp_str, file_path[PATH_MAX];
+	bool rc = false;
+
+	cg_path = _get_proc_cg_path(pid_str);
+	tmp_str = xdirname(cg_path);
+	xfree(cg_path);
+	cg_path = tmp_str;
+	tmp_str = NULL;
+
+	if (snprintf(file_path, PATH_MAX, "%s/cgroup.procs", cg_path) >=
+	    PATH_MAX) {
+		error("Could not generate cgroup path: %s", file_path);
+		goto end;
+	}
+
+	/* If cgroup.procs is not found one level up, we are in the root */
+	if (access(file_path, F_OK))
+		rc = true;
+
+end:
+	xfree(cg_path);
+	return rc;
+}
+
 extern int cgroup_p_setup_scope(char *scope_path)
 {
 	/*
@@ -1488,7 +1663,7 @@ extern int cgroup_p_setup_scope(char *scope_path)
 	 * Only do that if IgnoreSystemd is set.
 	 */
 	if (running_in_slurmd() && cgroup_p_has_feature(CG_FALSE_ROOT) &&
-	    slurm_cgroup_conf.ignore_systemd) {
+	    slurm_cgroup_conf.ignore_systemd && _pid_in_root("self")) {
 		if (_empty_pids(&int_cg[CG_LEVEL_ROOT], "/system") !=
 		    SLURM_SUCCESS){
 			error("cannot empty the false root cgroup (%s) of pids.",
@@ -1524,6 +1699,20 @@ extern int cgroup_p_setup_scope(char *scope_path)
 				return SLURM_ERROR;
 		} else {
 			log_flag(CGROUP, "INVOCATION_ID env var found. Assuming slurmd has been started by systemd.");
+		}
+
+		/*
+		 * We need to unset any cpu and memory limits as we do not want
+		 * to inherit previous limits. We cannot reset them later
+		 * because _load_gres needs to see all the cpus. The CoreSpec
+		 * initialization will happen afterwards and set whatever
+		 * is needed.
+		 */
+		if (_unset_cpu_mem_limits(&int_cg[CG_LEVEL_ROOT]) !=
+		    SLURM_SUCCESS) {
+			error("Cannot reset %s cgroup limits.",
+			      int_cg[CG_LEVEL_ROOT].path);
+			return SLURM_ERROR;
 		}
 	}
 
@@ -2246,10 +2435,55 @@ extern char *cgroup_p_get_scope_path(void)
 	return stepd_scope_path;
 }
 
+static void _get_mem_recursive(xcgroup_t *cg, cgroup_limits_t *limits)
+{
+	char *mem_max = NULL, *tmp_str = NULL, file_path[PATH_MAX];
+	size_t mem_sz;
+
+	if (!xstrcmp(cg->path, "/"))
+		goto end;
+
+	/*
+	 * Break when there is no memory controller anymore.
+	 *
+	 * We check if the file exists before getting its value because at the
+	 * moment we do not have proper error propagation and common_get_param
+	 * will emit an error(), which in our case it would just be a
+	 * verification and not an error.
+	 */
+	snprintf(file_path, PATH_MAX, "%s/memory.max", cg->path);
+	if (access(file_path, F_OK)) {
+		log_flag(CGROUP, "Reached %s cgroup without memory controller",
+			 cg->path);
+		goto end;
+	}
+
+	if (common_cgroup_get_param(cg, "memory.max", &mem_max, &mem_sz) !=
+	    SLURM_SUCCESS)
+		goto end;
+
+	/* Check ancestor */
+	if (xstrstr(mem_max, "max")) {
+		tmp_str = xdirname(cg->path);
+		xfree(cg->path);
+		cg->path = tmp_str;
+		_get_mem_recursive(cg, limits);
+		if (limits->limit_in_bytes != NO_VAL64)
+			goto end;
+	} else {
+		/* found it! */
+		mem_max[mem_sz - 1] = '\0';
+		limits->limit_in_bytes = slurm_atoull(mem_max);
+	}
+end:
+	xfree(mem_max);
+}
+
 extern cgroup_limits_t *cgroup_p_constrain_get(cgroup_ctl_type_t ctl,
 					       cgroup_level_t level)
 {
 	cgroup_limits_t *limits;
+	xcgroup_t tmp_cg = { 0 };
 
 	/*
 	 * cgroup/v1 legacy compatibility: We have no such levels in cgroup/v2
@@ -2366,8 +2600,10 @@ extern cgroup_limits_t *cgroup_p_constrain_get(cgroup_ctl_type_t ctl,
 			limits->allow_mems[(limits->mems_size)-1] = '\0';
 		break;
 	case CG_MEMORY:
-		/* Not implemented. */
-		goto fail;
+		tmp_cg.path = xstrdup(int_cg[level].path);
+		_get_mem_recursive(&tmp_cg, limits);
+		xfree(tmp_cg.path);
+		break;
 	case CG_DEVICES:
 		/* Not implemented. */
 		goto fail;
@@ -2735,4 +2971,37 @@ extern int cgroup_p_signal(int signal)
 		 int_cg[CG_LEVEL_STEP_USER].path);
 
 	return SLURM_SUCCESS;
+}
+
+extern char *cgroup_p_get_task_empty_event_path(uint32_t taskid,
+						bool *on_modify)
+{
+	task_cg_info_t *task_cg_info;
+
+	xassert(on_modify);
+
+	if (!(task_cg_info = list_find_first(task_list, _find_task_cg_info,
+					     &taskid))) {
+		return NULL;
+	}
+
+	/* We want to watch when cgroups.events is modified */
+	*on_modify = true;
+
+	return xstrdup_printf("%s/cgroup.events", task_cg_info->task_cg.path);
+}
+
+extern int cgroup_p_is_task_empty(uint32_t taskid)
+{
+	task_cg_info_t *task_cg_info;
+	xcgroup_t cg;
+
+	if (!(task_cg_info = list_find_first(task_list, _find_task_cg_info,
+					     &taskid))) {
+		return SLURM_ERROR;
+	}
+
+	cg = task_cg_info->task_cg;
+
+	return _is_cgroup_empty(&cg);
 }

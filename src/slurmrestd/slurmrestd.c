@@ -41,7 +41,6 @@
 #include <grp.h>
 #include <limits.h>
 #include <netdb.h>
-#include <sched.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -61,6 +60,7 @@
 #include "src/common/proc_args.h"
 #include "src/common/read_config.h"
 #include "src/common/ref.h"
+#include "src/common/run_in_daemon.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/uid.h"
 #include "src/common/xmalloc.h"
@@ -94,6 +94,8 @@
 
 decl_static_data(usage_txt);
 
+uint32_t slurm_daemon = IS_SLURMRESTD;
+
 typedef struct {
 	bool stdin_tty; /* running with a TTY for stdin */
 	bool stdin_socket; /* running with a socket for stdin */
@@ -112,7 +114,7 @@ static run_mode_t run_mode = { 0 };
 static list_t *socket_listen = NULL;
 static char *slurm_conf_filename = NULL;
 /* Number of requested threads */
-static int thread_count = 20;
+static int thread_count = 0;
 /* Max number of connections */
 static int max_connections = 124;
 /* User to become once loaded */
@@ -214,49 +216,14 @@ static void _parse_env(void)
 						"disable_unshare_files")) {
 				unshare_files = false;
 			} else if (!xstrcasecmp(token, "disable_user_check")) {
+#ifdef NDEBUG
+				fatal_abort("SLURMRESTD_SECURITY=disable_user_check should only be used for development. Disabling the user check to run slurmrestd as root or SlurmUser will allow anyone to run any command on the cluster as root.");
+#endif /* NDEBUG */
 				check_user = false;
 			} else if (!xstrcasecmp(token, "become_user")) {
 				become_user = true;
 			} else {
 				fatal("Unexpected value in SLURMRESTD_SECURITY=%s",
-				      token);
-			}
-			token = strtok_r(NULL, ",", &save_ptr);
-		}
-		xfree(toklist);
-	}
-
-	if ((buffer = getenv("SLURMRESTD_JSON"))) {
-		char *token = NULL, *save_ptr = NULL;
-		char *toklist = xstrdup(buffer);
-
-		token = strtok_r(toklist, ",", &save_ptr);
-		while (token) {
-			if (!xstrcasecmp(token, "compact")) {
-				json_flags = SER_FLAGS_COMPACT;
-			} else if (!xstrcasecmp(token, "pretty")) {
-				json_flags = SER_FLAGS_PRETTY;
-			} else {
-				fatal("Unexpected value in SLURMRESTD_JSON=%s",
-				      token);
-			}
-			token = strtok_r(NULL, ",", &save_ptr);
-		}
-		xfree(toklist);
-	}
-
-	if ((buffer = getenv("SLURMRESTD_YAML"))) {
-		char *token = NULL, *save_ptr = NULL;
-		char *toklist = xstrdup(buffer);
-
-		token = strtok_r(toklist, ",", &save_ptr);
-		while (token) {
-			if (!xstrcasecmp(token, "compact")) {
-				yaml_flags = SER_FLAGS_COMPACT;
-			} else if (!xstrcasecmp(token, "pretty")) {
-				yaml_flags = SER_FLAGS_PRETTY;
-			} else {
-				fatal("Unexpected value in SLURMRESTD_YAML=%s",
 				      token);
 			}
 			token = strtok_r(NULL, ",", &save_ptr);
@@ -533,6 +500,59 @@ static void _parse_commandline(int argc, char **argv)
 }
 
 /*
+ * Check for supplementary group that could result in an unintended privilege
+ * escalation
+ */
+static void _check_gids(void)
+{
+	gid_t *gids = NULL;
+	bool need_drop = false;
+	int gid_count = getgroups(0, NULL);
+
+	if (gid_count < 0)
+		fatal("%s: getgroups(0, NULL) failed: %m", __func__);
+
+	if (!gid_count)
+		return;
+
+	gids = xcalloc(gid_count, sizeof(*gids));
+
+	if ((gid_count = getgroups(gid_count, gids)) < 0)
+		fatal("%s: getgroups() failed: %m", __func__);
+
+	for (int i = 0; i < gid_count; i++) {
+		/*
+		 * Ignore same gid being in supplementary groups
+		 * as it won't change permissions
+		 */
+		if (gids[i] == gid)
+			continue;
+
+		need_drop = true;
+		debug("%s: Supplementary group %d needs to be dropped",
+		      __func__, gids[i]);
+	}
+
+	xfree(gids);
+
+	if (!need_drop)
+		return;
+
+	debug("%s: Dropping all supplementary groups", __func__);
+
+	if (!setgroups(0, NULL))
+		return;
+
+#ifdef __linux__
+	if (errno == EPERM)
+		fatal("slurmrestd process lacks CAP_SETGID to drop supplementary groups. Supplementary groups must be removed from slurmrestd user (uid=%d,gid=%d) prior to starting slurmrestd.",
+		      uid, gid);
+#endif /* __linux__ */
+
+	fatal("Unable to drop supplementary groups: %m");
+}
+
+/*
  * slurmrestd is merely a translator from REST to Slurm.
  * Try to lock down any extra unneeded permissions.
  */
@@ -551,10 +571,10 @@ static void _lock_down(void)
 	if (unshare_files && unshare(CLONE_FILES))
 		fatal("Unable to unshare file descriptors: %m");
 
-	if (gid && setgroups(0, NULL))
-		fatal("Unable to drop supplementary groups: %m");
 	if (uid != 0 && (gid == 0))
 		gid = gid_from_uid(uid);
+	if (gid)
+		_check_gids();
 	if (gid != 0 && setgid(gid))
 		fatal("Unable to setgid: %m");
 	if (uid != 0 && setuid(uid))
@@ -667,6 +687,7 @@ int main(int argc, char **argv)
 		.on_data = parse_http,
 		.on_connection = _setup_http_context,
 		.on_finish = on_http_connection_finish,
+		.on_fingerprint = on_fingerprint_tls,
 	};
 	static const conmgr_events_t inet_events = {
 		.on_data = parse_http,
@@ -697,8 +718,12 @@ int main(int argc, char **argv)
 	slurm_init(slurm_conf_filename);
 	_check_user();
 
-	if (serializer_g_init(NULL, NULL))
-		fatal("Unable to initialize serializers");
+	/* Load serializers if they are present */
+	(void) serializer_g_init(MIME_TYPE_JSON_PLUGIN,
+				 getenv("SLURMRESTD_JSON"));
+	(void) serializer_g_init(MIME_TYPE_YAML_PLUGIN,
+				 getenv("SLURMRESTD_YAML"));
+	(void) serializer_g_init(MIME_TYPE_URL_ENCODED_PLUGIN, NULL);
 
 	/* This checks if slurmrestd is running in inetd mode */
 	conmgr_init((run_mode.listen ? thread_count : CONMGR_THREAD_COUNT_MIN),
@@ -794,7 +819,7 @@ int main(int argc, char **argv)
 		if ((rc = conmgr_process_fd(CON_TYPE_RAW, STDIN_FILENO,
 					    STDOUT_FILENO, &inet_events,
 					    CON_FLAG_NONE, NULL, 0,
-					    operations_router)))
+					    NULL, operations_router)))
 			fatal("%s: unable to process stdin: %s",
 			      __func__, slurm_strerror(rc));
 
@@ -803,8 +828,8 @@ int main(int argc, char **argv)
 	} else if (run_mode.listen) {
 		mode_t mask = umask(0);
 
-		if (conmgr_create_listen_sockets(CON_TYPE_RAW, socket_listen,
-						 &conmgr_events,
+		if (conmgr_create_listen_sockets(CON_TYPE_RAW, CON_FLAG_NONE,
+						 socket_listen, &conmgr_events,
 						 operations_router))
 			fatal("Unable to create sockets");
 
@@ -843,7 +868,6 @@ int main(int argc, char **argv)
 
 	xfree(auth_plugin_handles);
 	acct_storage_g_fini();
-	select_g_fini();
 	slurm_fini();
 	hash_g_fini();
 	tls_g_fini();

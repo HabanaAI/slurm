@@ -311,6 +311,10 @@ X_AC_MAN2HTML
 AM_CONDITIONAL(HAVE_MAN2HTML, test "x$ac_have_man2html" = "xyes")
 AC_SUBST(HAVE_MAN2HTML)
 
+dnl
+dnl Check bash-completion support
+dnl
+X_AC_BASH_COMPLETION
 
 dnl check if we can use standard printf functions
 dnl
@@ -438,6 +442,8 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/burst_buffer/common/Makefile
 		 src/plugins/burst_buffer/datawarp/Makefile
 		 src/plugins/burst_buffer/lua/Makefile
+		 src/plugins/certgen/Makefile
+		 src/plugins/certgen/script/Makefile
 		 src/plugins/certmgr/Makefile
 		 src/plugins/certmgr/script/Makefile
 		 src/plugins/cgroup/Makefile
@@ -548,7 +554,7 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/topology/Makefile
 		 src/plugins/topology/block/Makefile
 		 src/plugins/topology/common/Makefile
-		 src/plugins/topology/default/Makefile
+		 src/plugins/topology/flat/Makefile
 		 src/plugins/topology/tree/Makefile
 		 src/sacct/Makefile
 		 src/sackd/Makefile

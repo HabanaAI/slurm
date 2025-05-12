@@ -1,4 +1,4 @@
-.TH slurmd "8" "Slurm Daemon" "November 2023" "Slurm Daemon"
+.TH slurmd "8" "Slurm Daemon" "April 2025" "Slurm Daemon"
 
 .SH "NAME"
 slurmd \- The compute node daemon for Slurm.
@@ -37,6 +37,12 @@ Print the actual hardware configuration (not the configuration from the
 slurm.conf file) and exit.
 The format of output is the same as used in \fBslurm.conf\fR to describe a node's
 configuration plus its uptime.
+.IP
+
+.TP
+\fB\-\-ca\-cert\-file <file>\fR
+Absolute path to CA certificate used for fetching configuration when running
+configless in a TLS enabled cluster.
 .IP
 
 .TP
@@ -201,6 +207,12 @@ The following environment variables can be used to override settings
 compiled into slurmd.
 
 .TP 20
+\fBABORT_ON_FATAL\fR
+When a fatal error is detected, use abort() instead of exit() to terminate the
+process. This allows backtraces to be captured without recompiling Slurm.
+.IP
+
+.TP
 \fBSLURM_CONF\fR
 The location of the Slurm configuration file. This is overridden by
 explicitly naming a configuration file on the command line.
@@ -216,8 +228,8 @@ variable takes precedence over the setting in the slurm.conf.
 .SH "SIGNALS"
 
 .TP
-\fBSIGTERM SIGINT\fR
-\fBslurmd\fR will shutdown cleanly, waiting for in\-progress rollups to finish.
+\fBSIGTERM SIGINT SIGQUIT\fR
+\fBslurmd\fR will shutdown cleanly.
 .IP
 
 .TP
