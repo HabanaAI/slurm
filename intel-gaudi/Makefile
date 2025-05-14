@@ -1,5 +1,5 @@
 IS_CONTROLLER ?= true
-TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.15.1/ubuntu22.04/habanalabs/pytorch-installer-2.2.0:1.15.1-15
+TEST_CONTAINER_IMAGE ?= vault.habana.ai/gaudi-docker/1.20.1/ubuntu22.04/habanalabs/pytorch-installer-2.6.0:latest
 MAKEFILE_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 REPO_DIR := $(shell dirname $(MAKEFILE_DIR))
 SHELL := /bin/bash
@@ -52,9 +52,7 @@ habana-configure:
 	fi
 	#
 	# Intel GAUDI external ports
-	wget https://raw.githubusercontent.com/HabanaAI/Setup_and_Install/r1.14.0/utils/manage_network_ifs.sh && \
-	chmod +x ./manage_network_ifs.sh && \
-	./manage_network_ifs.sh --up
+	/opt/habanalabs/qual/gaudi3/bin/manage_network_ifs.sh --up
 
 configure:
 	# Slurm pre-requisits
@@ -181,6 +179,7 @@ test-8-cards:
 	$(call prompt-status)
 
 test-16-cards:
+	. /etc/profile.d/slurm.sh;
 	# Test connection to the second node with seemless SSH
 	if [ -z "$(SECOND_NODE)" ]; then \
 		echo "SECOND_NODE variable was not provided"; \
@@ -199,8 +198,9 @@ test-16-cards:
 	# Install slurm the way it was installed on the first node as a second single node cluster
 	ssh $(SECOND_NODE) "mkdir -p $(REPO_DIR)"; \
 	scp -rp $(REPO_DIR)/* $(SECOND_NODE):$(REPO_DIR); \
-	INSTALLATION_TYPE=$$(test -d $(REPO_DIR)/debian-packages -o -d fedora-packages && echo package || echo source)); \
-	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make install-$$INSTALLATION_TYPE $(filter-out --,$(MAKEFLAGS)) IS_CONTROLLER='false'"
+	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make habana-configure"; \
+	INSTALLATION_TYPE=source; \
+	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make build-and-install-$$INSTALLATION_TYPE $(filter-out --,$(MAKEFLAGS)) IS_CONTROLLER='false'"
 	#
 	# Configure slurm as a single two node cluster
 	# /etc/slurm/slurm.conf
@@ -223,11 +223,12 @@ test-16-cards:
 	#
 	# Restart and reload configuration
 	ssh $(SECOND_NODE) "sudo systemctl restart munge slurmd"; \
-	sudo scontrol reconfigure
+	sudo bash -c "source /etc/profile.d/slurm.sh; scontrol reconfigure"
 	#
 	# Test 16 cards
+	. /etc/profile.d/slurm.sh;
 	export NODE_0_IPADDRESS=$$(srun hostname -i); \
-	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone --depth 1 https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
+	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -v /logs:/logs -e HABANA_LOGS=/logs/.habana_logs -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone --depth 1 https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
 
 define prompt-status
@@ -261,3 +262,5 @@ define update-version
 		sed -i -r 's/VERSION_PLACE_HOLDER/$(VERSION)/' debian/changelog; \
 	fi
 endef
+
+e2e: habana-configure configure build-and-install-source test
