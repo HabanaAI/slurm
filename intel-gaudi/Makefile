@@ -179,7 +179,6 @@ test-8-cards:
 	$(call prompt-status)
 
 test-16-cards:
-	. /etc/profile.d/slurm.sh;
 	# Test connection to the second node with seemless SSH
 	if [ -z "$(SECOND_NODE)" ]; then \
 		echo "SECOND_NODE variable was not provided"; \
@@ -187,20 +186,20 @@ test-16-cards:
 	fi
 	ssh $(SECOND_NODE) exit 0
 	#
-	# Ensure that habana ENV is already configured on the second node
-	ssh $(SECOND_NODE) "hl-smi -Q name --format=csv"
-	ssh $(SECOND_NODE) grep habana /etc/docker/daemon.json
-	MANAGE_NETWORK_IFS=$$(ssh $(SECOND_NODE) "curl -s https://raw.githubusercontent.com/HabanaAI/Setup_and_Install/r1.14.0/utils/manage_network_ifs.sh | bash -s -- --status"); \
-	if [[ "$${MANAGE_NETWORK_IFS}" =~ down ]]; then \
-		exit 1; \
-	fi
-	#
 	# Install slurm the way it was installed on the first node as a second single node cluster
 	ssh $(SECOND_NODE) "mkdir -p $(REPO_DIR)"; \
 	scp -rp $(REPO_DIR)/* $(SECOND_NODE):$(REPO_DIR); \
 	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make habana-configure"; \
+	ssh $(SECOND_NODE) "hl-smi -Q name --format=csv"; \
+	ssh $(SECOND_NODE) grep habana /etc/docker/daemon.json; \
+	MANAGE_NETWORK_IFS=$$(ssh $(SECOND_NODE) "/opt/habanalabs/qual/gaudi3/bin/manage_network_ifs.sh --status"); \
+	if [[ "$${MANAGE_NETWORK_IFS}" =~ down ]]; then \
+		exit 1; \
+	fi
+
 	INSTALLATION_TYPE=source; \
 	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make build-and-install-$$INSTALLATION_TYPE $(filter-out --,$(MAKEFLAGS)) IS_CONTROLLER='false'"
+
 	#
 	# Configure slurm as a single two node cluster
 	# /etc/slurm/slurm.conf
@@ -226,7 +225,7 @@ test-16-cards:
 	sudo bash -c "source /etc/profile.d/slurm.sh; scontrol reconfigure"
 	#
 	# Test 16 cards
-	. /etc/profile.d/slurm.sh;
+	. /etc/profile.d/slurm.sh; \
 	export NODE_0_IPADDRESS=$$(srun hostname -i); \
 	srun --gres=gpu:8 --nodes=2 --ntasks-per-node=1 --export ALL bash -c 'docker run --init --rm --runtime=habana -v /logs:/logs -e HABANA_LOGS=/logs/.habana_logs -e HABANA_VISIBLE_DEVICES -e SLURM_NODEID -e SLURM_LAUNCH_NODE_IPADDR --net=host $(TEST_CONTAINER_IMAGE) /bin/bash -c "git clone --depth 1 https://github.com/HabanaAI/hccl_demo.git; cd hccl_demo; HCCL_COMM_ID=$$NODE_0_IPADDRESS:5555 python3 run_hccl_demo.py --nranks 16 --node_id $$SLURM_NODEID --size 32m --test all_reduce --loop 1000 --ranks_per_node 8"'; \
 	$(call prompt-status)
