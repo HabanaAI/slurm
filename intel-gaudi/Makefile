@@ -189,7 +189,7 @@ test-16-cards:
 	# Install slurm the way it was installed on the first node as a second single node cluster
 	ssh $(SECOND_NODE) "mkdir -p $(REPO_DIR)"; \
 	scp -rp $(REPO_DIR)/* $(SECOND_NODE):$(REPO_DIR); \
-	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make habana-configure"; \
+	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); sudo make habana-configure"; \
 	ssh $(SECOND_NODE) "hl-smi -Q name --format=csv"; \
 	ssh $(SECOND_NODE) grep habana /etc/docker/daemon.json; \
 	MANAGE_NETWORK_IFS=$$(ssh $(SECOND_NODE) "/opt/habanalabs/qual/gaudi3/bin/manage_network_ifs.sh --status"); \
@@ -198,7 +198,7 @@ test-16-cards:
 	fi
 
 	INSTALLATION_TYPE=source; \
-	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); make build-and-install-$$INSTALLATION_TYPE $(filter-out --,$(MAKEFLAGS)) IS_CONTROLLER='false'"
+	ssh $(SECOND_NODE) "cd $(MAKEFILE_DIR); sudo make build-and-install-$$INSTALLATION_TYPE $(filter-out --,$(MAKEFLAGS)) IS_CONTROLLER='false'"
 
 	#
 	# Configure slurm as a single two node cluster
