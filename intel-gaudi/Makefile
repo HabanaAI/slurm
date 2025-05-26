@@ -262,4 +262,4 @@ define update-version
 	fi
 endef
 
-e2e: habana-configure configure build-and-install-source test
+e2e: habana-configure build-and-install-source test
