@@ -39,6 +39,8 @@ libcommon_interfaces_la_SOURCES =    \
 	cgroup.h				\
 	cli_filter.c				\
 	cli_filter.h				\
+	conn.c					\
+	conn.h					\
 	cred.h					\
 	cred.c					\
 	data_parser.c				\
@@ -71,8 +73,8 @@ libcommon_interfaces_la_SOURCES =    \
 	site_factor.h				\
 	switch.c				\
 	switch.h				\
-	tls.c					\
-	tls.h					\
+	tls.c				        \
+	tls.h				        \
 	topology.c				\
 	topology.h
 

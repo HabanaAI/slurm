@@ -39,8 +39,9 @@
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/xstring.h"
 
-#include "src/interfaces/tls.h"
+#include "src/interfaces/conn.h"
 
+#include "src/slurmctld/proc_req.h"
 #include "src/slurmctld/slurmctld.h"
 
 /*
@@ -111,11 +112,15 @@ extern void rate_limit_shutdown(void)
  */
 extern bool rate_limit_exceeded(slurm_msg_t *msg)
 {
+	slurmctld_rpc_t *this_rpc = NULL;
 	bool exceeded = false;
 	int start_position = 0, position = 0;
 	time_t now;
 
 	if (!rate_limit_enabled)
+		return false;
+
+	if ((this_rpc = find_rpc(msg->msg_type)) && this_rpc->rl_exempt)
 		return false;
 
 	/*
@@ -193,7 +198,7 @@ extern bool rate_limit_exceeded(slurm_msg_t *msg)
 		slurm_addr_t *cli_addr = &msg->address;
 
 		if (cli_addr->ss_family == AF_UNSPEC) {
-			int fd = tls_g_get_conn_fd(msg->tls_conn);
+			int fd = conn_g_get_fd(msg->tls_conn);
 			(void) slurm_get_peer_addr(fd, cli_addr);
 		}
 

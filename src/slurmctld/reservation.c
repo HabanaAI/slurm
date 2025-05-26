@@ -269,6 +269,71 @@ static int _switch_select_alloc_gres(void *x, void *arg)
 	return 0;
 }
 
+static int _foreach_create_str(void *x, void *arg)
+{
+	slurmdb_tres_rec_t *tres_rec = x;
+	resv_desc_msg_t *resv_desc_ptr = arg;
+
+	xstrfmtcat(resv_desc_ptr->tres_str, ",%s/%s=%" PRIu64, tres_rec->type,
+		   tres_rec->name, tres_rec->count);
+	return 0;
+}
+
+static int _append_typeless_gres(resv_desc_msg_t *resv_desc_ptr)
+{
+	char *name = NULL, *type = NULL, *save_ptr = NULL;
+	int rc = true;
+	uint64_t cnt = 0;
+	char *tres_type = "gres";
+	list_t *typeless_list = NULL;
+	slurmdb_tres_rec_t *tres_rec;
+
+	/* check for a typed gres */
+	if (!strchr(resv_desc_ptr->tres_str, ':'))
+		return 0;
+
+	while (((rc = slurm_get_next_tres(&tres_type, resv_desc_ptr->tres_str,
+					  &name, &type, &cnt, &save_ptr)) ==
+		SLURM_SUCCESS) &&
+	       save_ptr) {
+		char *typeless = NULL, *typeless_pos = NULL;
+		xstrfmtcatat(typeless, &typeless_pos, "gres/%s=", name);
+		if (xstrstr(resv_desc_ptr->tres_str, typeless)) {
+			xfree(typeless);
+			xfree(name);
+			xfree(type);
+			continue;
+		}
+		if (!typeless_list)
+			typeless_list = list_create(slurmdb_destroy_tres_rec);
+		typeless_pos--;
+		*typeless_pos = '\0';
+
+		tres_rec = list_find_first(typeless_list,
+					   slurmdb_find_tres_in_list_by_type,
+					   typeless);
+		xfree(typeless);
+		if (!tres_rec) {
+			tres_rec = xmalloc(sizeof(*tres_rec));
+			tres_rec->name = xstrdup(name);
+			tres_rec->type = xstrdup(tres_type);
+			list_append(typeless_list, tres_rec);
+		}
+		tres_rec->count += cnt;
+
+		xfree(name);
+		xfree(type);
+	}
+
+	if (typeless_list) {
+		(void) list_for_each(typeless_list, _foreach_create_str,
+				     resv_desc_ptr);
+		FREE_NULL_LIST(typeless_list);
+	}
+
+	return 0;
+}
+
 static int _parse_tres_str(resv_desc_msg_t *resv_desc_ptr)
 {
 	char *tmp_str, *tres_sub_str;
@@ -337,6 +402,9 @@ static int _parse_tres_str(resv_desc_msg_t *resv_desc_ptr)
 		resv_desc_ptr->burst_buffer = tres_sub_str;
 		tres_sub_str = NULL;
 	}
+
+	if (_append_typeless_gres(resv_desc_ptr))
+		return ESLURM_INVALID_TRES;
 
 	return SLURM_SUCCESS;
 }
@@ -2614,7 +2682,7 @@ static list_t *_license_validate2(resv_desc_msg_t *resv_desc_ptr, bool *valid)
 	}
 
 	license_list = license_validate(resv_desc_ptr->licenses, true, true,
-					false, NULL, valid);
+					true, NULL, valid);
 	if (resv_desc_ptr->licenses == NULL)
 		return license_list;
 
@@ -2632,7 +2700,7 @@ static list_t *_license_validate2(resv_desc_msg_t *resv_desc_ptr, bool *valid)
 		xstrcat(merged_licenses, resv_ptr->licenses);
 	}
 	list_iterator_destroy(iter);
-	merged_list = license_validate(merged_licenses, true, true, false, NULL,
+	merged_list = license_validate(merged_licenses, true, true, true, NULL,
 				       valid);
 	xfree(merged_licenses);
 	FREE_NULL_LIST(merged_list);
@@ -3186,8 +3254,7 @@ extern int create_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 	}
 	resv_ptr->features	= resv_desc_ptr->features;
 	resv_desc_ptr->features = NULL;		/* Nothing left to free */
-	resv_ptr->licenses	= resv_desc_ptr->licenses;
-	resv_desc_ptr->licenses = NULL;		/* Nothing left to free */
+	resv_ptr->licenses = license_list_to_string(license_list);
 	resv_ptr->license_list	= license_list;
 	license_list = NULL;
 
@@ -3623,8 +3690,7 @@ extern int update_resv(resv_desc_msg_t *resv_desc_ptr, char **err_msg)
 			goto update_failure;
 		}
 		xfree(resv_ptr->licenses);
-		resv_ptr->licenses	= resv_desc_ptr->licenses;
-		resv_desc_ptr->licenses = NULL; /* Nothing left to free */
+		resv_ptr->licenses = license_list_to_string(license_list);
 		FREE_NULL_LIST(resv_ptr->license_list);
 		resv_ptr->license_list  = license_list;
 	}
@@ -4027,7 +4093,14 @@ extern void reservation_delete_resv_exc_parts(resv_exc_t *resv_exc)
 {
 	if (!resv_exc)
 		return;
-
+	/*
+	 * These are pointers into the lists that are about to be freed right
+	 * afterwards.
+	 */
+	resv_exc->gres_js_exc = NULL;
+	resv_exc->gres_js_inc = NULL;
+	FREE_NULL_LIST(resv_exc->gres_list_exc);
+	FREE_NULL_LIST(resv_exc->gres_list_inc);
 	FREE_NULL_BITMAP(resv_exc->core_bitmap);
 	free_core_array(&resv_exc->exc_cores);
 }
@@ -4207,7 +4280,7 @@ static bool _validate_one_reservation(slurmctld_resv_t *resv_ptr)
 		bool valid = true;
 		FREE_NULL_LIST(resv_ptr->license_list);
 		resv_ptr->license_list =
-			license_validate(resv_ptr->licenses, true, true, false,
+			license_validate(resv_ptr->licenses, true, true, true,
 					 NULL, &valid);
 		if (!valid) {
 			error("Reservation %s has invalid licenses (%s)",
@@ -6336,23 +6409,20 @@ extern void job_time_adj_resv(job_record_t *job_ptr)
 
 /*
  * For a given license_list, return the total count of licenses of the
- * specified name
+ * specified id
  */
-static int _license_cnt(list_t *license_list, char *lic_name)
+static int _license_cnt(list_t *license_list, licenses_id_t id)
 {
 	int lic_cnt = 0;
-	list_itr_t *iter;
 	licenses_t *license_ptr;
 
 	if (license_list == NULL)
 		return lic_cnt;
 
-	iter = list_iterator_create(license_list);
-	while ((license_ptr = list_next(iter))) {
-		if (xstrcmp(license_ptr->name, lic_name) == 0)
-			lic_cnt += license_ptr->total;
-	}
-	list_iterator_destroy(iter);
+	license_ptr = license_find_rec_by_id(license_list, id);
+
+	if (license_ptr)
+		lic_cnt = license_ptr->total;
 
 	return lic_cnt;
 }
@@ -6541,12 +6611,12 @@ extern burst_buffer_info_msg_t *job_test_bb_resv(job_record_t *job_ptr,
  *	prevented from using due to reservations
  *
  * IN job_ptr   - job to test
- * IN lic_name  - name of license
+ * IN id        - id of license
  * IN when      - when the job is expected to start
  * IN reboot    - true if node reboot required to start job
  * RET number of licenses of this type the job is prevented from using
  */
-extern int job_test_lic_resv(job_record_t *job_ptr, char *lic_name,
+extern int job_test_lic_resv(job_record_t *job_ptr, licenses_id_t id,
 			     time_t when, bool reboot)
 {
 	slurmctld_resv_t * resv_ptr;
@@ -6576,12 +6646,12 @@ extern int job_test_lic_resv(job_record_t *job_ptr, char *lic_name,
 		    (xstrcmp(job_ptr->resv_name, resv_ptr->name) == 0))
 			continue;	/* job can use this reservation */
 
-		resv_cnt += _license_cnt(resv_ptr->license_list, lic_name);
+		resv_cnt += _license_cnt(resv_ptr->license_list, id);
 	}
 	list_iterator_destroy(iter);
 
-	/* info("%pJ blocked from %d licenses of type %s",
-	     job_ptr, resv_cnt, lic_name); */
+	/* info("%pJ blocked from %d licenses:%u",
+	     job_ptr, resv_cnt, id.lic_id); */
 	return resv_cnt;
 }
 
@@ -7770,7 +7840,7 @@ static int _foreach_reservation_license(void *x, void *key)
 	licenses_t *resv_license = (licenses_t *) x;
 	licenses_t *license = (licenses_t *) key;
 
-	if (!xstrcmp(resv_license->name, license->name))
+	if (resv_license->id.lic_id == license->id.lic_id)
 		license->reserved += resv_license->total;
 
 	return 0;

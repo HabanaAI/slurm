@@ -95,6 +95,7 @@
 #include "src/interfaces/burst_buffer.h"
 #include "src/interfaces/certmgr.h"
 #include "src/interfaces/cgroup.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/gres.h"
 #include "src/interfaces/hash.h"
 #include "src/interfaces/job_submit.h"
@@ -111,7 +112,6 @@
 #include "src/interfaces/serializer.h"
 #include "src/interfaces/site_factor.h"
 #include "src/interfaces/switch.h"
-#include "src/interfaces/tls.h"
 #include "src/interfaces/topology.h"
 
 #include "src/slurmctld/acct_policy.h"
@@ -304,7 +304,7 @@ static void _send_reconfig_replies(void)
 	while ((msg = list_pop(reconfig_reqs))) {
 		/* Must avoid sending reply via msg->conmgr_fd */
 		(void) slurm_send_rc_msg(msg, reconfig_rc);
-		tls_g_destroy_conn(msg->tls_conn, true);
+		conn_g_destroy(msg->tls_conn, true);
 		slurm_free_msg(msg);
 	}
 }
@@ -682,11 +682,11 @@ int main(int argc, char **argv)
 		fatal("failed to initialize auth plugin");
 	if (hash_g_init() != SLURM_SUCCESS)
 		fatal("failed to initialize hash plugin");
-	if (tls_g_init() != SLURM_SUCCESS)
+	if (conn_g_init() != SLURM_SUCCESS)
 		fatal("Failed to initialize tls plugin");
 	if (certmgr_g_init() != SLURM_SUCCESS)
 		fatal("Failed to initialize certmgr plugin");
-	if (serializer_g_init(NULL, NULL))
+	if (serializer_g_init() != SLURM_SUCCESS)
 		fatal("Failed to initialize serialization plugins.");
 
 	if (original && !under_systemd) {
@@ -824,9 +824,8 @@ int main(int argc, char **argv)
 	if (mpi_g_daemon_init() != SLURM_SUCCESS)
 		fatal("Failed to initialize MPI plugins.");
 	/* Fatal if we use extra_constraints without json serializer */
-	if (extra_constraints_enabled() &&
-	    serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL))
-		fatal("Extra constraints feature requires a json serializer.");
+	if (extra_constraints_enabled())
+		serializer_required(MIME_TYPE_JSON);
 	if (switch_g_init(true) != SLURM_SUCCESS)
 		fatal("Failed to initialize switch plugin");
 
@@ -1002,6 +1001,7 @@ int main(int argc, char **argv)
 		_slurmctld_background(NULL);
 
 		controller_fini_scheduling(); /* Stop all scheduling */
+		rpc_queue_shutdown();
 		agent_fini();
 
 		/* termination of controller */
@@ -1126,7 +1126,7 @@ int main(int argc, char **argv)
 	topology_g_fini();
 	auth_g_fini();
 	hash_g_fini();
-	tls_g_fini();
+	conn_g_fini();
 	certmgr_g_fini();
 	switch_g_fini();
 	site_factor_g_fini();
@@ -1151,7 +1151,6 @@ int main(int argc, char **argv)
 	conmgr_fini();
 
 	rate_limit_shutdown();
-	rpc_queue_shutdown();
 	log_fini();
 	sched_log_fini();
 
@@ -1678,7 +1677,6 @@ static void _open_ports(void)
 		.on_connection = _on_connection,
 		.on_msg = _on_msg,
 		.on_finish = _on_finish,
-		.on_fingerprint = on_fingerprint_tls,
 	};
 
 	slurm_mutex_lock(&listeners.mutex);
@@ -1707,7 +1705,7 @@ static void _open_ports(void)
 	}
 
 	for (uint64_t i = 0; i < listeners.count; i++) {
-		static const conmgr_con_flags_t flags =
+		static conmgr_con_flags_t flags =
 			(CON_FLAG_RPC_KEEP_BUFFER | CON_FLAG_QUIESCE |
 			 CON_FLAG_WATCH_WRITE_TIMEOUT |
 			 CON_FLAG_WATCH_READ_TIMEOUT |
@@ -1716,6 +1714,9 @@ static void _open_ports(void)
 
 		index_ptr = xmalloc(sizeof(*index_ptr));
 		*index_ptr = i;
+
+		if (tls_enabled())
+			flags |= CON_FLAG_TLS_SERVER;
 
 		if ((rc = conmgr_process_fd_listen(listeners.fd[i],
 						   CON_TYPE_RPC, &events, flags,
@@ -1775,11 +1776,11 @@ static void _service_connection(conmgr_callback_args_t conmgr_args,
 	if (tls_conn) {
 		msg->tls_conn = tls_conn;
 	} else {
-		tls_conn_args_t tls_args = {
+		conn_args_t tls_args = {
 			.input_fd = input_fd,
 			.output_fd = input_fd,
 		};
-		msg->tls_conn = tls_g_create_conn(&tls_args);
+		msg->tls_conn = conn_g_create(&tls_args);
 	}
 
 	server_thread_incr();
@@ -1802,7 +1803,7 @@ static void _service_connection(conmgr_callback_args_t conmgr_args,
 	}
 
 	if (!this_rpc || !this_rpc->keep_msg) {
-		tls_g_destroy_conn(msg->tls_conn, true);
+		conn_g_destroy(msg->tls_conn, true);
 		msg->tls_conn = NULL;
 		log_flag(TLS, "Destroyed server TLS connection for incoming RPC on fd %d->%d",
 			 input_fd, output_fd);
@@ -1958,11 +1959,11 @@ static int _foreach_part_resize_qos(void *x, void *arg)
 	part_record_t *part_ptr = x;
 
 	if (part_ptr->allow_qos)
-		qos_list_build(part_ptr->allow_qos,
+		qos_list_build(part_ptr->allow_qos, false,
 			       &part_ptr->allow_qos_bitstr);
 
 	if (part_ptr->deny_qos)
-		qos_list_build(part_ptr->deny_qos,
+		qos_list_build(part_ptr->deny_qos, false,
 			       &part_ptr->deny_qos_bitstr);
 	return 0;
 }
@@ -3664,11 +3665,11 @@ static int _foreach_cache_update_part(void *x, void *arg)
 	part_record_t *part_ptr = x;
 
 	if (part_ptr->allow_qos)
-		qos_list_build(part_ptr->allow_qos,
+		qos_list_build(part_ptr->allow_qos, true,
 			       &part_ptr->allow_qos_bitstr);
 
 	if (part_ptr->deny_qos)
-		qos_list_build(part_ptr->deny_qos,
+		qos_list_build(part_ptr->deny_qos, true,
 			       &part_ptr->deny_qos_bitstr);
 
 	if (part_ptr->qos_char) {

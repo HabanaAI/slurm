@@ -2422,6 +2422,10 @@ typedef struct topo_info_response_msg {
 	dynamic_plugin_data_t *topo_info;
 } topo_info_response_msg_t;
 
+typedef struct topo_config_response_msg {
+	char *config;
+} topo_config_response_msg_t;
+
 typedef struct job_alloc_info_msg {
 	uint32_t job_id;	/* job ID */
 	char    *req_cluster;   /* requesting cluster */
@@ -4490,12 +4494,28 @@ extern int slurm_load_topo(topo_info_response_msg_t **topo_info_msg_pptr,
 			   char *name);
 
 /*
+ * slurm_load_topo_config - issue RPC to get slurm topology configuration
+ *	information
+ * IN resp - place to store a node configuration pointer
+ * RET 0 or a slurm error code
+ * NOTE: free the response using slurm_free_topo_config_msg
+ */
+extern int slurm_load_topo_config(topo_config_response_msg_t **resp);
+
+/*
  * slurm_free_topo_info_msg - free the switch topology configuration
  *	information response message
  * IN msg - pointer to switch topology configuration response message
  * NOTE: buffer is loaded by slurm_load_topo.
  */
 extern void slurm_free_topo_info_msg(topo_info_response_msg_t *msg);
+
+/*
+ * slurm_free_topo_config_msg - free the topology configuration
+ *	information response message
+ * IN msg - pointer to topology configuration response message
+ */
+extern void slurm_free_topo_config_msg(topo_config_response_msg_t *msg);
 
 /*
  * slurm_free_topo_request_msg - free the topology configuration
@@ -4559,15 +4579,6 @@ extern int slurm_load_partitions2(time_t update_time,
  * NOTE: buffer is loaded by slurm_load_partitions
  */
 extern void slurm_free_partition_info_msg(partition_info_msg_t *part_info_ptr);
-
-/*
- * slurm_print_partition_info_msg - output information about all Slurm
- *	partitions based upon message as loaded using slurm_load_partitions
- * IN out - file to write to
- * IN part_info_ptr - partitions information message pointer
- * IN one_liner - print as a single line if true
- */
-extern void slurm_print_partition_info_msg(FILE *out, partition_info_msg_t *part_info_ptr, int one_liner);
 
 /*
  * slurm_print_partition_info - output information about a specific Slurm

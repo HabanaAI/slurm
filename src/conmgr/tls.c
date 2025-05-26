@@ -41,6 +41,7 @@
 #include "src/common/xmalloc.h"
 
 #include "src/conmgr/tls.h"
+#include "src/conmgr/tls_fingerprint.h"
 #include "src/conmgr/conmgr.h"
 #include "src/conmgr/mgr.h"
 
@@ -168,15 +169,14 @@ extern void tls_close(conmgr_callback_args_t conmgr_args, void *arg)
 		return;
 	}
 
-	log_flag(CONMGR, "%s: [%s] closing via tls_g_destroy_conn()",
+	log_flag(CONMGR, "%s: [%s] closing via tls_g_destroy()",
 		 __func__, con->name);
 
 	errno = SLURM_SUCCESS;
 	tls_g_destroy_conn(tls, false);
 	if ((rc = errno))
-		log_flag(CONMGR, "%s: [%s] tls_g_destroy_conn() failed: %s",
+		log_flag(CONMGR, "%s: [%s] tls_g_destroy() failed: %s",
 			 __func__, con->name, slurm_strerror(rc));
-
 
 	slurm_mutex_lock(&mgr.mutex);
 	xassert(tls == con->tls);
@@ -347,7 +347,15 @@ static int _send(void *io_context, const uint8_t *src, uint32_t len)
 	log_flag_hex(NET_RAW, src, len, "[%s] TLS send encrypted", con->name);
 
 	(void) memcpy(dst, src, len);
+
+	slurm_mutex_lock(&mgr.mutex);
+
 	list_append(con->tls_out, buf);
+
+	if (con_flag(con, FLAG_WATCH_WRITE_TIMEOUT))
+		con->last_write = timespec_now();
+
+	slurm_mutex_unlock(&mgr.mutex);
 
 	return len;
 }
@@ -376,7 +384,7 @@ static void _negotiate(conmgr_fd_t *con, void *tls)
 		slurm_mutex_unlock(&mgr.mutex);
 		return;
 	} else if (rc) {
-		log_flag(CONMGR, "%s: [%s] tls_g_negotiate_conn() failed: %s",
+		log_flag(CONMGR, "%s: [%s] tls_g_negotiate_tls() failed: %s",
 				 __func__, con->name, slurm_strerror(rc));
 		_wait_close(false, con);
 		return;
@@ -405,7 +413,7 @@ static void _negotiate(conmgr_fd_t *con, void *tls)
 extern void tls_create(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	conmgr_fd_t *con = conmgr_args.con;
-	tls_conn_args_t tls_args = {
+	conn_args_t tls_args = {
 		.input_fd = -1,
 		.output_fd = -1,
 		.defer_blinding = true,
@@ -421,7 +429,7 @@ extern void tls_create(conmgr_callback_args_t conmgr_args, void *arg)
 	buf_t *tls_in = NULL;
 	list_t *tls_out = NULL;
 
-	if (!tls_enabled()) {
+	if (!tls_available()) {
 		log_flag(CONMGR, "%s: [%s] TLS disabled: Unable to secure connection. Closing connection.",
 			 __func__, con->name);
 
@@ -523,7 +531,7 @@ extern void tls_create(conmgr_callback_args_t conmgr_args, void *arg)
 
 	if (!(tls = tls_g_create_conn(&tls_args))) {
 		rc = errno;
-		log_flag(CONMGR, "%s: [%s] tls_g_create_conn() failed: %s",
+		log_flag(CONMGR, "%s: [%s] tls_g_create() failed: %s",
 			 __func__, con->name, slurm_strerror(rc));
 
 		slurm_mutex_lock(&mgr.mutex);
@@ -540,7 +548,7 @@ extern void tls_create(conmgr_callback_args_t conmgr_args, void *arg)
 		FREE_NULL_BUFFER(tls_in);
 		FREE_NULL_LIST(tls_out);
 	} else {
-		log_flag(CONMGR, "%s: [%s] tls_g_create_conn() success",
+		log_flag(CONMGR, "%s: [%s] tls_g_create() success",
 			 __func__, con->name);
 
 		slurm_mutex_lock(&mgr.mutex);
@@ -560,7 +568,7 @@ extern void tls_create(conmgr_callback_args_t conmgr_args, void *arg)
 
 extern void tls_adopt(conmgr_fd_t *con, void *tls_conn)
 {
-	tls_conn_callbacks_t callbacks = {
+	conn_callbacks_t callbacks = {
 		.recv = _recv,
 		.send = _send,
 		.io_context = con,
@@ -777,7 +785,7 @@ extern int tls_extract(conmgr_fd_t *con, extract_fd_t *extract)
 
 	if ((rc = tls_g_set_conn_fds(con->tls, con->input_fd,
 				     con->output_fd))) {
-		log_flag(CONMGR, "%s: [%s] tls_g_set_conn_fds() failed: %s",
+		log_flag(CONMGR, "%s: [%s] tls_g_set_fds() failed: %s",
 			 __func__, con->name, slurm_strerror(rc));
 		close_con(true, con);
 		return rc;

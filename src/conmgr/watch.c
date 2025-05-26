@@ -65,8 +65,6 @@
 #include "src/conmgr/signals.h"
 #include "src/conmgr/tls.h"
 
-#include "src/interfaces/tls.h"
-
 /* Default watch() sleep to only 5 minutes */
 #define WATCH_DEFAULT_SLEEP    \
 	(timespec_t)           \
@@ -686,13 +684,8 @@ static int _handle_connection(conmgr_fd_t *con, handle_connection_args_t *args)
 		return 0;
 	}
 
-	if (con_flag(con, FLAG_TLS_WAIT_ON_CLOSE)) {
-		log_flag(CONMGR, "%s: [%s] waiting on delayed close of TLS connection",
-			 __func__, con->name);
-		return 0;
-	}
-
-	if ((con->input_fd < 0) && (con->output_fd < 0)) {
+	if (((con->input_fd < 0) && (con->output_fd < 0)) ||
+	    con_flag(con, FLAG_TLS_WAIT_ON_CLOSE)) {
 		xassert(con_flag(con, FLAG_READ_EOF));
 		/* connection already closed */
 	} else if (con_flag(con, FLAG_IS_CONNECTED)) {
@@ -807,6 +800,12 @@ static int _handle_connection(conmgr_fd_t *con, handle_connection_args_t *args)
 			xfree(flags);
 		}
 		con_set_polling(con, PCTL_TYPE_NONE, __func__);
+		return 0;
+	}
+
+	if (con_flag(con, FLAG_TLS_WAIT_ON_CLOSE)) {
+		log_flag(CONMGR, "%s: [%s] waiting on delayed close of TLS connection",
+			 __func__, con->name);
 		return 0;
 	}
 
@@ -1628,7 +1627,7 @@ static bool _watch_loop(void)
 {
 	if (mgr.shutdown_requested) {
 		signal_mgr_stop();
-		cancel_delayed_work();
+		cancel_delayed_work(false);
 		close_all_connections();
 	}
 
@@ -1640,6 +1639,9 @@ static bool _watch_loop(void)
 		 * quiesce timeout is enforced
 		 */
 		_quiesce_max_sleep();
+
+		/* Cancel any delayed connection work to avoid waiting on it */
+		cancel_delayed_work(true);
 
 		if (signal_mgr_has_incoming()) {
 			/*

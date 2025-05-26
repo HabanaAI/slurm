@@ -49,8 +49,8 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/conn.h"
 #include "src/interfaces/serializer.h"
-#include "src/interfaces/tls.h"
 
 #include "src/slurmctld/job_scheduler.h"
 #include "src/slurmctld/locks.h"
@@ -175,7 +175,7 @@ static void *_rpc_queue_worker(void *arg)
 			}
 			msg->flags |= CTLD_QUEUE_PROCESSING;
 			q->func(msg);
-			tls_g_destroy_conn(msg->tls_conn, true);
+			conn_g_destroy(msg->tls_conn, true);
 			msg->tls_conn = NULL;
 
 			END_TIMER;
@@ -194,7 +194,6 @@ static data_t *_load_config(void)
 	char *file = get_extra_conf_path("rpc_queue.yaml");
 	buf_t *buf = create_mmap_buf(file);
 	data_t *conf = NULL;
-	int rc = SLURM_SUCCESS;
 
 	if (!buf) {
 		debug("%s: could not load %s, ignoring", __func__, file);
@@ -202,8 +201,7 @@ static data_t *_load_config(void)
 		return NULL;
 	}
 
-	if ((rc = serializer_g_init(MIME_TYPE_YAML_PLUGIN, NULL)))
-		fatal("YAML plugin loading failed: %s", slurm_strerror(rc));
+	serializer_required(MIME_TYPE_YAML);
 
 	if (serialize_g_string_to_data(&conf, buf->head, buf->size,
 				       MIME_TYPE_YAML))
@@ -258,6 +256,9 @@ static void _apply_config(data_t *conf, slurmctld_rpc_t *q)
 		}
 	}
 
+	if ((field = data_key_get(settings, "rl_exempt")))
+		(void) data_get_bool_converted(field, &q->rl_exempt);
+
 	if ((field = data_key_get(settings, "hard_drop")))
 		(void) data_get_bool_converted(field, &q->hard_drop);
 
@@ -296,16 +297,19 @@ extern void rpc_queue_init(void)
 	conf = _load_config();
 
 	for (slurmctld_rpc_t *q = slurmctld_rpcs; q->msg_type; q++) {
-		if (!q->queue_enabled)
-			continue;
-
+		bool was_enabled = q->queue_enabled;
 		q->msg_name = rpc_num2string(q->msg_type);
 
 		_apply_config(conf, q);
 
 		/* config may have disabled this queue, check again */
 		if (!q->queue_enabled) {
-			verbose("disabled rpc_queue for %s", q->msg_name);
+			if (was_enabled)
+				verbose("disabled rpc_queue for %s",
+					q->msg_name);
+			else if (q->rl_exempt)
+				verbose("disabled rate limiting for %s",
+					q->msg_name);
 			continue;
 		}
 

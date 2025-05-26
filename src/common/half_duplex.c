@@ -46,10 +46,12 @@
 
 static bool _half_duplex_readable(eio_obj_t *obj);
 static int _half_duplex(eio_obj_t *obj, list_t *objs);
+static int _cleanup_sockets(eio_obj_t *obj, list_t *objs, list_t *del_objs);
 
 struct io_operations half_duplex_ops = {
 	.readable = _half_duplex_readable,
 	.handle_read = _half_duplex,
+	.handle_cleanup = _cleanup_sockets,
 };
 
 typedef struct {
@@ -85,7 +87,7 @@ extern int half_duplex_add_objs_to_handle(eio_handle_t *eio_handle,
 		/*
 		 * Ensure that both eio objects point to the same place in
 		 * memory for the remote TLS connection. This way, we avoid
-		 * calling tls_g_destroy_conn() twice.
+		 * calling conn_g_destroy() twice.
 		 *
 		 * Because eio_handle_mainloop loops over both eio objects in
 		 * the same thread, we don't have to worry about concurrency
@@ -96,7 +98,7 @@ extern int half_duplex_add_objs_to_handle(eio_handle_t *eio_handle,
 		remote_arg->tls_conn_in = tls_conn_ptr;
 
 		/*
-		 * if fd is blocking, tls_g_recv will want to block until the
+		 * if fd is blocking, conn_g_recv will want to block until the
 		 * entire buffer size is read (similar to safe_read). For eio,
 		 * we just want to get whatever data is on the line, and forward
 		 * it.
@@ -104,11 +106,11 @@ extern int half_duplex_add_objs_to_handle(eio_handle_t *eio_handle,
 		fd_set_nonblocking(*remote_fd);
 
 		/*
-		 * Peer will be waiting on tls_g_recv(), and they will need to
+		 * Peer will be waiting on conn_g_recv(), and they will need to
 		 * know if connection was intentionally closed or if an error
 		 * occurred.
 		 */
-		tls_g_set_graceful_shutdown(tls_conn, true);
+		conn_g_set_graceful_shutdown(tls_conn, true);
 	}
 
 	eio_new_obj(eio_handle, local_to_remote_eio);
@@ -126,8 +128,10 @@ static bool _half_duplex_readable(eio_obj_t *obj)
 
 		if (fd_out) {
 			if (tls_conn_out && *tls_conn_out) {
-				tls_g_destroy_conn(*tls_conn_out, false);
+				conn_g_destroy(*tls_conn_out, false);
 				*tls_conn_out = NULL;
+			} else if (tls_conn_out) {
+				xfree(tls_conn_out);
 			}
 			shutdown(*fd_out, SHUT_WR);
 			xfree(fd_out);
@@ -154,7 +158,7 @@ static int _half_duplex(eio_obj_t *obj, list_t *objs)
 		goto shutdown;
 
 	if (tls_conn_in && *tls_conn_in) {
-		in = tls_g_recv(*tls_conn_in, buf, sizeof(buf));
+		in = conn_g_recv(*tls_conn_in, buf, sizeof(buf));
 	} else {
 		in = read(obj->fd, buf, sizeof(buf));
 	}
@@ -169,7 +173,7 @@ static int _half_duplex(eio_obj_t *obj, list_t *objs)
 
 	while (wr < in) {
 		if (tls_conn_out && *tls_conn_out) {
-			out = tls_g_send(*tls_conn_out, buf, in - wr);
+			out = conn_g_send(*tls_conn_out, buf, in - wr);
 		} else {
 			out = write(*fd_out, buf, in - wr);
 		}
@@ -184,21 +188,36 @@ static int _half_duplex(eio_obj_t *obj, list_t *objs)
 shutdown:
 	obj->shutdown = true;
 	if (tls_conn_in && *tls_conn_in) {
-		tls_g_destroy_conn(*tls_conn_in, false);
+		conn_g_destroy(*tls_conn_in, false);
 		*tls_conn_in = NULL;
 	}
 	shutdown(obj->fd, SHUT_RD);
-	close(obj->fd);
-	obj->fd = -1;
 	if (fd_out) {
 		if (tls_conn_out && *tls_conn_out) {
-			tls_g_destroy_conn(*tls_conn_out, false);
+			conn_g_destroy(*tls_conn_out, false);
 			*tls_conn_out = NULL;
+		} else if (tls_conn_out) {
+			xfree(tls_conn_out);
 		}
 		shutdown(*fd_out, SHUT_WR);
 		xfree(fd_out);
 		xfree(obj->arg);
 	}
-	eio_remove_obj(obj, objs);
+	return 0;
+}
+
+static int _cleanup_sockets(eio_obj_t *obj, list_t *objs, list_t *del_objs)
+{
+	eio_obj_t *e;
+
+	if (obj->shutdown) {
+		e = eio_obj_create(obj->fd, obj->ops, obj->arg);
+		e->close_time = time(NULL);
+		list_enqueue(del_objs, e);
+		eio_remove_obj(obj, objs);
+	} else {
+		eio_remove_obj(obj, del_objs);
+	}
+
 	return 0;
 }

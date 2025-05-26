@@ -194,7 +194,7 @@ typedef struct diag_stats {
 	uint32_t jobs_canceled;
 	uint32_t jobs_failed;
 
-	uint32_t job_states_ts;
+	time_t job_states_ts;
 	uint32_t jobs_pending;
 	uint32_t jobs_running;
 
@@ -1573,7 +1573,7 @@ void purge_old_job(void);
 extern void free_old_jobs(void);
 
 /* Convert a comma delimited list of QOS names into a bitmap */
-extern void qos_list_build(char *qos, bitstr_t **qos_bits);
+extern void qos_list_build(char *qos, bool locked, bitstr_t **qos_bits);
 
 /* Request that the job scheduler execute soon (typically within seconds) */
 extern void queue_job_scheduler(void);

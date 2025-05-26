@@ -4199,6 +4199,8 @@ _pack_slurm_ctl_conf_msg(slurm_ctl_conf_info_msg_t * build_ptr, buf_t *buffer,
 		packstr(build_ptr->bb_type, buffer);
 		packstr(build_ptr->bcast_exclude, buffer);
 		packstr(build_ptr->bcast_parameters, buffer);
+		packstr(build_ptr->certmgr_params, buffer);
+		packstr(build_ptr->certmgr_type, buffer);
 
 		pack_key_pair_list(build_ptr->cgroup_conf, protocol_version,
 		                   buffer);
@@ -4415,6 +4417,7 @@ _pack_slurm_ctl_conf_msg(slurm_ctl_conf_info_msg_t * build_ptr, buf_t *buffer,
 		packstr(build_ptr->task_plugin, buffer);
 		pack32(build_ptr->task_plugin_param, buffer);
 		pack16(build_ptr->tcp_timeout, buffer);
+		packstr(build_ptr->tls_params, buffer);
 		packstr(build_ptr->tls_type, buffer);
 		packstr(build_ptr->tmp_fs, buffer);
 		packstr(build_ptr->topology_param, buffer);
@@ -4563,6 +4566,7 @@ _pack_slurm_ctl_conf_msg(slurm_ctl_conf_info_msg_t * build_ptr, buf_t *buffer,
 		                               protocol_version, buffer);
 
 		packstr(build_ptr->node_features_plugins, buffer);
+		packnull(buffer); /* was node_prefix */
 
 		pack16(build_ptr->over_time_limit, buffer);
 
@@ -5280,6 +5284,8 @@ _unpack_slurm_ctl_conf_msg(slurm_ctl_conf_info_msg_t **build_buffer_ptr,
 		safe_unpackstr(&build_ptr->bb_type, buffer);
 		safe_unpackstr(&build_ptr->bcast_exclude, buffer);
 		safe_unpackstr(&build_ptr->bcast_parameters, buffer);
+		safe_unpackstr(&build_ptr->certmgr_params, buffer);
+		safe_unpackstr(&build_ptr->certmgr_type, buffer);
 
 		if (unpack_key_pair_list(&build_ptr->cgroup_conf,
 		                         protocol_version, buffer)
@@ -5511,6 +5517,7 @@ _unpack_slurm_ctl_conf_msg(slurm_ctl_conf_info_msg_t **build_buffer_ptr,
 		safe_unpackstr(&build_ptr->task_plugin, buffer);
 		safe_unpack32(&build_ptr->task_plugin_param, buffer);
 		safe_unpack16(&build_ptr->tcp_timeout, buffer);
+		safe_unpackstr(&build_ptr->tls_params, buffer);
 		safe_unpackstr(&build_ptr->tls_type, buffer);
 		safe_unpackstr(&build_ptr->tmp_fs, buffer);
 		safe_unpackstr(&build_ptr->topology_param, buffer);
@@ -13058,6 +13065,33 @@ unpack_error:
 	return SLURM_ERROR;
 }
 
+static void _pack_topo_config_msg(const slurm_msg_t *smsg, buf_t *buffer)
+{
+	topo_config_response_msg_t *msg = smsg->data;
+
+	if (smsg->protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		packstr(msg->config, buffer);
+	}
+}
+
+static int _unpack_topo_config_msg(slurm_msg_t *smsg, buf_t *buffer)
+{
+	topo_config_response_msg_t *msg = xmalloc(sizeof(*msg));
+
+	smsg->data = msg;
+
+	if (smsg->protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+		safe_unpackstr(&msg->config, buffer);
+	}
+
+	return SLURM_SUCCESS;
+
+unpack_error:
+	slurm_free_topo_config_msg(msg);
+	smsg->data = NULL;
+	return SLURM_ERROR;
+}
+
 static void _pack_stats_request_msg(stats_info_request_msg_t *msg, buf_t *buffer,
 				    uint16_t protocol_version)
 {
@@ -13346,9 +13380,11 @@ static int _unpack_license_info_msg(license_info_msg_t **msg_ptr,
 			/* The total number of licenses can decrease
 			 * at runtime.
 			 */
-			if (msg->lic_array[i].total <
-			    (msg->lic_array[i].in_use +
-			     msg->lic_array[i].last_deficit))
+			if (msg->lic_array[i].total == INFINITE)
+				msg->lic_array[i].available = INFINITE;
+			else if (msg->lic_array[i].total <
+				 (msg->lic_array[i].in_use +
+				  msg->lic_array[i].last_deficit))
 				msg->lic_array[i].available = 0;
 			else
 				msg->lic_array[i].available =
@@ -14436,6 +14472,7 @@ pack_msg(slurm_msg_t *msg, buf_t *buffer)
 	case REQUEST_CONTAINER_START:
 	case REQUEST_CONTAINER_STATE:
 	case REQUEST_CONTAINER_PTY:
+	case REQUEST_TOPO_CONFIG:
 		/* Message contains no body/information */
 		break;
 	case REQUEST_ACCT_GATHER_ENERGY:
@@ -14826,6 +14863,9 @@ pack_msg(slurm_msg_t *msg, buf_t *buffer)
 			(topo_info_response_msg_t *)msg->data, buffer,
 			msg->protocol_version);
 		break;
+	case RESPONSE_TOPO_CONFIG:
+		_pack_topo_config_msg(msg, buffer);
+		break;
 	case RESPONSE_JOB_SBCAST_CRED:
 		_pack_job_sbcast_cred_msg(msg, buffer);
 		break;
@@ -15100,6 +15140,7 @@ unpack_msg(slurm_msg_t * msg, buf_t *buffer)
 	case REQUEST_CONTAINER_START:
 	case REQUEST_CONTAINER_STATE:
 	case REQUEST_CONTAINER_PTY:
+	case REQUEST_TOPO_CONFIG:
 		/* Message contains no body/information */
 		break;
 	case REQUEST_ACCT_GATHER_ENERGY:
@@ -15524,6 +15565,9 @@ unpack_msg(slurm_msg_t * msg, buf_t *buffer)
 		rc = _unpack_topo_info_msg(
 			(topo_info_response_msg_t **)&msg->data, buffer,
 			msg->protocol_version);
+		break;
+	case RESPONSE_TOPO_CONFIG:
+		rc = _unpack_topo_config_msg(msg, buffer);
 		break;
 	case RESPONSE_JOB_SBCAST_CRED:
 		rc = _unpack_job_sbcast_cred_msg(msg, buffer);

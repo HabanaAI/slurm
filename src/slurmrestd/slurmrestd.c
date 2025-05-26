@@ -367,8 +367,7 @@ static void dump_spec(int argc, char **argv)
 		      slurm_conf_filename, slurm_strerror(rc));
 	}
 
-	if (serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL))
-		fatal("Unable to initialize JSON serializer");
+	serializer_required(MIME_TYPE_JSON);
 
 	if (!(parsers = data_parser_g_new_array(NULL, NULL, NULL, NULL, NULL,
 						NULL, NULL, NULL,
@@ -719,15 +718,26 @@ int main(int argc, char **argv)
 	_check_user();
 
 	/* Load serializers if they are present */
-	(void) serializer_g_init(MIME_TYPE_JSON_PLUGIN,
-				 getenv("SLURMRESTD_JSON"));
-	(void) serializer_g_init(MIME_TYPE_YAML_PLUGIN,
-				 getenv("SLURMRESTD_YAML"));
-	(void) serializer_g_init(MIME_TYPE_URL_ENCODED_PLUGIN, NULL);
+	serializer_required(MIME_TYPE_JSON);
+	if (getenv("SLURMRESTD_YAML"))
+		serializer_required(MIME_TYPE_YAML);
+	serializer_required(MIME_TYPE_URL_ENCODED);
 
 	/* This checks if slurmrestd is running in inetd mode */
 	conmgr_init((run_mode.listen ? thread_count : CONMGR_THREAD_COUNT_MIN),
 		    max_connections, callbacks);
+
+	/*
+	 * Check if TLS is available after conmgr_init() as it will attempt to
+	 * load the TLS plugin. If the TLS plugin fails to load the slurmrestd
+	 * daemon certificate, then unload the TLS plugin to avoid
+	 * tls_available() returning true but TLS not being possible.
+	 */
+	if (tls_available() && (rc = tls_g_load_own_cert(NULL, 0, NULL, 0))) {
+		warning("Disabling TLS support due to failure loading TLS certificate: %s",
+			slurm_strerror(rc));
+		(void) tls_g_fini();
+	}
 
 	conmgr_add_work_signal(SIGINT, _on_signal_interrupt, NULL);
 	conmgr_add_work_signal(SIGPIPE, _sigpipe_handler, NULL);
@@ -870,7 +880,7 @@ int main(int argc, char **argv)
 	acct_storage_g_fini();
 	slurm_fini();
 	hash_g_fini();
-	tls_g_fini();
+	conn_g_fini();
 	cred_g_fini();
 	auth_g_fini();
 	log_fini();

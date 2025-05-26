@@ -114,7 +114,7 @@ static void _prepare_run_dir(const char *subdir, bool slurm_user)
 		if (statbuf.st_uid != uid) {
 			if (statbuf.st_uid)
 				fatal("%s: /run/%s exists but is owned by %u",
-				      __func__, subdir, uid);
+				      __func__, subdir, statbuf.st_uid);
 			warning("%s: /run/%s exists but is owned by %u, not %s",
 				__func__, subdir, statbuf.st_uid, user);
 		}
@@ -282,6 +282,7 @@ extern void init_sack_conmgr(void)
 		if ((sack_fd = atoi(env_fd)) < 0)
 			fatal("%s: Invalid %s=%s environment variable",
 			      __func__, SACK_RECONFIG_ENV, env_fd);
+		unsetenv(SACK_RECONFIG_ENV);
 	} else {
 		char *runtime_dir = NULL, *runtime_socket = NULL;
 		slurm_addr_t addr = {0};
@@ -293,7 +294,8 @@ extern void init_sack_conmgr(void)
 		} else if (running_in_slurmdbd()) {
 			_prepare_run_dir("slurmdbd", true);
 			path = SLURMDBD_SACK_SOCKET;
-		} else if ((runtime_dir = getenv("RUNTIME_DIRECTORY"))) {
+		} else if (running_in_sackd() &&
+			   (runtime_dir = getenv("RUNTIME_DIRECTORY"))) {
 			if (!valid_runtime_directory(runtime_dir))
 				fatal("%s: Invalid RUNTIME_DIRECTORY=%s environment variable",
 				      __func__, runtime_dir);
@@ -346,13 +348,13 @@ extern void init_sack_conmgr(void)
 	 * We do not need to call conmgr_run() here since only the daemons
 	 * get here, and all the daemons call conmgr_run() separately.
 	 */
-
-	/* Prepare for reconfigure */
-	setenvf(NULL, SACK_RECONFIG_ENV, "%d", sack_fd);
-	fd_set_noclose_on_exec(sack_fd);
 }
 
 extern int auth_p_get_reconfig_fd(void)
 {
+	/* Prepare for reconfigure */
+	setenvf(NULL, SACK_RECONFIG_ENV, "%d", sack_fd);
+	fd_set_noclose_on_exec(sack_fd);
+
 	return sack_fd;
 }

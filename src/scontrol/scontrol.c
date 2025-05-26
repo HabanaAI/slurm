@@ -246,15 +246,13 @@ int main(int argc, char **argv)
 			mime_type = MIME_TYPE_JSON;
 			data_parser = optarg;
 			detail_flag = 1;
-			if (serializer_g_init(MIME_TYPE_JSON_PLUGIN, NULL))
-				fatal("JSON plugin load failure");
+			serializer_required(MIME_TYPE_JSON);
 			break;
 		case OPT_LONG_YAML :
 			mime_type = MIME_TYPE_YAML;
 			data_parser = optarg;
 			detail_flag = 1;
-			if (serializer_g_init(MIME_TYPE_YAML_PLUGIN, NULL))
-				fatal("YAML plugin load failure");
+			serializer_required(MIME_TYPE_YAML);
 			break;
 		default:
 			exit_code = 1;
@@ -1837,6 +1835,8 @@ static void _show_it(int argc, char **argv)
 		_print_slurmd (val);
 	} else if (xstrncasecmp(tag, "steps", MAX(tag_len, 2)) == 0) {
 		scontrol_print_step(val, argc, argv);
+	} else if (!xstrncasecmp(tag, "topoconf", MAX(tag_len, 5))) {
+		scontrol_print_topo_conf();
 	} else if (xstrncasecmp(tag, "topology", MAX(tag_len, 1)) == 0) {
 		if (val && ((argc < 3) || val != argv[2]))
 			scontrol_print_topo((argc > 2 ? argv[2] : NULL), val);
@@ -1845,7 +1845,6 @@ static void _show_it(int argc, char **argv)
 	} else {
 		_printf_error("invalid entity:%s for keyword:%s", tag, argv[0]);
 	}
-
 }
 
 

@@ -3888,6 +3888,7 @@ function __scontrol_show() {
 		"reservations"
 		"slurmd"
 		"steps"
+		"topoconf"
 		"topology"
 	)
 	local subcmd
@@ -4022,6 +4023,7 @@ function __scontrol_update_jobid() {
 		"minmemorycpu="
 		"minmemorynode="
 		"mintmpdisknode="
+		"mcslabel="
 		"name="
 		"nice="
 		"nodelist="

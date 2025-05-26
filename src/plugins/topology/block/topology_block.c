@@ -148,10 +148,11 @@ extern int fini(void)
 }
 
 extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
-				  void *tctx)
+				  topology_ctx_t *tctx)
 {
-	block_context_t *ctx = tctx;
-	int *change = xcalloc(ctx->block_count, sizeof(int));
+	block_context_t *ctx = tctx->plugin_ctx;
+	int *change =
+		xcalloc(ctx->block_count + ctx->ablock_count, sizeof(int));
 
 	bit_clear(ctx->blocks_nodes_bitmap, node_ptr->index);
 
@@ -186,11 +187,17 @@ extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 		ctx->block_record_table[i].nodes =
 			bitmap2node_name(ctx->block_record_table[i]
 						 .node_bitmap);
+		block_record_update_block_config(tctx, i);
 
 		for (int j = ctx->block_count;
 		     j < ctx->block_count + ctx->ablock_count; j++) {
 			char *tmp_list = ctx->block_record_table[j].name;
-			hostlist_t *hl = hostlist_create(tmp_list);
+			hostlist_t *hl = NULL;
+
+			if (change[j])
+				continue;
+
+			hl = hostlist_create(tmp_list);
 
 			if (hl == NULL)
 				fatal("Invalid BlockName: %s", tmp_list);
@@ -202,6 +209,7 @@ extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 					bit_set(ctx->block_record_table[j]
 							.node_bitmap,
 						node_ptr->index);
+					change[j] = 1;
 				} else {
 					bit_clear(ctx->block_record_table[j]
 							  .node_bitmap,

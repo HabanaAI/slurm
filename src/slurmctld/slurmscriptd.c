@@ -114,6 +114,7 @@ typedef struct {
 	char *key;
 	pthread_mutex_t mutex;
 	int rc;
+	bool received_response;
 	char *resp_msg;
 	bool track_script_signalled;
 } script_response_t;
@@ -209,15 +210,17 @@ static void _wait_for_script_resp(script_response_t *script_resp,
 				  int *status, char **resp_msg,
 				  bool *track_script_signalled)
 {
-	slurm_mutex_lock(&script_resp->mutex);
-	slurm_cond_wait(&script_resp->cond, &script_resp->mutex);
+	/* script_resp->mutex should already be locked */
+	/* Loop to handle spurious wakeups */
+	while (!script_resp->received_response) {
+		slurm_cond_wait(&script_resp->cond, &script_resp->mutex);
+	}
 	/* The script is done now, and we should have the response */
 	*status = script_resp->rc;
 	if (resp_msg)
 		*resp_msg = xstrdup(script_resp->resp_msg);
 	if (track_script_signalled)
 		*track_script_signalled = script_resp->track_script_signalled;
-	slurm_mutex_unlock(&script_resp->mutex);
 }
 
 static void _wait_for_powersave_scripts()
@@ -390,10 +393,16 @@ static int _send_to_slurmscriptd(uint32_t msg_type, void *msg_data, bool wait,
 	}
 	if (msg_type == SLURMSCRIPTD_REQUEST_RUN_SCRIPT)
 		_incr_script_cnt();
+
+	if (wait)
+		slurm_mutex_lock(&script_resp->mutex);
 	rc = _write_msg(slurmctld_writefd, msg.msg_type, buffer, true);
 
 	if ((rc == SLURM_SUCCESS) && wait) {
 		_wait_for_script_resp(script_resp, &rc, resp_msg, signalled);
+	}
+	if (wait) {
+		slurm_mutex_unlock(&script_resp->mutex);
 		_script_resp_map_remove(script_resp->key);
 	}
 
@@ -833,11 +842,12 @@ static int _notify_script_done(char *key, script_complete_t *script_complete)
 		      script_complete->script_name, key);
 		rc = SLURM_ERROR;
 	} else {
+		slurm_mutex_lock(&script_resp->mutex);
+		script_resp->received_response = true;
 		script_resp->resp_msg = xstrdup(script_complete->resp_msg);
 		script_resp->rc = script_complete->status;
 		script_resp->track_script_signalled =
 			script_complete->signalled;
-		slurm_mutex_lock(&script_resp->mutex);
 		slurm_cond_signal(&script_resp->cond);
 		slurm_mutex_unlock(&script_resp->mutex);
 	}

@@ -69,6 +69,7 @@
 #include "src/interfaces/acct_gather_profile.h"
 #include "src/interfaces/auth.h"
 #include "src/interfaces/cgroup.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/gpu.h"
 #include "src/interfaces/gres.h"
 #include "src/interfaces/hash.h"
@@ -80,7 +81,6 @@
 #include "src/interfaces/select.h"
 #include "src/interfaces/switch.h"
 #include "src/interfaces/task.h"
-#include "src/interfaces/tls.h"
 #include "src/interfaces/topology.h"
 
 #include "src/slurmd/common/privileges.h"
@@ -492,10 +492,18 @@ extern void stepd_cleanup(slurm_msg_t *msg, stepd_step_rec_t *step,
 		goto done;
 	}
 
-	if (!only_mem) {
-		if (step->batch)
-			batch_finish(step, rc); /* sends batch complete message */
+	if (!only_mem && step->batch)
+		batch_finish(step, rc); /* sends batch complete message */
 
+	/*
+	 * Call auth_setuid_lock after sending the batch_finish message as in
+	 * there the auth_g_create function is called, and that function uses
+	 * the lock. The lock is needed to ensure that the privileges are not
+	 * dropped from a different thread, like X11 shutdown thread.
+	 */
+	auth_setuid_lock();
+
+	if (!only_mem) {
 		/* signal the message thread to shutdown, and wait for it */
 		if (step->msg_handle)
 			eio_signal_shutdown(step->msg_handle);
@@ -519,6 +527,7 @@ extern void stepd_cleanup(slurm_msg_t *msg, stepd_step_rec_t *step,
 			      step->step_id.job_id);
 	}
 
+	auth_setuid_unlock();
 	run_command_shutdown();
 
 	/*
@@ -1035,7 +1044,7 @@ _init_from_slurmd(int sock, char **argv, slurm_addr_t **_cli,
 	 * Init all plugins after receiving the slurm.conf from the slurmd.
 	 */
 	if ((auth_g_init() != SLURM_SUCCESS) ||
-	    (tls_g_init() != SLURM_SUCCESS) ||
+	    (conn_g_init() != SLURM_SUCCESS) ||
 	    (cgroup_g_init() != SLURM_SUCCESS) ||
 	    (hash_g_init() != SLURM_SUCCESS) ||
 	    (acct_gather_conf_init() != SLURM_SUCCESS) ||

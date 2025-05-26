@@ -42,6 +42,7 @@
 #include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 
 #include "slurm/slurm_errno.h"
 
@@ -54,7 +55,7 @@
 #include "src/common/xstring.h"
 #include "src/common/xsignal.h"
 
-#include "src/interfaces/tls.h"
+#include "src/interfaces/conn.h"
 
 #include "opt.h"
 #include "srun_job.h"
@@ -144,6 +145,7 @@ static void *_pty_thread(void *arg)
 	int fd = -1;
 	srun_job_t *job = (srun_job_t *) arg;
 	slurm_addr_t client_addr;
+	struct termios term;
 
 	xsignal_unblock(pty_sigarray);
 	xsignal(SIGWINCH, _handle_sigwinch);
@@ -153,7 +155,12 @@ static void *_pty_thread(void *arg)
 		return NULL;
 	}
 
-	fd = tls_g_get_conn_fd(tls_conn);
+	/* Set raw mode on local tty once slurmstepd has connected */
+	tcgetattr(job->input_fd, &term);
+	cfmakeraw(&term);
+	tcsetattr(job->input_fd, TCSANOW, &term);
+
+	fd = conn_g_get_fd(tls_conn);
 
 	net_set_keep_alive(fd);
 	while (job->state <= SRUN_JOB_RUNNING) {
@@ -169,6 +176,6 @@ static void *_pty_thread(void *arg)
 		winch = 0;
 	}
 
-	tls_g_destroy_conn(tls_conn, true);
+	conn_g_destroy(tls_conn, true);
 	return NULL;
 }

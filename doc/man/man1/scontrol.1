@@ -1,4 +1,4 @@
-.TH scontrol "1" "Slurm Commands" "March 2025" "Slurm Commands"
+.TH scontrol "1" "Slurm Commands" "May 2025" "Slurm Commands"
 
 .SH "NAME"
 scontrol \- view or modify Slurm configuration and state.
@@ -635,6 +635,13 @@ the given container-id will be displayed.
 .IP
 
 .TP
+\fBtopoconf\fR
+Displays running configurations of multiple topologies in the same format as
+\fItopology.yaml\fR.
+.RE
+.IP
+
+.TP
 \fBtopology\fR[=topology_name] [unit|node_name]
 Displays information about the selected topology layout. If a unit is
 specified, information about that unit will be shown.
@@ -1054,7 +1061,8 @@ Value may be cleared with blank data value, for example "Features=".
 
 .TP
 \fBGres\fR=<\fIlist\fR>
-Specifies a comma\-delimited list of generic consumable resources.
+Specifies a comma\-delimited list of generic consumable resources requested per
+node.
 The format of each entry on the list is "name[:count[*cpu]]".
 The name is that of the consumable resource.
 The count is the number of those resources with a default value of 1.
@@ -1102,6 +1110,12 @@ the job array.
 \fBMailUser\fR=<\fIname\fR>
 Set the user to receive email notification of state changes. A blank string
 will set the mail user to the default which is the submitting user.
+.IP
+
+.TP
+\fBMCSLabel\fR=<\fIname\fR>
+Set the MCS label for the job, which will take effect only if a MCS plugin
+is loaded in slurmctld.
 .IP
 
 .TP
@@ -1638,6 +1652,11 @@ active (i.e. remove them from \fIActiveFeatures\fP first).
 .IP
 
 .TP
+\fBCertToken\fR=<\fItoken\fR>
+Unique token string used by certmgr plugin interface to validate node identity.
+.IP
+
+.TP
 \fBComment\fR=<\fIcomment\fR>
 Arbitrary descriptive string.
 Use quotes to enclose a comment having more than one word
@@ -1814,6 +1833,9 @@ Cray systems. Use Cray tools such as \fIxtprocadmin\fR instead.
 
 .TP
 \fBTopology\fR=<\fItopology_name\fR>:<\fItopology_unit\fR>[,<\fItopology_name\fR>:<\fItopology_unit\fR>,...]
+Where <\fItopology_unit\fR> is the block name or the name of a leaf switch.
+Intermediate switch names -- ':' delimited -- can be provided and will be
+created if needed (e.g. Topology=topo-tree:sw_root:s1:s2).
 This configuration overrides node topology affiliation settings from
 \fItopology.conf\fR and \fItopology.yaml\fR.
 .IP
@@ -2845,6 +2867,10 @@ the reservation is created with explicitly requested nodes.
 
 Note that if GRES is requested those GRES must be TRES listed in
 AccountingStorageTRES to be valid.
+
+.br
+\fBNOTE\fR: Reservations will automatically attempt to enforce binding on GRES.
+Multiple GRES cannot be reserved across multiple sockets.
 .IP
 
 .TP

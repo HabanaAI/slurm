@@ -77,6 +77,7 @@
 #include "src/interfaces/burst_buffer.h"
 #include "src/interfaces/certmgr.h"
 #include "src/interfaces/cgroup.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/cred.h"
 #include "src/interfaces/gres.h"
 #include "src/interfaces/jobacct_gather.h"
@@ -89,7 +90,6 @@
 #include "src/interfaces/sched_plugin.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/switch.h"
-#include "src/interfaces/tls.h"
 #include "src/interfaces/topology.h"
 
 #include "src/slurmctld/acct_policy.h"
@@ -303,6 +303,8 @@ static void _fill_ctld_conf(slurm_conf_t *conf_ptr)
 	conf_ptr->bb_type             = xstrdup(conf->bb_type);
 	conf_ptr->bcast_exclude       = xstrdup(conf->bcast_exclude);
 	conf_ptr->bcast_parameters = xstrdup(conf->bcast_parameters);
+	conf_ptr->certmgr_params = xstrdup(conf->certmgr_params);
+	conf_ptr->certmgr_type = xstrdup(conf->certmgr_type);
 
 
 	if (xstrstr(conf->job_acct_gather_type, "cgroup") ||
@@ -539,6 +541,7 @@ static void _fill_ctld_conf(slurm_conf_t *conf_ptr)
 	conf_ptr->task_plugin         = xstrdup(conf->task_plugin);
 	conf_ptr->task_plugin_param   = conf->task_plugin_param;
 	conf_ptr->tcp_timeout         = conf->tcp_timeout;
+	conf_ptr->tls_params = xstrdup(conf->tls_params);
 	conf_ptr->tls_type = xstrdup(conf->tls_type);
 	conf_ptr->tmp_fs              = xstrdup(conf->tmp_fs);
 	conf_ptr->topology_param      = xstrdup(conf->topology_param);
@@ -2548,6 +2551,33 @@ static int _find_avail_future_node(slurm_msg_t *msg)
 			node_ptr->last_response = now;
 			node_ptr->last_busy = now;
 
+			/*
+			 * When 24.11 is no longer supported, remove this if
+			 * block.
+			 */
+			if (msg->protocol_version <=
+			    SLURM_24_11_PROTOCOL_VERSION) {
+				/*
+				 * As we don't validate the node specs until the
+				 * 2nd registration RPC, and slurmd only sends
+				 * instance-like attributes in the 1st
+				 * registration RPC of its lifetime, we need to
+				 * store these values here.
+				 */
+				if (reg_msg->instance_id) {
+					xfree(node_ptr->instance_id);
+					if (reg_msg->instance_id[0])
+						node_ptr->instance_id =
+							xstrdup(reg_msg->instance_id);
+				}
+				if (reg_msg->instance_type) {
+					xfree(node_ptr->instance_type);
+					if (reg_msg->instance_type[0])
+						node_ptr->instance_type =
+							xstrdup(reg_msg->instance_type);
+				}
+			}
+
 			bit_clear(future_node_bitmap, node_ptr->index);
 			xfree(comm_name);
 
@@ -3117,7 +3147,7 @@ static void _slurm_rpc_reconfigure_controller(slurm_msg_t *msg)
 		error("Security violation, RECONFIGURE RPC from uid=%u",
 		      msg->auth_uid);
 		slurm_send_rc_msg(msg, ESLURM_USER_ID_MISSING);
-		tls_g_destroy_conn(msg->tls_conn, true);
+		conn_g_destroy(msg->tls_conn, true);
 		msg->tls_conn = NULL;
 		slurm_free_msg(msg);
 		return;
@@ -4887,6 +4917,25 @@ static void _slurm_rpc_get_topo(slurm_msg_t *msg)
 	slurm_free_topo_info_msg(topo_resp_msg);
 }
 
+static void _slurm_rpc_get_topo_config(slurm_msg_t *msg)
+{
+	topo_config_response_msg_t *topo_resp_msg;
+	slurmctld_lock_t node_read_lock = {
+		.node = READ_LOCK,
+	};
+	DEF_TIMERS;
+
+	topo_resp_msg = xmalloc(sizeof(*topo_resp_msg));
+	START_TIMER;
+	lock_slurmctld(node_read_lock);
+	topo_resp_msg->config = topology_g_get_config();
+	unlock_slurmctld(node_read_lock);
+	END_TIMER2(__func__);
+
+	(void) send_msg_response(msg, RESPONSE_TOPO_CONFIG, topo_resp_msg);
+	slurm_free_topo_config_msg(topo_resp_msg);
+}
+
 static void _slurm_rpc_job_notify(slurm_msg_t *msg)
 {
 	int error_code;
@@ -5896,7 +5945,7 @@ static void _slurm_rpc_persist_init(slurm_msg_t *msg)
 	persist_conn->rem_port = persist_init->port;
 
 	persist_conn->rem_host = xmalloc(INET6_ADDRSTRLEN);
-	(void) slurm_get_peer_addr(tls_g_get_conn_fd(persist_conn->tls_conn),
+	(void) slurm_get_peer_addr(conn_g_get_fd(persist_conn->tls_conn),
 				   &rem_addr);
 	slurm_get_ip_str(&rem_addr, persist_conn->rem_host, INET6_ADDRSTRLEN);
 
@@ -5915,8 +5964,8 @@ static void _slurm_rpc_persist_init(slurm_msg_t *msg)
 	else if (persist_init->persist_type == PERSIST_TYPE_ACCT_UPDATE) {
 		persist_conn->flags |= PERSIST_FLAG_ALREADY_INITED;
 		slurm_persist_conn_recv_thread_init(
-			persist_conn, tls_g_get_conn_fd(persist_conn->tls_conn),
-			-1, persist_conn);
+			persist_conn, conn_g_get_fd(persist_conn->tls_conn), -1,
+			persist_conn);
 	} else
 		rc = SLURM_ERROR;
 end_it:
@@ -5927,7 +5976,7 @@ end_it:
 	ret_buf = slurm_persist_make_rc_msg(&p_tmp, rc, comment, p_tmp.version);
 	if (slurm_persist_send_msg(&p_tmp, ret_buf) != SLURM_SUCCESS) {
 		debug("Problem sending response to connection %d uid(%u)",
-		      tls_g_get_conn_fd(p_tmp.tls_conn), msg->auth_uid);
+		      conn_g_get_fd(p_tmp.tls_conn), msg->auth_uid);
 	}
 
 	if (rc && persist_conn) {
@@ -5948,6 +5997,7 @@ static void _slurm_rpc_tls_cert(slurm_msg_t *msg)
 	tls_cert_request_msg_t *req = msg->data;
 	tls_cert_response_msg_t *resp = xmalloc(sizeof(*resp));
 	node_record_t *node = NULL;
+	bool is_client_auth = false;
 
 	if (!validate_slurm_user(msg->auth_uid)) {
 		error("Security violation, REQUEST_TLS_CERT from uid=%u",
@@ -5961,8 +6011,11 @@ static void _slurm_rpc_tls_cert(slurm_msg_t *msg)
 			 __func__);
 	}
 
-	if (!(resp->signed_cert = certmgr_g_sign_csr(req->csr, req->token,
-						     req->node_name))) {
+	is_client_auth = conn_g_is_client_authenticated(msg->tls_conn);
+
+	if (!(resp->signed_cert =
+		      certmgr_g_sign_csr(req->csr, is_client_auth, req->token,
+					 req->node_name))) {
 		error("%s: Unable to sign certificate signing request.",
 		      __func__);
 		slurm_send_rc_msg(msg, SLURM_ERROR);
@@ -5970,8 +6023,10 @@ static void _slurm_rpc_tls_cert(slurm_msg_t *msg)
 		node->cert_last_renewal = time(NULL);
 	}
 
-	log_flag(AUDIT_TLS, "Sending signed certificate back to node \'%s\':\n%s",
-		 req->node_name, resp->signed_cert);
+	if (resp->signed_cert) {
+		log_flag(AUDIT_TLS, "Sending signed certificate back to node \'%s\':\n%s",
+			 req->node_name, resp->signed_cert);
+	}
 
 	(void) send_msg_response(msg, RESPONSE_TLS_CERT, resp);
 	slurm_free_msg_data(RESPONSE_TLS_CERT, resp);
@@ -6745,6 +6800,9 @@ slurmctld_rpc_t slurmctld_rpcs[] =
 		.msg_type = ACCOUNTING_REGISTER_CTLD,
 		.func = _slurm_rpc_accounting_register_ctld,
 	},{
+		.msg_type = REQUEST_TOPO_CONFIG,
+		.func = _slurm_rpc_get_topo_config,
+	},{
 		.msg_type = REQUEST_TOPO_INFO,
 		.func = _slurm_rpc_get_topo,
 	},{
@@ -6829,7 +6887,7 @@ extern slurmctld_rpc_t *find_rpc(uint16_t msg_type)
 extern void slurmctld_req(slurm_msg_t *msg, slurmctld_rpc_t *this_rpc)
 {
 	DEF_TIMERS;
-	int fd = tls_g_get_conn_fd(msg->tls_conn);
+	int fd = conn_g_get_fd(msg->tls_conn);
 
 	fd_set_nonblocking(fd);
 

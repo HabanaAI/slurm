@@ -1,4 +1,4 @@
-.TH salloc "1" "Slurm Commands" "February 2025" "Slurm Commands"
+.TH salloc "1" "Slurm Commands" "May 2025" "Slurm Commands"
 
 .SH "NAME"
 salloc \- Obtain a Slurm job allocation (a set of nodes), execute a command,
@@ -371,8 +371,9 @@ Unique name for OCI container.
 \fB\-\-contiguous\fR
 If set, then the allocated nodes must form a contiguous set.
 
-\fBNOTE\fR: If the SelectType is cons_tres this option won't be honored
-with the \fBtopology/tree\fR plugin, which can modify the node ordering.
+\fBNOTE\fR: This option will only work with the \fBtopology/flat\fR plugin.
+Other topology plugins modify the node ordering and prevent this option from
+taking effect.
 .IP
 
 .TP
@@ -1024,7 +1025,8 @@ overridden with an explicit \-\-tres\-bind=gres/gpu specification.
 
 .TP
 \fB\-\-gres\fR=<\fIlist\fR>
-Specifies a comma\-delimited list of generic consumable resources.
+Specifies a comma\-delimited list of generic consumable resources requested per
+node.
 The format for each entry in the list is "name[[:type]:count]".
 The \fIname\fR is the type of consumable resource (e.g. gpu).
 The \fItype\fR is an optional classification for the resource (e.g. a100).
@@ -1077,6 +1079,9 @@ filtering will be performed on a per\-socket basis.
 \fBNOTE\fR: This option can be set by default in \fBSelectTypeParameters\fR.
 .br
 \fBNOTE\fR: This option is specific to \fBSelectType=cons_tres\fR.
+.br
+\fBNOTE\fR: This option can give undefined results if attempting to enforce
+binding on multiple gres on multiple sockets.
 .IP
 
 .TP
@@ -1243,9 +1248,10 @@ The default value is the submitting user.
 
 .TP
 \fB\-\-mcs\-label\fR=<\fImcs\fR>
-Used only when the mcs/group plugin is enabled.
-This parameter is a group among the groups of the user.
-Default value is calculated by the Plugin mcs if it's enabled.
+Used only when a compatible \fBMCSPlugin\fR is enabled. This parameter is a
+group that the user belongs to (\fBmcs/group\fR) or an arbitrary label string
+(\fBmcs/label\fR). In both cases, no label will be assigned by default. Refer to
+the MCS documentation for more details: <https://slurm.schedmd.com/mcs.html>
 .IP
 
 .TP

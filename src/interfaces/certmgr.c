@@ -39,14 +39,17 @@
 #include "src/common/read_config.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/xmalloc.h"
+#include "src/common/xstring.h"
 
 #include "src/interfaces/certmgr.h"
+#include "src/interfaces/conn.h"
 
 typedef struct {
 	char *(*get_node_cert_key)(char *node_name);
 	char *(*get_node_token)(char *node_name);
 	char *(*generate_csr)(char *node_name);
-	char *(*sign_csr)(char *csr, char *token, char *name);
+	char *(*sign_csr)(char *csr, bool is_client_auth, char *token,
+			  char *name);
 } certmgr_ops_t;
 
 /*
@@ -72,10 +75,10 @@ extern bool certmgr_enabled(void)
 
 extern int certmgr_get_renewal_period_mins(void)
 {
-	static time_t renewal_period = NO_VAL;
+	static int renewal_period = -1;
 	char *renewal_str = NULL;
 
-	if (renewal_period != NO_VAL)
+	if (renewal_period > 0)
 		return renewal_period;
 
 	if ((renewal_str = conf_get_opt_str(slurm_conf.certmgr_params,
@@ -189,7 +192,8 @@ extern char *certmgr_g_generate_csr(char *node_name)
 	return (*(ops.generate_csr))(node_name);
 }
 
-extern char *certmgr_g_sign_csr(char *csr, char *token, char *name)
+extern char *certmgr_g_sign_csr(char *csr, bool is_client_auth, char *token,
+				char *name)
 {
 	xassert(running_in_slurmctld());
 	xassert(plugin_inited != PLUGIN_NOT_INITED);
@@ -197,5 +201,92 @@ extern char *certmgr_g_sign_csr(char *csr, char *token, char *name)
 	if (plugin_inited == PLUGIN_NOOP)
 		return NULL;
 
-	return (*(ops.sign_csr))(csr, token, name);
+	return (*(ops.sign_csr))(csr, is_client_auth, token, name);
+}
+
+extern int certmgr_get_cert_from_ctld(char *name)
+{
+	slurm_msg_t req, resp;
+	tls_cert_request_msg_t *cert_req;
+	tls_cert_response_msg_t *cert_resp;
+	size_t cert_len, key_len;
+	char *key;
+
+	slurm_msg_t_init(&req);
+	slurm_msg_t_init(&resp);
+
+	cert_req = xmalloc(sizeof(*cert_req));
+
+	if (conn_g_own_cert_loaded()) {
+		log_flag(AUDIT_TLS, "Using previously signed certificate to authenticate with slurmctld via mTLS");
+	} else if (!(cert_req->token = certmgr_g_get_node_token(name))) {
+		error("%s: Failed to get unique node token", __func__);
+		slurm_free_tls_cert_request_msg(cert_req);
+		return SLURM_ERROR;
+	}
+
+	if (!(cert_req->csr = certmgr_g_generate_csr(name))) {
+		error("%s: Failed to generate certificate signing request",
+		      __func__);
+		slurm_free_tls_cert_request_msg(cert_req);
+		return SLURM_ERROR;
+	}
+
+	cert_req->node_name = xstrdup(name);
+
+	req.msg_type = REQUEST_TLS_CERT;
+	req.data = cert_req;
+
+	log_flag(AUDIT_TLS, "Sending certificate signing request to slurmctld:\n%s",
+		 cert_req->csr);
+
+	if (slurm_send_recv_controller_msg(&req, &resp, working_cluster_rec) <
+	    0) {
+		error("Unable to get TLS certificate from slurmctld: %m");
+		slurm_free_tls_cert_request_msg(cert_req);
+		return SLURM_ERROR;
+	}
+	slurm_free_tls_cert_request_msg(cert_req);
+
+	switch (resp.msg_type) {
+	case RESPONSE_TLS_CERT:
+		break;
+	case RESPONSE_SLURM_RC:
+	{
+		uint32_t resp_rc =
+			((return_code_msg_t *) resp.data)->return_code;
+		error("%s: slurmctld response to TLS certificate request: %s",
+		      __func__, slurm_strerror(resp_rc));
+		return SLURM_ERROR;
+	}
+	default:
+		error("%s: slurmctld responded with unexpected msg type: %s",
+		      __func__, rpc_num2string(resp.msg_type));
+		return SLURM_ERROR;
+	}
+
+	cert_resp = resp.data;
+
+	log_flag(AUDIT_TLS, "Successfully got signed certificate from slurmctld:\n%s",
+		 cert_resp->signed_cert);
+
+	if (!(key = certmgr_g_get_node_cert_key(name))) {
+		error("%s: Could not get node's private key", __func__);
+		return SLURM_ERROR;
+	}
+
+	cert_len = strlen(cert_resp->signed_cert);
+	key_len = strlen(key);
+
+	if (conn_g_load_own_cert(cert_resp->signed_cert, cert_len, key,
+				 key_len)) {
+		error("%s: Could not load signed certificate and private key into tls plugin",
+		      __func__);
+		return SLURM_ERROR;
+	}
+
+	xfree(key);
+	slurm_free_msg_data(RESPONSE_TLS_CERT, cert_resp);
+
+	return SLURM_SUCCESS;
 }

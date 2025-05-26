@@ -555,14 +555,14 @@ def start_slurmctld(clean=False, quiet=False, also_slurmds=False):
             "scontrol ping", lambda results: re.search(r"is UP", results["stdout"])
         ):
             logging.warning(
-                "scontrol ping is not responding, trying to get slurmctld backtrace..."
+                "scontrol ping is not responding, trying to get slurmctld core file..."
             )
             pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld")
             if not pids:
                 logging.warning("process slurmctld not found")
             for pid in pids:
                 run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
+                    f'sudo gcore -o {os.path.dirname(get_config_parameter("SlurmctldLogFile"))}/slurmctld.core {pid}'
                 )
             pytest.fail("Slurmctld is not running")
         else:
@@ -667,14 +667,14 @@ def start_slurmdbd(clean=False, quiet=False):
             "sacctmgr show cluster", lambda results: results["exit_code"] == 0
         ):
             logging.warning(
-                "sacctmgr show cluster is not responding, trying to get slurmdbd backtrace..."
+                "sacctmgr show cluster is not responding, trying to get slurmdbd core file..."
             )
             pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmdbd")
             if not pids:
                 logging.warning("process slurmdbd not found")
             for pid in pids:
                 run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
+                    f'sudo gcore -o {os.path.dirname(get_config_parameter("SlurmctldLogFile"))}/slurmdbd.core {pid}'
                 )
             pytest.fail("Slurmdbd is not running")
         else:
@@ -774,15 +774,34 @@ def stop_slurmctld(quiet=False, also_slurmds=False):
     ):
         pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld")
         failures.append(f"Slurmctld is still running ({pids})")
-        logging.warning("Getting the bt of the still running slurmctld")
+        logging.warning("Getting the core files of the still running slurmctld")
         for pid in pids:
             run_command(
-                f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
+                f'sudo gcore -o {os.path.dirname(get_config_parameter("SlurmctldLogFile"))}/slurmctld.core {pid}'
             )
     else:
         logging.debug("No slurmctld is running.")
 
     if also_slurmds:
+        if get_version("sbin/slurmd") < (24, 11):
+            # FIXED: t20764.
+            slurmd_list = []
+            output = run_command_output(
+                f"perl -nle 'print $1 if /^NodeName=(\\S+)/' {properties['slurm-config-dir']}/slurm.conf",
+                quiet=quiet,
+            )
+            if not output:
+                failures.append("Unable to determine the slurmd node names")
+            else:
+                for node_name_expression in output.rstrip().split("\n"):
+                    if node_name_expression != "DEFAULT":
+                        slurmd_list.extend(node_range_to_list(node_name_expression))
+
+            for slurmd_name in slurmd_list:
+                run_command(
+                    f"sudo systemctl stop {slurmd_name}_slurmstepd.scope", quiet=quiet
+                )
+
         # Verify that slurmds are not running
         if not repeat_until(
             lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmd"),
@@ -790,10 +809,10 @@ def stop_slurmctld(quiet=False, also_slurmds=False):
         ):
             pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmd")
             failures.append(f"Some slurmds are still running ({pids})")
-            logging.warning("Getting the bt of the still running slurmds")
+            logging.warning("Getting the core files of the still running slurmds")
             for pid in pids:
                 run_command(
-                    f'sudo gdb -p {pid} -ex "set debuginfod enabled on" -ex "set pagination off" -ex "set confirm off" -ex "set print pretty on" -ex "set max-value-size unlimited" -ex "set print array-indexes on" -ex "set print array off" -ex "thread apply all bt full" -ex "quit"'
+                    f'sudo gcore -o {os.path.dirname(get_config_parameter("SlurmctldLogFile"))}/slurmd.core {pid}'
                 )
         else:
             logging.debug("No slurmd is running.")
@@ -987,6 +1006,28 @@ def require_slurm_running():
 
     # As a side effect, build up initial nodes dictionary
     nodes = get_nodes(quiet=True)
+
+
+def get_version(component="sbin/slurmctld"):
+    return tuple(
+        int(part) if part.isdigit() else 0
+        for part in run_command_output(
+            f"sudo {properties['slurm-sbin-dir']}/../{component} -V"
+        )
+        .replace("slurm ", "")
+        .split(".")
+    )
+
+
+def require_version(version, component="sbin/slurmctld"):
+    component_version = get_version(component)
+    required_version = tuple(
+        int(part) if part.isdigit() else 0 for part in version.split(".")
+    )
+    if component_version < required_version:
+        pytest.skip(
+            f"The version of {component} is {component_version}, required is {required_version}"
+        )
 
 
 def request_slurmrestd(request):
@@ -2153,10 +2194,27 @@ def get_nodes(live=True, quiet=False, **run_command_kwargs):
     nodes_dict = {}
 
     if live:
-        output = run_command_output(
-            "scontrol show nodes -oF", fatal=True, quiet=quiet, **run_command_kwargs
+        # TODO: Remove extra debug info for t22858 instead of fatal
+        result = run_command(
+            "scontrol show nodes -oF", fatal=False, quiet=quiet, **run_command_kwargs
         )
+        if result["exit_code"]:
+            logging.debug(
+                "Fatal failure of 'scontrol show nodes', probably due 'Unable to contact slurm controller' (t22858)"
+            )
+            logging.debug("Getting gcore from slurmctld before fatal.")
+            pids = pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld")
+            if not pids:
+                logging.warning("process slurmctld not found")
+            for pid in pids:
+                run_command(
+                    f'sudo gcore -o {os.path.dirname(get_config_parameter("SlurmctldLogFile"))}/slurmctld.core {pid}'
+                )
+            pytest.fail(
+                f"Command 'scontrol show nodes -oF' failed with rc={result['exit_code']}: {result['stderr']}"
+            )
 
+        output = result["stdout"]
         node_dict = {}
         for line in output.splitlines():
             if line == "":

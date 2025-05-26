@@ -71,8 +71,8 @@
 
 #include "src/interfaces/accounting_storage.h"
 #include "src/interfaces/auth.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/hash.h"
-#include "src/interfaces/tls.h"
 
 #include "src/slurmdbd/backup.h"
 #include "src/slurmdbd/proc_req.h"
@@ -85,7 +85,7 @@ uint32_t slurm_daemon = IS_SLURMDBD;
 time_t shutdown_time = 0;		/* when shutdown request arrived */
 list_t *registered_clusters = NULL;
 pthread_mutex_t rpc_mutex = PTHREAD_MUTEX_INITIALIZER;
-slurmdb_stats_rec_t rpc_stats;
+slurmdb_stats_rec_t *rpc_stats = NULL;
 pthread_mutex_t registered_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Local variables */
@@ -241,7 +241,7 @@ int main(int argc, char **argv)
 	if (hash_g_init() != SLURM_SUCCESS) {
 		fatal("failed to initialize hash plugin");
 	}
-	if (tls_g_init() != SLURM_SUCCESS) {
+	if (conn_g_init() != SLURM_SUCCESS) {
 		fatal("Failed to initialize tls plugin");
 	}
 	if (acct_storage_g_init() != SLURM_SUCCESS) {
@@ -380,10 +380,11 @@ end_it:
 	acct_storage_g_fini();
 	auth_g_fini();
 	hash_g_fini();
-	tls_g_fini();
+	conn_g_fini();
 	free_slurmdbd_conf();
 	slurm_mutex_lock(&rpc_mutex);
-	slurmdb_free_stats_rec_members(&rpc_stats);
+	slurmdb_destroy_stats_rec(rpc_stats);
+	rpc_stats = NULL;
 	slurm_mutex_unlock(&rpc_mutex);
 
 	conmgr_fini();
@@ -414,7 +415,12 @@ extern void handle_rollup_stats(list_t *rollup_stats_list,
 	xassert(type < DBD_ROLLUP_COUNT);
 
 	slurm_mutex_lock(&rpc_mutex);
-	rollup_stats = rpc_stats.dbd_rollup_stats;
+	if (!rpc_stats) {
+		slurm_mutex_unlock(&rpc_mutex);
+		return;
+	}
+
+	rollup_stats = rpc_stats->dbd_rollup_stats;
 
 	/*
 	 * This is stats for the last DBD rollup.  Here we use 'type' as 0 for
@@ -436,10 +442,10 @@ extern void handle_rollup_stats(list_t *rollup_stats_list,
 	itr = list_iterator_create(rollup_stats_list);
 	while ((rollup_stats = list_next(itr))) {
 		if (!(rpc_rollup_stats =
-		      list_find_first(rpc_stats.rollup_stats,
-				      _find_rollup_stats_in_list,
-				      rollup_stats))) {
-			list_append(rpc_stats.rollup_stats, rollup_stats);
+			      list_find_first(rpc_stats->rollup_stats,
+					      _find_rollup_stats_in_list,
+					      rollup_stats))) {
+			list_append(rpc_stats->rollup_stats, rollup_stats);
 			(void) list_remove(itr);
 			continue;
 		}
@@ -534,18 +540,28 @@ extern void shutdown_threads(void)
 extern void init_dbd_stats(void)
 {
 	slurm_mutex_lock(&rpc_mutex);
-	slurmdb_free_stats_rec_members(&rpc_stats);
-	memset(&rpc_stats, 0, sizeof(rpc_stats));
 
-	rpc_stats.dbd_rollup_stats = xmalloc(sizeof(slurmdb_rollup_stats_t));
+	/*
+	 * DBD_CLEAR_STATS can trigger this function while shutdown is already
+	 * ongoing.
+	 */
+	if (!rpc_stats && shutdown_time) {
+		slurm_mutex_unlock(&rpc_mutex);
+		return;
+	}
 
-	rpc_stats.rollup_stats = list_create(slurmdb_destroy_rollup_stats);
+	slurmdb_destroy_stats_rec(rpc_stats);
+	rpc_stats = xmalloc(sizeof(*rpc_stats));
 
-	rpc_stats.rpc_list = list_create(slurmdb_destroy_rpc_obj);
+	rpc_stats->dbd_rollup_stats = xmalloc(sizeof(slurmdb_rollup_stats_t));
 
-	rpc_stats.time_start = time(NULL);
+	rpc_stats->rollup_stats = list_create(slurmdb_destroy_rollup_stats);
 
-	rpc_stats.user_list = list_create(slurmdb_destroy_rpc_obj);
+	rpc_stats->rpc_list = list_create(slurmdb_destroy_rpc_obj);
+
+	rpc_stats->time_start = time(NULL);
+
+	rpc_stats->user_list = list_create(slurmdb_destroy_rpc_obj);
 
 	slurm_mutex_unlock(&rpc_mutex);
 }
@@ -954,7 +970,7 @@ static int _send_slurmctld_register_req(slurmdb_cluster_rec_t *cluster_rec)
 
 	/* response is ignored */
 
-	tls_g_destroy_conn(tls_conn, true);
+	conn_g_destroy(tls_conn, true);
 
 	return SLURM_SUCCESS;
 }

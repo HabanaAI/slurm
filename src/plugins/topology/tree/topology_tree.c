@@ -127,10 +127,46 @@ extern int fini(void)
 }
 
 extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
-				  void *tctx)
+				  topology_ctx_t *tctx)
 {
-	tree_context_t *ctx = tctx;
+	tree_context_t *ctx = tctx->plugin_ctx;
+	bool *added = NULL;
+	int add_inx = -1;
+	char *tmp_str = NULL, *tok = NULL, *saveptr = NULL;
+	int rc = SLURM_SUCCESS;
 
+	if (unit) {
+		tmp_str = xstrdup(unit);
+		tok = strtok_r(tmp_str, ":", &saveptr);
+	}
+
+	while (tok) {
+		int inx = switch_record_get_switch_inx(tok, ctx);
+
+		if ((inx < 0) && (add_inx < 0)) {
+			error("Don't know where to add switch %s", tok);
+			rc = SLURM_ERROR;
+			goto fini;
+		}
+		if (inx < 0)
+			inx = switch_record_add_switch(tctx, tok, add_inx);
+
+		if (inx < 0) {
+			error("Failed to add switch %s", tok);
+			rc = SLURM_ERROR;
+			goto fini;
+		}
+		tok = strtok_r(NULL, ":", &saveptr);
+		add_inx = inx;
+	}
+
+	if ((add_inx >= 0) && (ctx->switch_table[add_inx].level != 0)) {
+		error("%s isn't a leaf switch", ctx->switch_table[add_inx].name);
+		rc = SLURM_ERROR;
+		goto fini;
+	}
+
+	added = xcalloc(ctx->switch_count, sizeof(bool));
 	for (int i = 0; i < ctx->switch_count; i++) {
 		bool add, in_switch;
 		int sw = i;
@@ -140,18 +176,22 @@ extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 
 		in_switch = bit_test(ctx->switch_table[i].node_bitmap,
 				     node_ptr->index);
-		add = (!xstrcmp(ctx->switch_table[i].name, unit));
+		add = (add_inx == i);
 
 		if ((!in_switch && !add) || (in_switch && add))
 			continue;
 
 		while (sw != SWITCH_NO_PARENT) {
+			if (added[sw])
+				break;
+
 			if (add && !in_switch) {
 				debug2("%s: add %s to %s",
 				       __func__, node_ptr->name,
 				       ctx->switch_table[sw].name);
 				bit_set(ctx->switch_table[sw].node_bitmap,
 					node_ptr->index);
+				added[sw] = true;
 			} else if (!add && in_switch) {
 				debug2("%s: remove %s from %s",
 				       __func__, node_ptr->name,
@@ -163,11 +203,14 @@ extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 			ctx->switch_table[sw].nodes =
 				bitmap2node_name(ctx->switch_table[sw]
 							 .node_bitmap);
+			switch_record_update_block_config(tctx, sw);
 			sw = ctx->switch_table[sw].parent;
 		}
 	}
-
-	return SLURM_SUCCESS;
+fini:
+	xfree(added);
+	xfree(tmp_str);
+	return rc;
 }
 
 /*

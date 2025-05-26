@@ -60,7 +60,7 @@
 #include "src/common/xmalloc.h"
 #include "src/common/xsignal.h"
 
-#include "src/interfaces/tls.h"
+#include "src/interfaces/conn.h"
 
 struct allocation_msg_thread {
 	slurm_allocation_callbacks_t callback;
@@ -241,7 +241,7 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 	local = xmalloc(sizeof(*local));
 	remote = xmalloc(sizeof(*remote));
 
-	*remote = tls_g_get_conn_fd(forward_msg->tls_conn);
+	*remote = conn_g_get_fd(forward_msg->tls_conn);
 	net_set_nodelay(*remote, true, NULL);
 
 	if (msg->port) {
@@ -274,13 +274,13 @@ static void _net_forward(struct allocation_msg_thread *msg_thr,
 	 */
 	slurm_send_rc_msg(forward_msg, SLURM_SUCCESS);
 
-	/* prevent the upstream call path from closing the connection */
-	forward_msg->tls_conn = NULL;
-
 	if (half_duplex_add_objs_to_handle(msg_thr->handle, local, remote,
 					   forward_msg->tls_conn)) {
 		goto error;
 	}
+
+	/* prevent the upstream call path from closing the connection */
+	forward_msg->tls_conn = NULL;
 
 	return;
 

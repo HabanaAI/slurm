@@ -45,7 +45,7 @@
 #include "src/common/read_config.h"
 #include "src/common/xmalloc.h"
 
-#include "src/interfaces/tls.h"
+#include "src/interfaces/conn.h"
 
 const char plugin_name[] = "Null tls plugin";
 const char plugin_type[] = "tls/none";
@@ -80,6 +80,11 @@ extern int tls_p_load_own_cert(char *cert, uint32_t cert_len, char *key,
 	return SLURM_SUCCESS;
 }
 
+extern int tls_p_load_self_signed_cert(void)
+{
+	return SLURM_SUCCESS;
+}
+
 extern char *tls_p_get_own_public_cert(void)
 {
 	return NULL;
@@ -90,7 +95,7 @@ extern bool tls_p_own_cert_loaded(void)
 	return true;
 }
 
-extern tls_conn_t *tls_p_create_conn(const tls_conn_args_t *tls_conn_args)
+extern tls_conn_t *tls_p_create_conn(const conn_args_t *tls_conn_args)
 {
 	tls_conn_t *conn = xmalloc(sizeof(*conn));
 
@@ -160,6 +165,11 @@ extern int tls_p_negotiate_conn(void *conn)
 	return ESLURM_NOT_SUPPORTED;
 }
 
+extern bool tls_p_is_client_authenticated(void *conn)
+{
+	return false;
+}
+
 extern int tls_p_get_conn_fd(tls_conn_t *conn)
 {
 	xassert(conn);
@@ -177,7 +187,7 @@ extern int tls_p_set_conn_fds(tls_conn_t *conn, int input_fd, int output_fd)
 }
 
 extern int tls_p_set_conn_callbacks(tls_conn_t *conn,
-				    tls_conn_callbacks_t *callbacks)
+				    conn_callbacks_t *callbacks)
 {
 	return ESLURM_NOT_SUPPORTED;
 }

@@ -375,6 +375,7 @@ static slurmdb_qos_rec_t *_determine_and_validate_qos(
 	bool operator, slurmdb_qos_rec_t *qos_rec, int *error_code,
 	bool locked, log_level_t log_lvl);
 static job_fed_details_t *_dup_job_fed_details(job_fed_details_t *src);
+static uint64_t _get_def_mem(part_record_t *part_ptr, uint64_t *tres_req_cnt);
 static bool _get_whole_hetjob(void);
 static bool _higher_precedence(job_record_t *job_ptr, job_record_t *job_ptr2);
 static void _job_array_comp(job_record_t *job_ptr, bool was_running,
@@ -5316,6 +5317,27 @@ extern int het_job_signal(job_record_t *het_job_leader, uint16_t signal,
 	return foreach_kill_hetjob.rc;
 }
 
+/*
+ * Returns average pn_min_memory, considering DefMemPer{CPU,Node,GPU} from both
+ * the partition and cluster configuration
+ * WARNING: assumes memory is evenly distributed across all nodes in job,
+ * may return an inaccurate value if this is not the case
+ */
+static uint64_t _get_def_mem(part_record_t *part_ptr, uint64_t *tres_req_cnt)
+{
+	if (part_ptr && part_ptr->def_mem_per_cpu &&
+	    (part_ptr->def_mem_per_cpu != MEM_PER_CPU) &&
+	    (part_ptr->def_mem_per_cpu != NO_VAL64))
+		return part_ptr->def_mem_per_cpu;
+	else if (tres_req_cnt && tres_req_cnt[TRES_ARRAY_MEM] &&
+		 (tres_req_cnt[TRES_ARRAY_MEM] != NO_VAL64)) {
+		xassert(tres_req_cnt[TRES_ARRAY_NODE]);
+		return tres_req_cnt[TRES_ARRAY_MEM] /
+		       tres_req_cnt[TRES_ARRAY_NODE];
+	} else
+		return slurm_conf.def_mem_per_cpu;
+}
+
 static bool _get_whole_hetjob(void)
 {
 	static time_t sched_update = 0;
@@ -6953,10 +6975,15 @@ extern int job_limits_check(job_record_t **job_pptr, bool check_min_time)
 		 */
 		if (job_ptr->bit_flags & JOB_MEM_SET)
 			job_desc.pn_min_memory = detail_ptr->orig_pn_min_memory;
-		else if (part_ptr->def_mem_per_cpu)
-			job_desc.pn_min_memory = part_ptr->def_mem_per_cpu;
-		else
-			job_desc.pn_min_memory = slurm_conf.def_mem_per_cpu;
+		else {
+			/*
+			 * Don't consider DefMemPerGPU here when coming up with
+			 * a pn_min_memory, we don't know how many nodes the
+			 * gpus may be split over yet so _get_def_mem may
+			 * overestimate.
+			 */
+			job_desc.pn_min_memory = _get_def_mem(part_ptr, NULL);
+		}
 		if (detail_ptr->orig_cpus_per_task == NO_VAL16)
 			job_desc.cpus_per_task = 1;
 		else
@@ -9652,17 +9679,10 @@ static int _validate_job_desc(job_desc_msg_t *job_desc_msg, int allocate,
 	if (job_desc_msg->nice == NO_VAL)
 		job_desc_msg->nice = NICE_OFFSET;
 
-	if (job_desc_msg->pn_min_memory == NO_VAL64) {
-		/* Default memory limit is DefMemPerCPU (if set) or no limit */
-		if (part_ptr && part_ptr->def_mem_per_cpu) {
-			job_desc_msg->pn_min_memory =
-				part_ptr->def_mem_per_cpu;
-		} else {
-			job_desc_msg->pn_min_memory =
-				slurm_conf.def_mem_per_cpu;
-		}
-	} else if (!_validate_min_mem_partition(job_desc_msg, part_ptr,
-						part_list)) {
+	if (job_desc_msg->pn_min_memory == NO_VAL64)
+		job_desc_msg->pn_min_memory = _get_def_mem(part_ptr, NULL);
+	else if (!_validate_min_mem_partition(job_desc_msg, part_ptr,
+					      part_list)) {
 		return ESLURM_INVALID_TASK_MEMORY;
 	} else {
 		/* Memory limit explicitly set by user */
@@ -12616,6 +12636,25 @@ static int _update_job(job_record_t *job_ptr, job_desc_msg_t *job_desc,
 	error_code = _test_job_desc_fields(job_desc);
 	if (error_code != SLURM_SUCCESS)
 		return error_code;
+
+	/* Do not update MCS label unless explicitly provided */
+	if (job_desc->mcs_label) {
+		/* Only pending jobs can be updated */
+		if (!IS_JOB_PENDING(job_ptr))
+			return ESLURM_JOB_NOT_PENDING;
+		/* This is an attempt to explicitly reset the value */
+		if (job_desc->mcs_label[0] == '\0')
+			xfree(job_desc->mcs_label);
+
+		if (mcs_g_set_mcs_label(job_ptr, job_desc->mcs_label)) {
+			if (!job_desc->mcs_label)
+				error("Failed to update job: No valid mcs_label found");
+			else
+				error("Failed to update job: Invalid mcs-label: %s",
+				      job_desc->mcs_label);
+			return ESLURM_INVALID_MCS_LABEL;
+		}
+	}
 
 	memset(&acct_policy_limit_set, 0, sizeof(acct_policy_limit_set));
 	acct_policy_limit_set.tres = tres;
@@ -16354,6 +16393,8 @@ extern uint64_t job_get_tres_mem(struct job_resources *job_res,
 	if (!user_set_mem && gres_list && running_cons_tres()) {
 		/* mem_per_[cpu|node] not set, check if mem_per_gres was set */
 		gres_job_state_t gres_js;
+		gres_state_t *gres_state_job;
+		uint32_t gpu_plugin_id;
 		memset(&gres_js, 0, sizeof(gres_js));
 		list_for_each(gres_list, _get_req_gres, &gres_js);
 		if (gres_js.mem_per_gres) {
@@ -16393,6 +16434,31 @@ extern uint64_t job_get_tres_mem(struct job_resources *job_res,
 			 * We shouldn't get here.
 			 */
 			return 0;
+		}
+		/*
+		 * If no mem_per_gres was explicitly set
+		 * Set mem_per_gres with DefMemPerGPU
+		 */
+		gpu_plugin_id = gres_get_gpu_plugin_id();
+		gres_state_job = list_find_first(
+			gres_list, gres_find_id, &gpu_plugin_id);
+		if (gres_state_job) {
+			gres_job_state_t *gres_js_gpu =
+				gres_state_job->gres_data;
+			mem_total = NO_VAL64;
+			if (part_ptr && part_ptr->job_defaults_list) {
+				mem_total = slurm_get_def_mem_per_gpu(
+					part_ptr->job_defaults_list);
+			}
+			if ((mem_total == NO_VAL64) &&
+			    slurm_conf.job_defaults_list) {
+				mem_total = slurm_get_def_mem_per_gpu(
+					slurm_conf.job_defaults_list);
+			}
+			if (mem_total != NO_VAL64) {
+				mem_total = mem_total * gres_js_gpu->total_gres;
+				return mem_total;
+			}
 		}
 	}
 
@@ -16441,6 +16507,7 @@ extern bool job_epilog_complete(uint32_t job_id, char *node_name,
 	 * really started. Very rare obviously.
 	 */
 	if ((IS_JOB_PENDING(job_ptr) && (!IS_JOB_COMPLETING(job_ptr))) ||
+	    ((!job_ptr->node_bitmap_cg) && (!IS_JOB_COMPLETING(job_ptr))) ||
 	    (job_ptr->node_bitmap == NULL)) {
 		uint32_t base_state = NODE_STATE_UNKNOWN;
 		node_ptr = find_node_record(node_name);
@@ -19445,10 +19512,8 @@ extern job_record_t *job_mgr_copy_resv_desc_to_job_record(
 
 	if (job_ptr->partition)
 		part_ptr = find_part_record(job_ptr->partition);
-	if (part_ptr && part_ptr->def_mem_per_cpu)
-		detail_ptr->pn_min_memory = part_ptr->def_mem_per_cpu;
-	else
-		detail_ptr->pn_min_memory = slurm_conf.def_mem_per_cpu;
+	detail_ptr->pn_min_memory =
+		_get_def_mem(part_ptr, job_ptr->tres_req_cnt);
 
 	job_ptr->time_limit = resv_desc_ptr->duration;
 

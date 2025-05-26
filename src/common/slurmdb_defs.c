@@ -2254,6 +2254,7 @@ extern int slurmdb_ping(char *rem_host)
 	persist_conn->rem_host = xstrdup(rem_host);
 	persist_conn->rem_port = slurm_conf.accounting_storage_port;
 	persist_conn->timeout = slurm_conf.msg_timeout * 1000;
+	persist_conn->version = SLURM_PROTOCOL_VERSION;
 
 	rc = slurm_persist_conn_open(persist_conn);
 	slurm_persist_conn_destroy(persist_conn);
@@ -4606,6 +4607,7 @@ extern void slurmdb_free_stats_rec_members(void *object)
 		return;
 
 	slurmdb_destroy_rollup_stats(rpc_stats->dbd_rollup_stats);
+	rpc_stats->dbd_rollup_stats = NULL;
 
 	FREE_NULL_LIST(rpc_stats->rollup_stats);
 	FREE_NULL_LIST(rpc_stats->rpc_list);

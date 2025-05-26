@@ -72,12 +72,12 @@
 #include "src/interfaces/accounting_storage.h"
 #include "src/interfaces/acct_gather_energy.h"
 #include "src/interfaces/auth.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/gres.h"
 #include "src/interfaces/mcs.h"
 #include "src/interfaces/node_features.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/serializer.h"
-#include "src/interfaces/tls.h"
 #include "src/interfaces/topology.h"
 
 #include "src/slurmctld/agent.h"
@@ -146,7 +146,7 @@ static char *_get_msg_hostname(slurm_msg_t *msg)
 	char *name = NULL;
 
 	if (addr->ss_family == AF_UNSPEC) {
-		int fd = tls_g_get_conn_fd(msg->tls_conn);
+		int fd = conn_g_get_fd(msg->tls_conn);
 		(void) slurm_get_peer_addr(fd, addr);
 	}
 	if (addr->ss_family != AF_UNSPEC) {
@@ -695,6 +695,9 @@ extern int load_all_node_state ( bool state_only )
 			xfree(node_ptr->mcs_label);
 			node_ptr->mcs_label = node_state_rec->mcs_label;
 			node_state_rec->mcs_label = NULL;
+			xfree(node_ptr->topology_str);
+			node_ptr->topology_str = node_state_rec->topology_str;
+			node_state_rec->topology_str = NULL;
 		}
 
 		if (node_ptr) {
@@ -1833,8 +1836,13 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 
 		if (update_node_msg->topology_str) {
 			char *topology_str_old = node_ptr->topology_str;
-			node_ptr->topology_str =
-				xstrdup(update_node_msg->topology_str);
+
+			node_ptr->topology_str = NULL;
+			if (*update_node_msg->topology_str) {
+				node_ptr->topology_str =
+					xstrdup(update_node_msg->topology_str);
+			}
+
 			if (topology_g_add_rm_node(node_ptr)) {
 				info("Invalid node topology specified %s",
 				     node_ptr->topology_str);
@@ -1995,6 +2003,7 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 						set_node_comm_name(
 							node_ptr, NULL,
 							node_ptr->name);
+						reset_node_instance(node_ptr);
 					}
 					/*
 					 * Preserve dynamic norm state until
@@ -3625,10 +3634,9 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 				bit_clear(rs_node_bitmap, node_ptr->index);
 				bit_clear(asap_node_bitmap, node_ptr->index);
 			}
-			info("%s: Node %s unexpectedly rebooted boot_time=%u last response=%u",
-			     __func__, reg_msg->node_name,
-			     (uint32_t)node_ptr->boot_time,
-			     (uint32_t)node_ptr->last_response);
+			info("%s: Node %s unexpectedly rebooted boot_time=%ld last response=%ld",
+			     __func__, reg_msg->node_name, node_ptr->boot_time,
+			     node_ptr->last_response);
 			_make_node_down(node_ptr, now);
 			kill_running_job_by_node_ptr(node_ptr);
 			last_node_update = now;

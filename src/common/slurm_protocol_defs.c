@@ -4436,6 +4436,15 @@ extern void slurm_free_topo_request_msg(topo_info_request_msg_t *msg)
 	}
 }
 
+extern void slurm_free_topo_config_msg(topo_config_response_msg_t *msg)
+{
+	if (!msg)
+		return;
+
+	xfree(msg->config);
+	xfree(msg);
+}
+
 /*
  * slurm_free_burst_buffer_info_msg - free buffer returned by
  *	slurm_load_burst_buffer
@@ -6470,4 +6479,49 @@ extern int validate_resv_create_desc(resv_desc_msg_t *resv_msg, char **err_msg)
 	}
 
 	return SLURM_SUCCESS;
+}
+
+static int _foreach_get_default(void *x, void *arg)
+{
+	job_defaults_t *job_defaults = x;
+	uint16_t type = *(uint16_t *) arg;
+
+	if (job_defaults->type == type)
+		return -1;
+	return 0;
+}
+
+static uint64_t _get_default(list_t *job_defaults_list, uint16_t type)
+{
+	uint64_t def_value = NO_VAL64;
+	job_defaults_t *job_defaults;
+
+	if (!job_defaults_list)
+		return def_value;
+
+	if ((job_defaults = list_find_first(job_defaults_list,
+					    _foreach_get_default, &type)))
+		def_value = job_defaults->value;
+
+	return def_value;
+}
+
+/*
+ * Get configured DefCpuPerGPU information from a list
+ * (either global or per partition list)
+ * Returns NO_VAL64 if configuration parameter not set
+ */
+extern uint64_t slurm_get_def_cpu_per_gpu(list_t *job_defaults_list)
+{
+	return _get_default(job_defaults_list, JOB_DEF_CPU_PER_GPU);
+}
+
+/*
+ * Get configured DefMemPerGPU information from a list
+ * (either global or per partition list)
+ * Returns NO_VAL64 if configuration parameter not set
+ */
+extern uint64_t slurm_get_def_mem_per_gpu(list_t *job_defaults_list)
+{
+	return _get_default(job_defaults_list, JOB_DEF_MEM_PER_GPU);
 }
