@@ -1457,7 +1457,7 @@ extern void gres_get_autodetected_gpus(node_config_load_t node_conf,
 	list_t *gres_list_system = NULL, *gres_list_merged = NULL;
 
 	char *gres_str = NULL;
-	char *flags = NULL;
+	char *autodetect_option_name = NULL;
 
 	int autodetect_options[] = {
 		GRES_AUTODETECT_GPU_NVML,
@@ -1490,12 +1490,13 @@ extern void gres_get_autodetected_gpus(node_config_load_t node_conf,
 		if (autodetect_flags == GRES_AUTODETECT_GPU_NVML)
 			i++; /* Skip NVIDIA if NVML finds gpus */
 
-		if (!flags)
-			flags = _get_autodetect_flags_str();
-
-		xstrfmtcat(*autodetect_str, "Found %s with Autodetect=%s (Substring of gpu name may be used instead)",
+		autodetect_option_name = _get_autodetect_flags_str();
+		xstrfmtcat(*autodetect_str, "%sFound %s with Autodetect=%s (Substring of gpu name may be used instead)",
+			   (*autodetect_str ? "\n" : ""),
 			   gres_str,
-			   flags);
+			   autodetect_option_name);
+		xfree(autodetect_option_name);
+
 		if (!*first_gres_str){
 			*first_gres_str = gres_str;
 			gres_str = NULL;
@@ -1503,7 +1504,6 @@ extern void gres_get_autodetected_gpus(node_config_load_t node_conf,
 			xfree(gres_str);
 		}
 	}
-	xfree(flags);
 }
 
 /*
@@ -2935,6 +2935,14 @@ extern int gres_g_node_config_load(uint32_t cpu_cnt, char *node_name,
 	}
 
 fini:
+	/*
+	 * We no longer need the gpu plugin unless this option is set:
+	 * AcctGatherEnergyType=acct_gather_energy/gpu
+	 * Note: slurmstepds may still load gpu plugin for gpu_g_usage_read()
+	 * unless JobAcctGatherParams=DisableGPUAcct is set
+	 */
+	if (!in_slurmd || !xstrstr(slurm_conf.acct_gather_energy_type, "gpu"))
+		gpu_plugin_fini();
 	xfree(gres_conf_file);
 	FREE_NULL_LIST(tmp_gres_conf_list);
 	_pack_context_buf();
@@ -4012,10 +4020,9 @@ static int _foreach_add_gres_info(void *x, void *arg)
 	return 0;
 }
 
-static int _node_config_validate(char *node_name, char *orig_config,
-				 gres_state_t *gres_state_node,
-				 int cpu_cnt, int core_cnt, int sock_cnt,
-				 int cores_per_sock,
+static int _node_config_validate(node_record_t *node_ptr,
+				 gres_state_t *gres_state_node, int cpu_cnt,
+				 int core_cnt, int sock_cnt, int cores_per_sock,
 				 bool config_overrides, char **reason_down,
 				 slurm_gres_context_t *gres_ctx)
 {
@@ -4027,6 +4034,8 @@ static int _node_config_validate(char *node_name, char *orig_config,
 	tot_from_slurmd_conf_t slurmd_conf_tot = {
 		.plugin_id = gres_ctx->plugin_id,
 	};
+	char *orig_config = node_ptr->config_ptr->gres;
+	char *node_name = node_ptr->name;
 	xassert(core_cnt);
 	if (gres_state_node->gres_data == NULL)
 		gres_state_node->gres_data = _build_gres_node_state();
@@ -4138,7 +4147,7 @@ static int _node_config_validate(char *node_name, char *orig_config,
 		}
 	}
 
-	if (!updated_config)
+	if (!updated_config && !(IS_NODE_INVALID_REG(node_ptr)))
 		return rc;
 
 	if (gres_id_sharing(slurmd_conf_tot.plugin_id) && gres_ns->alt_gres) {
@@ -4474,10 +4483,12 @@ static void _sync_node_shared_to_sharing(gres_state_t *sharing_gres_state_node)
 /*
  * Validate a node's configuration and put a gres record onto a list
  * Called immediately after gres_node_config_unpack().
- * IN node_name - name of the node for which the gres information applies
- * IN orig_config - Gres information supplied from merged slurm.conf/gres.conf
- * IN/OUT new_config - Updated gres info from slurm.conf
- * IN/OUT gres_list - List of Gres records for this node to track usage
+ * IN node_ptr - With the relevant attributes for this function being:
+ *	->name - name of the node for which the gres information applies
+ *	->config_ptr->gres - Gres information supplied from merged
+ *			     slurm.conf/gres.conf
+ *	->gres - Updated gres info from slurm.conf
+ *	->gres_list - List of Gres records for this node to track usage
  * IN threads_per_core - Count of CPUs (threads) per core on this node
  * IN cores_per_sock - Count of cores per socket on this node
  * IN sock_cnt - Count of sockets on this node
@@ -4487,13 +4498,9 @@ static void _sync_node_shared_to_sharing(gres_state_t *sharing_gres_state_node)
  *                              config
  * OUT reason_down - set to an explanation of failure, if any, don't set if NULL
  */
-extern int gres_node_config_validate(char *node_name,
-				     char *orig_config,
-				     char **new_config,
-				     list_t **gres_list,
-				     int threads_per_core,
-				     int cores_per_sock, int sock_cnt,
-				     bool config_overrides,
+extern int gres_node_config_validate(node_record_t *node_ptr,
+				     int threads_per_core, int cores_per_sock,
+				     int sock_cnt, bool config_overrides,
 				     char **reason_down)
 {
 	int i, rc = SLURM_SUCCESS, rc2;
@@ -4504,29 +4511,30 @@ extern int gres_node_config_validate(char *node_name,
 	xassert(gres_context_cnt >= 0);
 
 	slurm_mutex_lock(&gres_context_lock);
-	if ((gres_context_cnt > 0) && (*gres_list == NULL))
-		*gres_list = list_create(_gres_node_list_delete);
+	if ((gres_context_cnt > 0) && (node_ptr->gres_list == NULL))
+		node_ptr->gres_list = list_create(_gres_node_list_delete);
 	for (i = 0; i < gres_context_cnt; i++) {
 		/* Find or create gres_state entry on the list */
-		gres_state_node = list_find_first(*gres_list, gres_find_id,
-						  &gres_context[i].plugin_id);
+		gres_state_node =
+			list_find_first(node_ptr->gres_list, gres_find_id,
+					&gres_context[i].plugin_id);
 		if (gres_state_node == NULL) {
 			gres_state_node = gres_create_state(
 				&gres_context[i], GRES_STATE_SRC_CONTEXT_PTR,
 				GRES_STATE_TYPE_NODE, _build_gres_node_state());
-			list_append(*gres_list, gres_state_node);
+			list_append(node_ptr->gres_list, gres_state_node);
 		}
-		rc2 = _node_config_validate(node_name, orig_config,
-					    gres_state_node, cpu_cnt, core_cnt,
-					    sock_cnt, cores_per_sock,
-					    config_overrides,
-					    reason_down, &gres_context[i]);
+		rc2 = _node_config_validate(node_ptr, gres_state_node, cpu_cnt,
+					    core_cnt, sock_cnt, cores_per_sock,
+					    config_overrides, reason_down,
+					    &gres_context[i]);
 		rc = MAX(rc, rc2);
 		if (gres_id_sharing(gres_state_node->plugin_id))
 			gres_gpu_ptr = gres_state_node;
 	}
 	_sync_node_shared_to_sharing(gres_gpu_ptr);
-	_build_node_gres_str(gres_list, new_config, cores_per_sock, sock_cnt);
+	_build_node_gres_str(&node_ptr->gres_list, &node_ptr->gres,
+			     cores_per_sock, sock_cnt);
 	slurm_mutex_unlock(&gres_context_lock);
 
 	return rc;
@@ -5067,7 +5075,7 @@ static int _foreach_step_state_pack(void *x, void *arg)
 	gres_step_state_t *gres_ss = gres_state_step->gres_data;
 	int i;
 
-	if (pack_state->protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+	if (pack_state->protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		pack32(pack_state->magic, pack_state->buffer);
 		pack32(gres_state_step->plugin_id, pack_state->buffer);
 		pack16(gres_ss->cpus_per_gres, pack_state->buffer);
@@ -5079,47 +5087,6 @@ static int _foreach_step_state_pack(void *x, void *arg)
 		pack64(gres_ss->mem_per_gres, pack_state->buffer);
 		pack64(gres_ss->total_gres, pack_state->buffer);
 		packstr(gres_ss->type_name, pack_state->buffer);
-		pack32(gres_ss->node_cnt, pack_state->buffer);
-		pack_bit_str_hex(gres_ss->node_in_use, pack_state->buffer);
-		if (gres_ss->gres_cnt_node_alloc) {
-			pack8((uint8_t) 1, pack_state->buffer);
-			pack64_array(gres_ss->gres_cnt_node_alloc,
-				     gres_ss->node_cnt, pack_state->buffer);
-		} else {
-			pack8((uint8_t) 0, pack_state->buffer);
-		}
-		if (gres_ss->gres_bit_alloc) {
-			pack8((uint8_t) 1, pack_state->buffer);
-			for (i = 0; i < gres_ss->node_cnt; i++)
-				pack_bit_str_hex(gres_ss->gres_bit_alloc[i],
-						 pack_state->buffer);
-		} else {
-			pack8((uint8_t) 0, pack_state->buffer);
-		}
-		for (i = 0; i < gres_ss->node_cnt; i++) {
-			if (!gres_ss->gres_per_bit_alloc ||
-			    !gres_ss->gres_per_bit_alloc[i] ||
-			    !gres_ss->gres_bit_alloc ||
-			    !gres_ss->gres_bit_alloc[i]) {
-				pack8((uint8_t)0, pack_state->buffer);
-				continue;
-			}
-			pack8((uint8_t)1, pack_state->buffer);
-			pack64_array(gres_ss->gres_per_bit_alloc[i],
-				     bit_size(gres_ss->gres_bit_alloc[i]),
-				     pack_state->buffer);
-		}
-	} else if (pack_state->protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-		pack32(pack_state->magic, pack_state->buffer);
-		pack32(gres_state_step->plugin_id, pack_state->buffer);
-		pack16(gres_ss->cpus_per_gres, pack_state->buffer);
-		pack16(gres_ss->flags, pack_state->buffer);
-		pack64(gres_ss->gres_per_step, pack_state->buffer);
-		pack64(gres_ss->gres_per_node, pack_state->buffer);
-		pack64(gres_ss->gres_per_socket, pack_state->buffer);
-		pack64(gres_ss->gres_per_task, pack_state->buffer);
-		pack64(gres_ss->mem_per_gres, pack_state->buffer);
-		pack64(gres_ss->total_gres, pack_state->buffer);
 		pack32(gres_ss->node_cnt, pack_state->buffer);
 		pack_bit_str_hex(gres_ss->node_in_use, pack_state->buffer);
 		if (gres_ss->gres_cnt_node_alloc) {
@@ -5330,7 +5297,7 @@ extern int gres_node_state_unpack(list_t **gres_list, buf_t *buffer,
 
 		gres_ns = _build_gres_node_state();
 
-		if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 			safe_unpack32(&magic, buffer);
 			if (magic != GRES_MAGIC)
 				goto unpack_error;
@@ -5360,43 +5327,6 @@ extern int gres_node_state_unpack(list_t **gres_list, buf_t *buffer,
 					unpack_bit_str_hex(
 						&gres_ns->
 						topo_res_core_bitmap[i],
-						buffer);
-				}
-			}
-			safe_unpack64_array(&gres_ns->topo_gres_cnt_alloc,
-					    &tmp_uint32, buffer);
-			safe_unpack64_array(&gres_ns->topo_gres_cnt_avail,
-					    &tmp_uint32, buffer);
-			safe_unpack32_array(&gres_ns->topo_type_id, &tmp_uint32,
-					    buffer);
-			safe_unpackstr_array(&gres_ns->topo_type_name,
-					     &tmp_uint32, buffer);
-		} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-			safe_unpack32(&magic, buffer);
-			if (magic != GRES_MAGIC)
-				goto unpack_error;
-			safe_unpack32(&plugin_id, buffer);
-			safe_unpack32(&config_flags, buffer);
-			safe_unpack64(&gres_ns->gres_cnt_avail, buffer);
-			safe_unpack16(&gres_bitmap_size, buffer);
-
-			safe_unpack16(&gres_ns->topo_cnt, buffer);
-			if (gres_ns->topo_cnt) {
-				gres_ns->topo_core_bitmap =
-					xcalloc(gres_ns->topo_cnt,
-						sizeof(bitstr_t *));
-				gres_ns->topo_gres_bitmap =
-					xcalloc(gres_ns->topo_cnt,
-						sizeof(bitstr_t *));
-				gres_ns->topo_res_core_bitmap =
-					xcalloc(gres_ns->topo_cnt,
-						sizeof(bitstr_t *));
-				for (int i = 0; i < gres_ns->topo_cnt; i++) {
-					unpack_bit_str_hex(
-						&gres_ns->topo_core_bitmap[i],
-						buffer);
-					unpack_bit_str_hex(
-						&gres_ns->topo_gres_bitmap[i],
 						buffer);
 				}
 			}
@@ -7013,6 +6943,13 @@ extern int gres_job_state_validate(gres_job_state_validate_t *gres_js_val)
 	if (job_validate.tmp_min_cpus > *gres_js_val->min_cpus)
 		*gres_js_val->min_cpus = job_validate.tmp_min_cpus;
 
+	if (((*gres_js_val->cpus_per_task) != NO_VAL16) &&
+	    ((*gres_js_val->num_tasks) != NO_VAL)) {
+		cnt = (*gres_js_val->cpus_per_task) * (*gres_js_val->num_tasks);
+		if (*gres_js_val->min_cpus < cnt)
+			*gres_js_val->min_cpus = cnt;
+	}
+
 	if (job_validate.have_gres_shared &&
 	    (job_validate.rc == SLURM_SUCCESS) &&
 	    tres_freq &&
@@ -8068,7 +8005,7 @@ static uint32_t _job_test(gres_state_t *gres_state_job,
 	bitstr_t *avail_core_bitmap = NULL;
 	bool use_single_dev = (gres_id_shared(gres_state_job->config_flags) &&
 			       !(slurm_conf.select_type_param &
-				 MULTIPLE_SHARING_GRES_PJ));
+				 SELECT_MULTIPLE_SHARING_GRES_PJ));
 	bool use_busy_dev;
 
 	if (gres_ns->no_consume)
@@ -9483,7 +9420,7 @@ extern int gres_step_state_unpack(list_t **gres_list, buf_t *buffer,
 		if ((buffer == NULL) || (remaining_buf(buffer) == 0))
 			break;
 		rec_cnt--;
-		if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+		if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 			safe_unpack32(&magic, buffer);
 			if (magic != GRES_MAGIC)
 				goto unpack_error;
@@ -9499,54 +9436,6 @@ extern int gres_step_state_unpack(list_t **gres_list, buf_t *buffer,
 			safe_unpack64(&gres_ss->total_gres, buffer);
 			safe_unpackstr(&gres_ss->type_name, buffer);
 			gres_ss->type_id = gres_build_id(gres_ss->type_name);
-			safe_unpack32(&gres_ss->node_cnt, buffer);
-			if (gres_ss->node_cnt > NO_VAL)
-				goto unpack_error;
-			unpack_bit_str_hex(&gres_ss->node_in_use, buffer);
-			safe_unpack8(&data_flag, buffer);
-			if (data_flag) {
-				safe_unpack64_array(
-					&gres_ss->gres_cnt_node_alloc,
-					&uint32_tmp, buffer);
-			}
-			safe_unpack8(&data_flag, buffer);
-			if (data_flag) {
-				gres_ss->gres_bit_alloc =
-					xcalloc(gres_ss->node_cnt,
-						sizeof(bitstr_t *));
-				for (i = 0; i < gres_ss->node_cnt; i++) {
-					unpack_bit_str_hex(&gres_ss->
-							   gres_bit_alloc[i],
-							   buffer);
-				}
-			}
-			for (i = 0; i < gres_ss->node_cnt; i++) {
-				safe_unpack8(&data_flag, buffer);
-				if (!data_flag)
-					continue;
-				if (!gres_ss->gres_per_bit_alloc)
-					safe_xcalloc(
-						gres_ss->gres_per_bit_alloc,
-						gres_ss->node_cnt,
-						sizeof(uint64_t *));
-				safe_unpack64_array(
-					&gres_ss->gres_per_bit_alloc[i],
-					&uint32_tmp, buffer);
-			}
-		} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-			safe_unpack32(&magic, buffer);
-			if (magic != GRES_MAGIC)
-				goto unpack_error;
-			safe_unpack32(&plugin_id, buffer);
-			gres_ss = xmalloc(sizeof(gres_step_state_t));
-			safe_unpack16(&gres_ss->cpus_per_gres, buffer);
-			safe_unpack16(&gres_ss->flags, buffer);
-			safe_unpack64(&gres_ss->gres_per_step, buffer);
-			safe_unpack64(&gres_ss->gres_per_node, buffer);
-			safe_unpack64(&gres_ss->gres_per_socket, buffer);
-			safe_unpack64(&gres_ss->gres_per_task, buffer);
-			safe_unpack64(&gres_ss->mem_per_gres, buffer);
-			safe_unpack64(&gres_ss->total_gres, buffer);
 			safe_unpack32(&gres_ss->node_cnt, buffer);
 			if (gres_ss->node_cnt > NO_VAL)
 				goto unpack_error;

@@ -1,6 +1,6 @@
 Name:		slurm
 Version:	25.05.0
-%define rel	0rc2
+%define rel	1
 %if %{defined patch} && %{undefined extraver}
 %define extraver .patched
 %endif
@@ -199,8 +199,8 @@ Requires: libjwt >= 1.10.0
 %endif
 
 %if %{with yaml}
-Requires: libyaml >= 0.2.5
-BuildRequires: libyaml-devel >= 0.2.5
+Requires: libyaml >= 0.1.7
+BuildRequires: libyaml-devel >= 0.1.7
 %endif
 
 %if %{with freeipmi}
@@ -228,7 +228,7 @@ BuildRequires: libselinux-devel
 %define _mandir %{_slurm_mandir}
 
 #  Allow override of bashcompdir via _slurm_bashcompdir.
-%{!?_slurm_bashcompdir: %global _slurm_bashcompdir /usr/share}
+%{!?_slurm_bashcompdir: %global _slurm_bashcompdir %{_datadir}}
 %define _bashcompdir %{_slurm_bashcompdir}
 
 #
@@ -435,7 +435,6 @@ Provides a REST interface to Slurm.
 	%{?_with_yaml} \
 	%{?_with_nvml} \
 	%{?_with_hlml} \
-	%{?_with_freeipmi} \
 	%{!?with_munge:--without-munge} \
 	%{?_with_cflags}
 
@@ -762,6 +761,16 @@ fi
 %systemd_preun slurmdbd.service
 %postun slurmdbd
 %systemd_postun_with_restart slurmdbd.service
+
+%if %{with slurmrestd}
+%post slurmrestd
+%systemd_post slurmrestd.service
+%preun slurmrestd
+%systemd_preun slurmrestd.service
+%postun slurmrestd
+%systemd_postun_with_restart slurmrestd.service
+%endif
+
 %if %{defined patch}
 %changelog
 * %(date "+%a %b %d %Y") %{?packager} - %{version}-%{release}

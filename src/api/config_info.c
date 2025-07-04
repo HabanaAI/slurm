@@ -387,9 +387,9 @@ void slurm_write_ctl_conf ( slurm_ctl_conf_info_msg_t * slurm_ctl_conf_ptr,
 		if (p[i].flags & PART_FLAG_ROOT_ONLY)
 	                fprintf(fp, " RootOnly=YES");
 
-		if (p[i].cr_type & CR_CORE)
+		if (p[i].cr_type & SELECT_CORE)
 			fprintf(fp, " SelectTypeParameters=CR_CORE");
-		else if (p[i].cr_type & CR_SOCKET)
+		else if (p[i].cr_type & SELECT_SOCKET)
 			fprintf(fp, " SelectTypeParameters=CR_SOCKET");
 
 		if (p[i].flags & PART_FLAG_PDOI)
@@ -624,9 +624,6 @@ extern void *slurm_ctl_conf_2_key_pairs(slurm_conf_t *conf)
 
 	add_key_pair(ret_list, "AccountingStorageType", "%s",
 		     conf->accounting_storage_type);
-
-	add_key_pair(ret_list, "AccountingStorageUser", "%s",
-		     conf->accounting_storage_user);
 
 	add_key_pair_own(ret_list, "AccountingStoreFlags",
 			 _accountingstoreflags(conf->conf_flags));
@@ -1576,7 +1573,6 @@ static void _write_key_pairs(FILE* out, void *key_pairs)
 		    !xstrcasecmp(key_pair->name, "AccountingStorageHost") ||
 		    !xstrcasecmp(key_pair->name, "AccountingStoragePort") ||
 		    !xstrcasecmp(key_pair->name, "AccountingStorageType") ||
-		    !xstrcasecmp(key_pair->name, "AccountingStorageUser") ||
 		    !xstrcasecmp(key_pair->name, "AccountingStoreFlags") ||
 		    !xstrcasecmp(key_pair->name, "AcctGatherEnergyType") ||
 		    !xstrcasecmp(key_pair->name, "AcctGatherFilesystemType") ||

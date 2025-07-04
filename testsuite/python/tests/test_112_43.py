@@ -7,6 +7,7 @@ import getpass
 import json
 import random
 import logging
+import time
 
 random.seed()
 
@@ -32,15 +33,16 @@ def setup():
     global local_cluster_name, partition_name
 
     atf.require_accounting(modify=True)
+    atf.require_nodes(10)
     atf.require_config_parameter("AllowNoDefAcct", "Yes", source="slurmdbd")
     atf.require_config_parameter("TrackWCKey", "Yes", source="slurmdbd")
     atf.require_config_parameter("TrackWCKey", "Yes")
     atf.require_config_parameter("AuthAltTypes", "auth/jwt")
     atf.require_config_parameter("AuthAltTypes", "auth/jwt", source="slurmdbd")
     atf.require_slurmrestd("slurmctld,slurmdbd", "v0.0.43")
-    atf.require_version("25.05", "sbin/slurmdbd")
-    atf.require_version("25.05", "sbin/slurmctld")
-    atf.require_version("25.05", "sbin/slurmrestd")
+    atf.require_version((25, 5), "sbin/slurmdbd")
+    atf.require_version((25, 5), "sbin/slurmctld")
+    atf.require_version((25, 5), "sbin/slurmrestd")
     atf.require_slurm_running()
 
     # Setup OpenAPI client with OpenAPI-Generator once Slurm(restd) is running
@@ -48,13 +50,6 @@ def setup():
 
     # Conf reliant variables (put here to avert --auto-config errors)
     local_cluster_name = atf.get_config_parameter("ClusterName")
-
-    # local_user_name needs to have an association due ticket 20394.
-    # It also needs AdminLevel to be able to run commands like slurm.slurm_<ver>_diag()
-    atf.run_command(
-        f"sacctmgr -i add user {local_cluster_name} defaultaccount=root AdminLevel=Admin",
-        user=atf.properties["slurm-user"],
-    )
 
     partition_name = atf.default_partition()
     if not partition_name:
@@ -78,20 +73,51 @@ def slurmdb(setup):
 
 
 @pytest.fixture(scope="function")
+def admin_level(setup):
+    atf.run_command(
+        f"sacctmgr -i add user {local_cluster_name} defaultaccount=root AdminLevel=Admin",
+        user=atf.properties["slurm-user"],
+        fatal=True,
+    )
+    yield
+    atf.run_command(
+        f"sacctmgr -i delete user {local_cluster_name}",
+        user=atf.properties["slurm-user"],
+    )
+
+
+@pytest.fixture(scope="function")
 def create_accounts():
-    atf.run_command(f"sacctmgr -i create account {account_name}", fatal=False)
-    atf.run_command(f"sacctmgr -i create account {account2_name}", fatal=False)
+    atf.run_command(
+        f"sacctmgr -i create account {account_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+    atf.run_command(
+        f"sacctmgr -i create account {account2_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
 
     yield
 
-    atf.run_command(f"sacctmgr -i delete account {account_name}", fatal=False)
-    atf.run_command(f"sacctmgr -i delete account {account2_name}", fatal=False)
+    atf.run_command(
+        f"sacctmgr -i delete account {account_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+    atf.run_command(
+        f"sacctmgr -i delete account {account2_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
 
 
 @pytest.fixture(scope="function")
 def create_users(create_accounts):
     atf.run_command(
         f"sacctmgr -i create user {user_name} cluster={local_cluster_name} account={account_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
 
@@ -99,6 +125,7 @@ def create_users(create_accounts):
 
     atf.run_command(
         f"sacctmgr -i delete user {user_name} cluster={local_cluster_name} account={account_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
 
@@ -107,6 +134,7 @@ def create_users(create_accounts):
 def create_coords(create_users):
     atf.run_command(
         f"sacctmgr -i create user {coord_name} cluster={local_cluster_name} account={account2_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
 
@@ -114,6 +142,7 @@ def create_coords(create_users):
 
     atf.run_command(
         f"sacctmgr -i delete user {coord_name} cluster={local_cluster_name} account={account2_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
 
@@ -122,10 +151,12 @@ def create_coords(create_users):
 def create_wckeys():
     atf.run_command(
         f"sacctmgr -i create user {user_name} cluster={local_cluster_name} wckey={wckey_name}",
+        user=atf.properties["slurm-user"],
         fatal=True,
     )
     atf.run_command(
         f"sacctmgr -i create user {coord_name} cluster={local_cluster_name} wckey={wckey_name}",
+        user=atf.properties["slurm-user"],
         fatal=True,
     )
 
@@ -133,23 +164,41 @@ def create_wckeys():
 
     atf.run_command(
         f"sacctmgr -i delete user {user_name} cluster={local_cluster_name} wckey={wckey_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
     atf.run_command(
         f"sacctmgr -i delete user {coord_name} cluster={local_cluster_name} wckey={wckey_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
 
 
 @pytest.fixture(scope="function")
 def create_qos(create_coords):
-    atf.run_command(f"sacctmgr -i create qos {qos_name}", fatal=False)
-    atf.run_command(f"sacctmgr -i create qos {qos2_name}", fatal=False)
+    atf.run_command(
+        f"sacctmgr -i create qos {qos_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+    atf.run_command(
+        f"sacctmgr -i create qos {qos2_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
 
     yield
 
-    atf.run_command(f"sacctmgr -i delete qos {qos_name}", fatal=False)
-    atf.run_command(f"sacctmgr -i delete qos {qos2_name}", fatal=False)
+    atf.run_command(
+        f"sacctmgr -i delete qos {qos_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+    atf.run_command(
+        f"sacctmgr -i delete qos {qos2_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
 
 
 def test_loaded_versions():
@@ -176,7 +225,7 @@ def test_loaded_versions():
     assert "/slurmdb/v0.0.43/jobs/" in spec["paths"].keys()
 
 
-def test_db_accounts(slurm, slurmdb, create_wckeys):
+def test_db_accounts(slurm, slurmdb, create_wckeys, admin_level):
     from openapi_client import ApiClient as Client
     from openapi_client import Configuration as Config
     from openapi_client.models.v0043_openapi_accounts_resp import (
@@ -301,14 +350,14 @@ def test_db_accounts(slurm, slurmdb, create_wckeys):
     assert not resp.accounts
 
 
-def test_db_diag(slurmdb):
+def test_db_diag(slurmdb, admin_level):
     resp = slurmdb.slurmdb_v0043_get_diag()
     assert not resp.warnings
     assert len(resp.errors) == 0
     assert resp.statistics.time_start > 0
 
 
-def test_db_wckeys(slurmdb, create_coords):
+def test_db_wckeys(slurmdb, create_coords, admin_level):
     from openapi_client.models.v0043_wckey import V0043Wckey
     from openapi_client.models.v0043_openapi_wckey_resp import V0043OpenapiWckeyResp
 
@@ -377,7 +426,7 @@ def test_db_wckeys(slurmdb, create_coords):
     assert len(resp.wckeys) == 0
 
 
-def test_db_clusters(slurmdb):
+def test_db_clusters(slurmdb, admin_level):
     from openapi_client.models.v0043_openapi_clusters_resp import (
         V0043OpenapiClustersResp,
     )
@@ -436,7 +485,7 @@ def test_db_clusters(slurmdb):
     assert not resp.clusters
 
 
-def test_db_users(slurmdb):
+def test_db_users(slurmdb, admin_level):
     from openapi_client.models.v0043_openapi_users_resp import V0043OpenapiUsersResp
     from openapi_client.models.v0043_assoc_short import V0043AssocShort
     from openapi_client.models.v0043_coord import V0043Coord
@@ -562,7 +611,7 @@ def test_db_users(slurmdb):
         assert not resp.users
 
 
-def test_db_assoc(slurmdb, create_coords, create_qos):
+def test_db_assoc(slurmdb, create_coords, create_qos, admin_level):
     from openapi_client.models.v0043_openapi_assocs_resp import V0043OpenapiAssocsResp
     from openapi_client.models.v0043_assoc import V0043Assoc
     from openapi_client.models.v0043_assoc_short import V0043AssocShort
@@ -812,7 +861,7 @@ def test_db_assoc(slurmdb, create_coords, create_qos):
     assert not resp.associations
 
 
-def test_db_qos(slurmdb, create_coords):
+def test_db_qos(slurmdb, create_coords, admin_level):
     from openapi_client.models.v0043_qos import V0043Qos
     from openapi_client.models.v0043_tres import V0043Tres
     from openapi_client.models.v0043_openapi_slurmdbd_qos_resp import (
@@ -962,7 +1011,7 @@ def test_db_tres(slurmdb):
     assert len(resp.errors) == 0
 
 
-def test_db_config(slurmdb):
+def test_db_config(slurmdb, admin_level):
     resp = slurmdb.slurmdb_v0043_get_config()
     assert len(resp.warnings) == 0
     assert len(resp.errors) == 0
@@ -1082,8 +1131,8 @@ def test_jobs(slurm, slurmdb):
         assert len(resp.errors) == 0
         assert resp.jobs
         for job in resp.jobs:
-            if job.name == "allocation":
-                # job hasn't settled at slurmdbd yet
+            if job.name != "updated test job":
+                # job change hasn't settled at slurmdbd yet
                 requery = True
             else:
                 requery = False
@@ -1108,6 +1157,7 @@ def reservation(setup):
 
     atf.run_command(
         f"scontrol create reservation starttime=now duration=120 user=root nodes=ALL ReservationName={resv_name}",
+        user=atf.properties["slurm-user"],
         fatal=True,
     )
 
@@ -1115,22 +1165,9 @@ def reservation(setup):
 
     atf.run_command(
         f"scontrol delete ReservationName={resv_name}",
+        user=atf.properties["slurm-user"],
         fatal=False,
     )
-
-
-def test_resv(slurm, reservation):
-    resp = slurm.slurm_v0043_get_reservation(resv_name)
-    assert len(resp.warnings) == 0
-    assert len(resp.errors) == 0
-    assert resp.reservations
-    for resv in resp.reservations:
-        assert resv.name == resv_name
-
-    resp = slurm.slurm_v0043_get_reservations()
-    assert len(resp.warnings) == 0
-    assert len(resp.errors) == 0
-    assert resp.reservations
 
 
 def test_partitions(slurm):
@@ -1147,7 +1184,7 @@ def test_partitions(slurm):
     assert resp.partitions
 
 
-def test_nodes(slurm):
+def test_nodes(slurm, admin_level):
     from openapi_client.models.v0043_update_node_msg import V0043UpdateNodeMsg
 
     node_name = None
@@ -1249,3 +1286,140 @@ def test_diag(slurm):
 def test_licenses(slurm):
     resp = slurm.slurm_v0043_get_licenses()
     assert len(resp.errors) == 0
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [[], ["IGNORE_JOBS"], ["IGNORE_JOBS", "MAGNETIC"]],
+)
+def test_reservations(slurm, flags, admin_level):
+    from openapi_client.models.v0043_reservation_mod_req import V0043ReservationModReq
+    from openapi_client.models.v0043_reservation_desc_msg import V0043ReservationDescMsg
+    from openapi_client.models.v0043_uint64_no_val_struct import V0043Uint64NoValStruct
+    from openapi_client.models.v0043_uint32_no_val_struct import V0043Uint32NoValStruct
+
+    resv_name = "test_resv"
+    users = ["root", "atf"]
+    duration = V0043Uint32NoValStruct(number=300, set=True)
+    start_time = V0043Uint64NoValStruct(number=int(time.time()) + 60, set=True)
+    end_time = V0043Uint64NoValStruct(
+        number=start_time.number + duration.number * 60, set=True
+    )
+    partition = "primary"
+    node_list = ["node1", "node7"]
+
+    # Create a reservation
+    logging.debug(f"Creating reservation '{resv_name}'...")
+    reservation_info = V0043ReservationDescMsg(
+        name=resv_name,
+        users=users,
+        duration=duration,
+        start_time=start_time,
+        node_list=node_list,
+        partition=partition,
+        flags=flags,
+    )
+    resp = slurm.slurm_v0043_post_reservations(
+        V0043ReservationModReq(reservations=[reservation_info])
+    )
+    assert resp.reservations, f"Reservation {resv_name} should be created"
+    assert not resp.warnings and not resp.errors
+
+    # Verify the fields of the response
+    retrieved_reservation = resp.reservations[0]
+    assert (
+        retrieved_reservation.name == resv_name
+    ), f"Field 'name' should be {resv_name}"
+    assert (
+        retrieved_reservation.partition == partition
+    ), f"Field 'partition' should be {partition}"
+    assert (
+        retrieved_reservation.node_list == node_list
+    ), f"Field 'node_list' should be {node_list}"
+    assert retrieved_reservation.users == users, f"Field 'users' should be {users}"
+    assert (
+        retrieved_reservation.start_time.number == start_time.number
+    ), f"Field 'start_time' should be {start_time}"
+    assert (
+        retrieved_reservation.duration.number == duration.number
+    ), f"Field 'duration' should be {duration}"
+    assert (
+        # SPEC_NODES is automatically added
+        set([flag for flag in retrieved_reservation.flags if flag != "SPEC_NODES"])
+        == set(flags)
+    ), f"Field 'flags' should be {flags}"
+
+    # Verify fields of reservation created
+    resp = slurm.slurm_v0043_get_reservation(resv_name)
+    assert len(resp.reservations) == 1, f"Reservation '{resv_name}' should be returned"
+
+    retrieved_reservation = resp.reservations[0]
+    assert (
+        retrieved_reservation.name == resv_name
+    ), f"Field 'name' should be {resv_name}"
+    assert (
+        retrieved_reservation.partition == partition
+    ), f"Field 'partition' should be {partition}"
+    assert (
+        atf.node_range_to_list(retrieved_reservation.node_list) == node_list
+    ), f"Field 'node_list' should be {node_list}"
+    assert (
+        retrieved_reservation.users.split(",") == users
+    ), f"Field 'users' should be {users}"
+    assert (
+        retrieved_reservation.start_time.number == start_time.number
+    ), f"Field 'start_time' should be {start_time}"
+    assert (
+        retrieved_reservation.end_time.number == end_time.number
+    ), f"Field 'end_time' should be {end_time}"
+    assert (
+        # SPEC_NODES is automatically added
+        set([flag for flag in retrieved_reservation.flags if flag != "SPEC_NODES"])
+        == set(flags)
+    ), f"Field 'flags' should be {flags}"
+
+    # Update reservation
+    new_end_time = retrieved_reservation.end_time.number + 300
+    new_users = ["root"]
+    new_node_list = ["node2"]
+    new_start_time = V0043Uint64NoValStruct(number=int(time.time()) + 90, set=True)
+    new_flags = ["IGNORE_JOBS", "MAGNETIC", "USER_DELETE"]
+
+    update_info = V0043ReservationDescMsg(
+        name=resv_name,
+        end_time=V0043Uint64NoValStruct(set=True, number=new_end_time),
+        users=new_users,
+        node_list=new_node_list,
+        start_time=new_start_time,
+        flags=new_flags,
+    )
+    resp = slurm.slurm_v0043_post_reservation(update_info)
+    assert resp.reservations, "Reservation should be updated"
+    assert not resp.warnings and not resp.errors
+
+    # Validate update
+    resp = slurm.slurm_v0043_get_reservation(resv_name)
+    assert len(resp.reservations) == 1, f"Reservation '{resv_name}' should be returned"
+
+    updated = resp.reservations[0]
+
+    assert updated.end_time.number == new_end_time
+    assert updated.users.split(",") == new_users, f"Field 'users' should be {new_users}"
+    assert (
+        atf.node_range_to_list(updated.node_list) == new_node_list
+    ), f"Field 'node_list' should be {new_node_list}"
+    assert (
+        updated.start_time.number == new_start_time.number
+    ), f"Field 'start_time' should be {new_start_time}"
+    assert (
+        # SPEC_NODES is automatically added
+        set([flag for flag in updated.flags if flag != "SPEC_NODES"])
+        == set(new_flags)
+    ), f"Field 'flags' should be {flags}"
+
+    # Delete reservation
+    resp = slurm.slurm_v0043_delete_reservation(reservation_name=resv_name)
+    assert not resp.warnings and not resp.errors
+    assert resv_name not in [
+        r.name for r in slurm.slurm_v0043_get_reservations().reservations
+    ], f"Reservation {resv_name} should be deleted"

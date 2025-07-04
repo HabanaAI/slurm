@@ -279,8 +279,6 @@ static void _fill_ctld_conf(slurm_conf_t *conf_ptr)
 		xstrdup(conf->accounting_storage_tres);
 	conf_ptr->accounting_storage_type =
 		xstrdup(conf->accounting_storage_type);
-	conf_ptr->accounting_storage_user =
-		xstrdup(conf->accounting_storage_user);
 
 	conf_ptr->acct_gather_conf = acct_gather_conf_values();
 	conf_ptr->acct_gather_energy_type =
@@ -1862,14 +1860,7 @@ static void _slurm_rpc_epilog_complete(slurm_msg_t *msg)
 		schedule_job_save();		/* Has own locking */
 	}
 
-	/*
-	 * Pre-24.05 no response was expected by the sender, and an error
-	 * would be printed if we attempted to send one here.
-	 * When 23.11 is no longer supported the if here can be removed leaving
-	 * a direct call to slurm_send_rc_msg.
-	 */
-	if (msg->protocol_version >= SLURM_24_05_PROTOCOL_VERSION)
-		slurm_send_rc_msg(msg, SLURM_SUCCESS);
+	slurm_send_rc_msg(msg, SLURM_SUCCESS);
 }
 
 /* _slurm_rpc_job_step_kill - process RPC to cancel an entire job or
@@ -2206,7 +2197,7 @@ static void _step_create_job_lock(bool lock)
 	static int active_rpc_cnt = 0;
 	slurmctld_lock_t job_write_lock = {
 		.job = WRITE_LOCK,
-		.node = READ_LOCK
+		.node = READ_LOCK,
 	};
 
 	if (lock) {
@@ -2225,7 +2216,7 @@ static void _step_create_job_fail_lock(bool lock)
 	slurmctld_lock_t job_write_lock = {
 		.job = WRITE_LOCK,
 		.node = WRITE_LOCK,
-		.fed = READ_LOCK
+		.fed = READ_LOCK,
 	};
 
 	if (lock) {
@@ -2635,7 +2626,7 @@ static void _slurm_rpc_node_registration(slurm_msg_t *msg)
 		.job = WRITE_LOCK,
 		.node = WRITE_LOCK,
 		.part = WRITE_LOCK,
-		.fed = READ_LOCK
+		.fed = READ_LOCK,
 	};
 
 	START_TIMER;
@@ -2966,14 +2957,7 @@ static void _slurm_rpc_job_sbcast_cred(slurm_msg_t *msg)
 	}
 
 	if (job_ptr->bit_flags & STEPMGR_ENABLED) {
-		if (msg->protocol_version < SLURM_24_05_PROTOCOL_VERSION) {
-			error("rpc %s from non-supported client version %d for stepmgr job",
-			      rpc_num2string(msg->msg_type),
-			      msg->protocol_version);
-			slurm_send_rc_msg(msg, ESLURM_NOT_SUPPORTED);
-		} else {
-			slurm_send_reroute_msg(msg, NULL, job_ptr->batch_host);
-		}
+		slurm_send_reroute_msg(msg, NULL, job_ptr->batch_host);
 		unlock_slurmctld(job_read_lock);
 		return;
 	}
@@ -3446,14 +3430,7 @@ static void _slurm_rpc_step_layout(slurm_msg_t *msg)
 	}
 
 	if (job_ptr->bit_flags & STEPMGR_ENABLED) {
-		if (msg->protocol_version < SLURM_24_05_PROTOCOL_VERSION) {
-			error("rpc %s from non-supported client version %d for stepmgr job",
-			      rpc_num2string(msg->msg_type),
-			      msg->protocol_version);
-			slurm_send_rc_msg(msg, ESLURM_NOT_SUPPORTED);
-		} else {
-			slurm_send_reroute_msg(msg, NULL, job_ptr->batch_host);
-		}
+		slurm_send_reroute_msg(msg, NULL, job_ptr->batch_host);
 		unlock_slurmctld(job_read_lock);
 		return;
 	}
@@ -4898,6 +4875,7 @@ static void _slurm_rpc_trigger_pull(slurm_msg_t *msg)
 
 static void _slurm_rpc_get_topo(slurm_msg_t *msg)
 {
+	int rc;
 	topo_info_response_msg_t *topo_resp_msg;
 	topo_info_request_msg_t *topo_req_msg = msg->data;
 	/* Locks: read node lock */
@@ -4908,12 +4886,17 @@ static void _slurm_rpc_get_topo(slurm_msg_t *msg)
 	topo_resp_msg = xmalloc(sizeof(topo_info_response_msg_t));
 	START_TIMER;
 	lock_slurmctld(node_read_lock);
-	(void) topology_g_get(TOPO_DATA_TOPOLOGY_PTR, topo_req_msg->name,
-			      &topo_resp_msg->topo_info);
+	rc = topology_g_get(TOPO_DATA_TOPOLOGY_PTR, topo_req_msg->name,
+			    &topo_resp_msg->topo_info);
 	unlock_slurmctld(node_read_lock);
 	END_TIMER2(__func__);
 
-	(void) send_msg_response(msg, RESPONSE_TOPO_INFO, topo_resp_msg);
+	if (rc) {
+		slurm_send_rc_msg(msg, rc);
+	} else {
+		(void) send_msg_response(msg, RESPONSE_TOPO_INFO,
+					 topo_resp_msg);
+	}
 	slurm_free_topo_info_msg(topo_resp_msg);
 }
 
@@ -5150,7 +5133,7 @@ static void _set_power_save_settings(char *new_str, char **slurm_conf_setting)
 	slurmctld_lock_t locks = {
 		.conf = WRITE_LOCK,
 		.node = READ_LOCK,
-		.part = READ_LOCK
+		.part = READ_LOCK,
 	};
 
 	lock_slurmctld(locks);
@@ -5532,7 +5515,7 @@ static void _pack_rpc_stats(buf_t *buffer, uint16_t protocol_version)
 {
 	slurm_mutex_lock(&rpc_mutex);
 
-	if (protocol_version >= SLURM_24_05_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		uint32_t rpc_count = 0, user_count = 1;
 		uint8_t queue_enabled = rpc_queue_enabled();
 
@@ -5550,25 +5533,6 @@ static void _pack_rpc_stats(buf_t *buffer, uint16_t protocol_version)
 			pack16_array(rpc_type_cycle_last, rpc_count, buffer);
 			pack16_array(rpc_type_cycle_max, rpc_count, buffer);
 		}
-
-		/* user_count starts at 1 as root is in index 0 */
-		while (rpc_user_id[user_count])
-			user_count++;
-		pack32(user_count, buffer);
-		pack32_array(rpc_user_id, user_count, buffer);
-		pack32_array(rpc_user_cnt, user_count, buffer);
-		pack64_array(rpc_user_time, user_count, buffer);
-
-		agent_pack_pending_rpc_stats(buffer);
-	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-		uint32_t rpc_count = 0, user_count = 1;
-
-		while (rpc_type_id[rpc_count])
-			rpc_count++;
-		pack32(rpc_count, buffer);
-		pack16_array(rpc_type_id, rpc_count, buffer);
-		pack32_array(rpc_type_cnt, rpc_count, buffer);
-		pack64_array(rpc_type_time, rpc_count, buffer);
 
 		/* user_count starts at 1 as root is in index 0 */
 		while (rpc_user_id[user_count])
@@ -6024,8 +5988,8 @@ static void _slurm_rpc_tls_cert(slurm_msg_t *msg)
 	}
 
 	if (resp->signed_cert) {
-		log_flag(AUDIT_TLS, "Sending signed certificate back to node \'%s\':\n%s",
-			 req->node_name, resp->signed_cert);
+		log_flag(AUDIT_TLS, "Sending signed certificate back to node \'%s\'",
+			 req->node_name);
 	}
 
 	(void) send_msg_response(msg, RESPONSE_TLS_CERT, resp);
@@ -6402,7 +6366,7 @@ static void _slurm_rpc_node_alias_addrs(slurm_msg_t *msg)
 	node_record_t *node_ptr;
 
 	slurmctld_lock_t node_read_lock = {
-		.node = READ_LOCK
+		.node = READ_LOCK,
 	};
 
 	START_TIMER;

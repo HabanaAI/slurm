@@ -571,10 +571,14 @@ done:
 	slurm_mutex_unlock(&cleanup_mutex);
 	/* skipping lock of step_complete.lock */
 	if (rc || step_complete.step_rc) {
-		info("%s: done with step (rc[0x%x]:%s, cleanup_rc[0x%x]:%s)",
-		     __func__, step_complete.step_rc,
-		     slurm_strerror(step_complete.step_rc), rc,
-		     slurm_strerror(rc));
+		/*
+		 * The step_rc can be anything. Slurmstepd usually sets it to
+		 * a task exit code. Otherwise, certain plugins will set it
+		 * to POSIX errno errors while others use Slurm internal errors.
+		 * So we won't translate it.
+		 */
+		info("%s: done with step (step_rc: %d, slurm_rc: %d - %s)",
+		     __func__, step_complete.step_rc, rc, slurm_strerror(rc));
 	} else {
 		info("done with step");
 	}
@@ -789,7 +793,7 @@ static void _process_cmdline(int argc, char **argv)
 		exit(0);
 	}
 	if ((argc == 2) && !xstrcmp(argv[1], "infinity")) {
-		set_oom_adj(-1000);
+		set_oom_adj(STEPD_OOM_ADJ);
 		(void) poll(NULL, 0, -1);
 		exit(0);
 	}

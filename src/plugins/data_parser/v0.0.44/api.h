@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  openapi.h - Slurm data parser openapi specifier
+ *  api.h - Slurm data parsing handlers
  *****************************************************************************
  *  Copyright (C) SchedMD LLC.
  *
@@ -33,42 +33,58 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef _DATA_PARSER_OPENAPI_H
-#define _DATA_PARSER_OPENAPI_H
+#ifndef DATA_PARSER_API
+#define DATA_PARSER_API
 
-#include "parsers.h"
-#include "src/common/openapi.h"
 #include "src/interfaces/data_parser.h"
 
 /*
- * Populate OpenAPI specification field with reference to parser
- * IN obj - data_t ptr to specific field in OpenAPI schema
- * 	Sets "$ref" key in obj to path of parser schema.
- * 	Parser must be an OBJECT or ARRAY OpenAPI type.
- * IN parser - populate field with $ref to parser
- * IN spec - entire OpenAPI specification
- * IN args - parser args
+ * These macros are defined by the Makefile.am:
+ * DATA_VERSION
+ * PLUGIN_ID
  */
-extern void set_openapi_parse_ref(data_t *obj, const parser_t *parser,
-				  data_t *spec, args_t *args);
 
-/*
- * Populate OpenAPI specification field
- * IN obj - data_t ptr to specific field in OpenAPI schema
- * IN format - OpenAPI format to use
- * IN desc - Description of field to use
- * RET ptr to "items" for ARRAY or "properties" for OBJECT or NULL
- */
-extern data_t *set_openapi_props(data_t *obj, openapi_type_format_t format,
-				 const char *desc);
+#define MAGIC_ARGS 0x2ea1bebb
+#define is_fast_mode(args) (args->flags & FLAG_FAST)
+#define is_complex_mode(args) (args->flags & FLAG_COMPLEX_VALUES)
+#define is_prefer_refs_mode(args) (~args->flags & FLAG_MINIMIZE_REFS)
 
-/*
- * Populate dst with OpenAPI specification schema
- * IN dst - data_t ptr to populate with schema
- * IN parser - schema parser to specify
- * IN args - parser args
- */
-extern void set_openapi_schema(data_t *dst, const parser_t *parser,
-			       args_t *args);
+typedef enum {
+	FLAG_NONE = 0,
+	/* only dump the OpenAPI Specification instead of the requested data */
+	FLAG_SPEC_ONLY = SLURM_BIT(0),
+	/* attempt to run as fast as possible, skipping more expensive checks */
+	FLAG_FAST = SLURM_BIT(1),
+	/* use null/false/Infinity/NaN for *_NO_VALs */
+	FLAG_COMPLEX_VALUES = SLURM_BIT(2),
+	/*
+	 * Deprecated in v0.0.42 (as default behavior)
+	 * TODO: Remove flag in v0.0.45
+	 * Prefer $ref over expanding schema inline in OpenAPI specification
+	 * Set FLAG_MINIMIZE_REFS to deactivate this default.
+	 */
+	FLAG_PREFER_REFS = SLURM_BIT(3),
+	/* Prefer to inline $ref into schemas when possible in OpenAPI specification */
+	FLAG_MINIMIZE_REFS = SLURM_BIT(4),
+} data_parser_flags_t;
+
+typedef struct {
+	int magic; /* MAGIC_ARGS */
+	data_parser_on_error_t on_parse_error;
+	data_parser_on_error_t on_dump_error;
+	data_parser_on_error_t on_query_error;
+	void *error_arg;
+	data_parser_on_warn_t on_parse_warn;
+	data_parser_on_warn_t on_dump_warn;
+	data_parser_on_warn_t on_query_warn;
+	void *warn_arg;
+	void *db_conn;
+	bool close_db_conn;
+	list_t *tres_list;
+	list_t *qos_list;
+	data_parser_flags_t flags;
+} args_t;
+
+extern bool data_parser_p_is_deprecated(args_t *args);
 
 #endif

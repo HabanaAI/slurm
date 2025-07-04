@@ -49,13 +49,8 @@ const char plugin_name[] = "Certificate manager script plugin";
 const char plugin_type[] = "certmgr/script";
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 
-static char *self_signed_cert = NULL;
-static char *private_key = NULL;
-
 typedef enum {
 	GEN_CSR,
-	GEN_PRIVATE_KEY,
-	GEN_SELF_SIGNED,
 	GET_CERT_KEY,
 	GET_TOKEN,
 	SIGN_CSR,
@@ -71,14 +66,6 @@ typedef struct {
 cert_script_t cert_scripts[] = {
 	[GEN_CSR] = {
 		.key = "generate_csr_script=",
-		.required = true,
-	},
-	[GEN_SELF_SIGNED] = {
-		.key = "gen_self_signed_cert_script=",
-		.required = true,
-	},
-	[GEN_PRIVATE_KEY] = {
-		.key = "gen_private_key_script=",
 		.required = true,
 	},
 	[GET_CERT_KEY] = {
@@ -117,15 +104,6 @@ static int _load_script_paths(void)
 		if (_set_script_path(&cert_scripts[SIGN_CSR]))
 			return SLURM_ERROR;
 		if (_set_script_path(&cert_scripts[VALID_NODE]))
-			return SLURM_ERROR;
-		return SLURM_SUCCESS;
-	}
-
-	if (!running_in_daemon()) {
-		/* needs ephemeral self signed certificate */
-		if (_set_script_path(&cert_scripts[GEN_PRIVATE_KEY]))
-			return SLURM_ERROR;
-		if (_set_script_path(&cert_scripts[GEN_SELF_SIGNED]))
 			return SLURM_ERROR;
 		return SLURM_SUCCESS;
 	}
@@ -189,37 +167,6 @@ fail:
 	return NULL;
 }
 
-static char *_gen_private_key(void)
-{
-	char **script_argv;
-	int script_rc;
-	char *key = NULL;
-
-	script_argv = xcalloc(2, sizeof(char *)); /* NULL terminated */
-	/* script_argv[0] set to script path later */
-
-	key = _run_script(GEN_PRIVATE_KEY, script_argv, &script_rc);
-	xfree(script_argv);
-
-	if (script_rc) {
-		error("%s: Unable to generate private key",
-		      plugin_type);
-		goto fail;
-	} else if (!key || !*key) {
-		error("%s: Unable to generate private key. Script printed nothing to stdout",
-		      plugin_type);
-		goto fail;
-	} else {
-		log_flag(TLS, "Successfully generated private key.");
-	}
-
-	return key;
-
-fail:
-	xfree(key);
-	return NULL;
-}
-
 extern char *certmgr_p_get_node_cert_key(char *node_name)
 {
 	char **script_argv;
@@ -241,44 +188,13 @@ extern char *certmgr_p_get_node_cert_key(char *node_name)
 		      plugin_type);
 		goto fail;
 	} else {
-		log_flag(TLS, "Successfully retrieved node's private certificate key");
+		log_flag(AUDIT_TLS, "Successfully retrieved node's private certificate key");
 	}
 
 	return key;
 
 fail:
 	xfree(key);
-	return NULL;
-}
-
-static char *_gen_self_signed_cert(char *private_key_pem)
-{
-	char **script_argv;
-	int script_rc;
-	char *cert = NULL;
-
-	script_argv = xcalloc(3, sizeof(char *)); /* NULL terminated */
-	/* script_argv[0] set to script path later */
-	script_argv[1] = private_key_pem;
-
-	cert = _run_script(GEN_SELF_SIGNED, script_argv, &script_rc);
-	xfree(script_argv);
-
-	if (script_rc) {
-		error("%s: Unable to generate self signed certificate",
-		      plugin_type);
-		goto fail;
-	} else if (!cert || !*cert) {
-		error("%s: Unable to generate self signed certificate. Script printed nothing to stdout",
-		      plugin_type);
-		goto fail;
-	} else {
-		log_flag(TLS, "Successfully generated self signed certificate: \n%s", cert);
-	}
-
-	return cert;
-fail:
-	xfree(cert);
 	return NULL;
 }
 
@@ -289,24 +205,11 @@ extern int init(void)
 	if (_load_script_paths())
 		return SLURM_ERROR;
 
-	if (!running_in_daemon()) {
-		if (!(private_key = _gen_private_key())) {
-			error("Could not generate private key");
-			return SLURM_ERROR;
-		}
-		if (!(self_signed_cert = _gen_self_signed_cert(private_key))) {
-			error("Could not generate self signed certificate");
-			return SLURM_ERROR;
-		}
-	}
-
 	return SLURM_SUCCESS;
 }
 
 extern int fini(void)
 {
-	xfree(self_signed_cert);
-	xfree(private_key);
 	return SLURM_SUCCESS;
 }
 
@@ -331,7 +234,7 @@ extern char *certmgr_p_get_node_token(char *node_name)
 		      plugin_type);
 		goto fail;
 	} else {
-		log_flag(TLS, "Successfully retrieved unique node token");
+		log_flag(AUDIT_TLS, "Successfully retrieved unique node token");
 	}
 
 	return token;
@@ -363,7 +266,7 @@ extern char *certmgr_p_generate_csr(char *node_name)
 		      plugin_type);
 		goto fail;
 	} else {
-		log_flag(TLS, "Successfully generated csr: \n%s", csr);
+		log_flag(AUDIT_TLS, "Successfully generated csr: \n%s", csr);
 	}
 
 	return csr;
@@ -388,11 +291,11 @@ extern char *certmgr_p_sign_csr(char *csr, bool is_client_auth, char *token,
 	}
 
 	if (!(node = find_node_record(name))) {
-		log_flag(TLS, "Could not find node record for '%s'.", name);
+		log_flag(AUDIT_TLS, "Could not find node record for '%s'.", name);
 	}
 
 	if (is_client_auth) {
-		log_flag(TLS, "Client '%s' connected via mTLS, skipping validation.", name);
+		log_flag(AUDIT_TLS, "Client '%s' connected via mTLS, skipping validation.", name);
 		goto skip_validation_script;
 	}
 
@@ -403,22 +306,22 @@ extern char *certmgr_p_sign_csr(char *csr, bool is_client_auth, char *token,
 			return NULL;
 		}
 
-		log_flag(TLS, "Token received from node '%s' matches what was set in node record table.",
+		log_flag(AUDIT_TLS, "Token received from node '%s' matches what was set in node record table.",
 			 name);
 		goto skip_validation_script;
 	}
 
 	if (!cert_scripts[VALID_NODE].path) {
-		log_flag(TLS, "No token set in node record table for node '%s', and no validation script is configured. Token is invalid.",
+		log_flag(AUDIT_TLS, "No token set in node record table for node '%s', and no validation script is configured. Token is invalid.",
 			 name);
 		return NULL;
 	}
 
 	if (node) {
-		log_flag(TLS, "No token set in node record table for node '%s'. Will run validation script to check token.",
+		log_flag(AUDIT_TLS, "No token set in node record table for node '%s'. Will run validation script to check token.",
 			 name);
 	} else {
-		log_flag(TLS, "Running validation script to check token for '%s'.",
+		log_flag(AUDIT_TLS, "Running validation script to check token for '%s'.",
 			 name);
 	}
 
@@ -438,7 +341,7 @@ extern char *certmgr_p_sign_csr(char *csr, bool is_client_auth, char *token,
 	}
 
 skip_validation_script:
-	log_flag(TLS, "Successfully validated node token for node %s.",
+	log_flag(AUDIT_TLS, "Successfully validated node token for node %s.",
 		 name);
 
 	script_argv = xcalloc(3, sizeof(char *));
@@ -457,14 +360,14 @@ skip_validation_script:
 		      plugin_type, name);
 		goto fail;
 	} else {
-		log_flag(TLS, "Successfully generated signed certificate for node '%s': \n%s",
+		log_flag(AUDIT_TLS, "Successfully generated signed certificate for node '%s': \n%s",
 			 name, signed_cert_pem);
 	}
 
 	if ((xstrstr(slurm_conf.certmgr_params, "single_use_tokens")) && node &&
 	    node->cert_token) {
 		xfree(node->cert_token);
-		log_flag(TLS, "Token for node '%s' has been reset following successful certificate signing.",
+		log_flag(AUDIT_TLS, "Token for node '%s' has been reset following successful certificate signing.",
 			 node->name);
 	}
 

@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  parsing.h - Slurm data parsing handlers
+ *  openapi.h - Slurm data parser openapi specifier
  *****************************************************************************
  *  Copyright (C) SchedMD LLC.
  *
@@ -33,42 +33,29 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef DATA_PARSER_PARSING
-#define DATA_PARSER_PARSING
+#ifndef _DATA_PARSER_OPENAPI_H
+#define _DATA_PARSER_OPENAPI_H
 
-#include "src/interfaces/data_parser.h"
-#include "src/slurmrestd/openapi.h"
-#include "api.h"
 #include "parsers.h"
+#include "src/common/openapi.h"
+#include "src/common/slurm_protocol_common.h"
+#include "src/interfaces/data_parser.h"
+
+#if !defined(PLUGIN_RELEASED)
+#error PLUGIN_RELEASED not defined
+#elif PLUGIN_RELEASED > SLURM_MIN_PROTOCOL_VERSION
+#define IS_PLUGIN_DEPRECATED false
+#else
+#define IS_PLUGIN_DEPRECATED true
+#endif
 
 /*
- * All parsing uses a parent path (list of path components) to track parsing
- * path to provide client a useful error/warning message about issues. OpenAPI
- * specifies how path strings are to be constructed.
+ * Populate dst with OpenAPI specification schema
+ * IN dst - data_t ptr to populate with schema
+ * IN parser - schema parser to specify
+ * IN args - parser args
  */
-#define set_source_path(path_ptr, args, parent_path)      \
-	(is_fast_mode(args) ? NULL :                      \
-	 openapi_fmt_rel_path_str(path_ptr, parent_path))
-#define clone_source_path_index(parent_path, index) \
-	openapi_fork_rel_path_list(parent_path, index)
-
-/*
- * Remove macros to avoid calling them after this point since all calls should
- * be done against PARSE() or DUMP() instead.
- */
-#undef DATA_DUMP
-#undef DATA_PARSE
-
-extern int dump(void *src, ssize_t src_bytes, const parser_t *const parser,
-		data_t *dst, args_t *args);
-#define DUMP(type, src, dst, args)                                            \
-	dump(&src, sizeof(src), find_parser_by_type(DATA_PARSER_##type), dst, \
-	     args)
-
-extern int parse(void *dst, ssize_t dst_bytes, const parser_t *const parser,
-		 data_t *src, args_t *args, data_t *parent_path);
-#define PARSE(type, dst, src, parent_path, args)                               \
-	parse(&dst, sizeof(dst), find_parser_by_type(DATA_PARSER_##type), src, \
-	      args, parent_path)
+extern void set_openapi_schema(data_t *dst, const parser_t *parser,
+			       args_t *args);
 
 #endif

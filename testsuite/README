@@ -161,7 +161,6 @@ test1.86   Confirm node selection from within a job step on existing allocation
 	   (--nodelist, --exclude, --nodes and --nprocs options).
 test1.87   Confirm node selection from within a job step on existing allocation
 	   (--relative, --nodes and --nprocs options).
-test1.88   Basic MPI functionality tests via srun.
 test1.89   Test of CPU affinity/binding support.
 test1.90   Test of memory affinity support for NUMA systems.
 test1.91   Test of CPU affinity for multi-core systems.
@@ -357,7 +356,6 @@ test9.3    Stress test of per-task output files with stdin closed.
 test9.4    Stress test of per-task output and input files.
 test9.5    Stress test of per-task input files.
 test9.6    Stress test of per-task output files.
-test9.7    Stress test multiple simultaneous commands via multiple threads.
 test9.8    Stress test with maximum slurmctld message concurrency.
 test9.9    Throughput test for 5000 jobs for timing
 
@@ -759,11 +757,9 @@ test39.10  Test --mem-per-gpu option
 test39.11  Test GRES options with craynetwork (no topology)
 test39.12  Test some valid combinations of srun --gpu and non-GPU GRES options
 test39.13  Validate proper GRES operation under heavy load (many jobs)
-test39.14  Increase size of job with allocated GPUs
 test39.15  Test --gpus-per-tres with --overcommit option
 test39.16  Test --gpus-per-tres with --exclusive option
 test39.18  Test gres.conf and system GPU normalization and merging logic
-test39.19  Test accounting for GPU resources with various allocation options
 test39.20  Test GPU resource limits with various allocation options
 test39.22  Test heterogeneous job GPU allocations.
 test39.23  Test --gpus-per-task with implicit task count
@@ -773,7 +769,6 @@ test40.#   Test of job select/cons_tres and gres/mps options.
 test40.1   Test some invalid gres/mps job option
 test40.3   Test accounting for MPS resources with various allocation options
 test40.4   Test MPS resource limits with various allocation options
-test40.5   Increase size of job with allocated MPS
 test40.6   Decrease size of job with allocated MPS
 test40.8   Simple CUDA MPS test
 
@@ -793,6 +788,7 @@ test_102_2   /commands/sacctmgr/test_--usage.py
 test_102_3   /commands/sacctmgr/test_--json.py
 test_102_4   /commands/sacctmgr/test_ping.py
 test_102_5   sacctmgr create qos/account job and then delete account/qos
+test_102_6   Test sacctmgr remove account
 
 test_103_#   Testing of salloc options.
 =======================================
@@ -811,6 +807,7 @@ test_105_3   /commands/sbatch/test_invalid_mps_options.py
 test_105_4   /commands/sbatch/test_--usage.py
 test_105_5   Test sbatch --output and --error options work, including use of spaces, %j, and %u
 test_105_6   Test #SBATCH directives in sbatch scripts
+test_105_7   Test accounting for GPU resources with various allocation options
 
 test_106_#   Testing of sbcast options.
 =======================================
@@ -848,10 +845,10 @@ test_111_3   /commands/sinfo/test_--json.py
 test_112_#   Testing of slurmrestd options.
 ===========================================
 test_112_1   /commands/slurmrestd/test_options.py
-test_112_40  Test slurmrestd v0.0.40 requests
 test_112_41  Test slurmrestd v0.0.41 requests
 test_112_42  Test slurmrestd v0.0.42 requests
 test_112_43  Test slurmrestd v0.0.43 requests
+test_112_44  Test slurmrestd v0.0.44 requests
 
 test_113_#   Testing of sprio options.
 ======================================
@@ -919,6 +916,7 @@ test_116_45  /commands/srun/test_-t.py
 test_116_46  /commands/srun/test_--wait.py
 test_116_47  /commands/srun/test_identity.py
 test_116_48  Test SrunPortRange
+test_116_49  Basic MPI functionality tests via srun.
 
 test_117_#   Testing of sstat options.
 ======================================
@@ -1013,6 +1011,7 @@ test_138_#   Testing stressing cases.
 =====================================
 test_138_1   /stress/test_stdin_broadcast.py
 test_138_2   Test parallel performance of squeue
+test_138_3   Stress test multiple simultaneous commands via multiple threads
 
 test_139_#   Testing dynamic nodes.
 ===================================
@@ -1051,3 +1050,11 @@ test_146_1   Test MaxCPUsPerNode and MaxCPUsPerSocket
 test_147_#   Testing SPANK.
 ===========================
 test_147_1   Test SPANK contained when SlurmdParameters=contain_spank
+
+test_148_#   Testing conmgr.
+============================
+test_148_1   Test conmgr
+
+test_200_#   Testing upgrades.
+==============================
+test_200_1   Test upgrade of a basic running cluster

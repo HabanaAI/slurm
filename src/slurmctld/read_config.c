@@ -1854,13 +1854,13 @@ static void _gres_reconfig(void)
 					    NULL, NULL) != SLURM_SUCCESS)
 			continue; /* No need to validate if load failed */
 
-		gres_node_config_validate(
-			node_ptr->name, node_ptr->config_ptr->gres,
-			&node_ptr->gres, &node_ptr->gres_list,
-			node_ptr->config_ptr->threads,
-			node_ptr->config_ptr->cores,
-			node_ptr->config_ptr->tot_sockets,
-			slurm_conf.conf_flags & CONF_FLAG_OR, NULL);
+		gres_node_config_validate(node_ptr,
+					  node_ptr->config_ptr->threads,
+					  node_ptr->config_ptr->cores,
+					  node_ptr->config_ptr->tot_sockets,
+					  (slurm_conf.conf_flags &
+					   CONF_FLAG_OR),
+					  NULL);
 	}
 }
 
@@ -2318,7 +2318,8 @@ static void _restore_job_licenses(job_record_t *job_ptr)
 			license_list_to_string(job_ptr->license_list);
 	}
 
-	if (IS_JOB_RUNNING(job_ptr) || IS_JOB_SUSPENDED(job_ptr))
+	if (IS_JOB_RUNNING(job_ptr) || IS_JOB_SUSPENDED(job_ptr) ||
+	    IS_JOB_COMPLETING(job_ptr))
 		license_job_get(job_ptr, true);
 }
 

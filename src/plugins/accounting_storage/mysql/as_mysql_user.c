@@ -1932,7 +1932,7 @@ static slurmdb_user_rec_t *_make_user_rec_with_coords(
 	};
 
 	assoc_mgr_lock_t locks = {
-		.user = READ_LOCK
+		.user = READ_LOCK,
 	};
 
 	if (!locked)
@@ -2146,6 +2146,7 @@ extern int as_mysql_user_create_user_coords_list(mysql_conn_t *mysql_conn)
 	while ((row = mysql_fetch_row(result))) {
 		user = _process_coord_results(user, row[0], row[1], 1);
 	}
+	mysql_free_result(result);
 
 	/* Get the indirect list of users coords */
 	create_string.query_pos = NULL;

@@ -1,4 +1,4 @@
-.TH sbatch "1" "Slurm Commands" "May 2025" "Slurm Commands"
+.TH sbatch "1" "Slurm Commands" "July 2025" "Slurm Commands"
 
 .SH "NAME"
 sbatch \- Submit a batch script to Slurm.
@@ -1448,6 +1448,10 @@ take precedence over the environment.
 \fBNOTE\fR: A memory size specification of zero is treated as a special case and
 grants the job access to all of the memory on each node.
 
+\fBNOTE\fR: The memory used by each slurmstepd process is included in the job's
+total memory usage. It typically consumes between 20MiB and 200MiB, though this
+can vary depending on system configuration and any loaded plugins.
+
 \fBNOTE\fR: Memory requests will not be strictly enforced unless Slurm is
 configured to use an enforcement mechanism. See \fBConstrainRAMSpace\fR in
 the \fBcgroup.conf\fR(5) man page and \fBOverMemoryKill\fR in the
@@ -2288,8 +2292,8 @@ will be used to create the job allocation.
 No requirement would be placed on all segments for a job needing to
 be placed within the same higher-level block.
 
-\fBNOTE\fR: The segment size must always be evenly divisible by
-the requested node count.
+\fBNOTE\fR: The requested node count must always be evenly divisible by
+the requested segment size.
 
 \fBNOTE\fR: The segment size must be less than or equal to
 the planning base block size. E.g., for a system with 30 nodes as the
@@ -2671,7 +2675,8 @@ Job array ID (index) number modulo 10.
 
 .TP
 \fB%J\fR
-jobid.stepid of the running job. (e.g. "128.0")
+jobid.stepid of the running job (e.g. "128.0"). The stepid is only expanded for
+regular steps, not for special steps like "batch" or "extern".
 .IP
 
 .TP
@@ -2987,6 +2992,11 @@ Same as \fB\-\-requeue\fR
 .TP
 \fBSBATCH_RESERVATION\fR
 Same as \fB\-\-reservation\fR
+.IP
+
+.TP
+\fBSBATCH_SEGMENT_SIZE\fR
+Same as \fB\-\-segment\fR
 .IP
 
 .TP
@@ -3387,17 +3397,18 @@ for backwards compatibility.
 
 .TP
 \fBSLURM_NPROCS\fR
-Set to value of the \fB\-\-ntasks\fR option, if specified. Or, if either of
-the \fB\-\-ntasks\-per\-node\fR or \fB\-\-ntasks\-per\-gpu\fR options are
-specified, set to the number of tasks in the job.
-See \fBSLURM_NTASKS\fR. Included for backwards compatibility.
+Same as \fBSLURM_NTASKS\fR. Included for backwards compatibility.
 .IP
 
 .TP
 \fBSLURM_NTASKS\fR
-Set to value of the \fB\-\-ntasks\fR option, if specified. Or, if either of
-the \fB\-\-ntasks\-per\-node\fR or \fB\-\-ntasks\-per\-gpu\fR options are
-specified, set to the number of tasks in the job.
+Set to value of the \fB\-\-ntasks\fR option, if specified. Or, if any of the
+\fB\-\-ntasks\-per\-*\fR options are specified, set to the number of tasks in
+the job.
+
+\fBNOTE\fR: This is also an input variable for srun, so if set it will
+effectively set the \fB\-\-ntasks\fR option for srun when called from the batch
+script.
 .IP
 
 .TP

@@ -74,6 +74,21 @@ typedef struct {
 	uint32_t *sum_cpus;
 } gres_cpus_foreach_args_t;
 
+typedef struct {
+	licenses_id_t *id;
+	uint32_t remaining;
+	uint32_t required;
+} license_req_t;
+
+typedef struct {
+	bitstr_t *effective_nodes;
+	list_t *future_license_list;
+	uint32_t license_cnt;
+	license_req_t *needed_licenses;
+	bitstr_t *selected_nodes;
+	int *topology_idx;
+} first_relevant_job_arg_t;
+
 uint64_t def_cpu_per_gpu = 0;
 uint64_t def_mem_per_gpu = 0;
 bool preempt_strict_order = false;
@@ -274,7 +289,7 @@ static gres_mc_data_t *_build_gres_mc_data(job_record_t *job_ptr)
 			_valid_uint16(job_mc_ptr->ntasks_per_core);
 	}
 	if ((tres_mc_ptr->ntasks_per_core == 0) &&
-	    (slurm_conf.select_type_param & CR_ONE_TASK_PER_CORE))
+	    (slurm_conf.select_type_param & SELECT_ONE_TASK_PER_CORE))
 		tres_mc_ptr->ntasks_per_core = 1;
 
 	return tres_mc_ptr;
@@ -619,7 +634,7 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 		return NULL;
 	}
 
-	if (cr_type & CR_MEMORY) {
+	if (cr_type & SELECT_MEMORY) {
 		avail_mem = node_ptr->real_memory - node_ptr->mem_spec_limit;
 		if (!test_only)
 			avail_mem -= node_usage[node_i].alloc_memory;
@@ -654,7 +669,7 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 
 	cpus = avail_res->avail_cpus;
 
-	if (cr_type & CR_MEMORY) {
+	if (cr_type & SELECT_MEMORY) {
 		/*
 		 * Memory Check: check pn_min_memory to see if:
 		 *          - this node has enough memory (MEM_PER_CPU == 0)
@@ -668,7 +683,7 @@ static avail_res_t *_can_job_run_on_node(job_record_t *job_ptr,
 			    (job_ptr->details->whole_node &
 			     WHOLE_NODE_REQUIRED)) {
 				cpus = 0;
-			} else if (!(cr_type & CR_CPU) &&
+			} else if (!(cr_type & SELECT_CPU) &&
 				   job_ptr->details->mc_ptr &&
 				   (job_ptr->details->mc_ptr->
 				    ntasks_per_core == 1) &&
@@ -1051,7 +1066,7 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 
 	for (int i = 0; (node_ptr = next_node_bitmap(node_bitmap, &i)); i++) {
 		/* node-level memory check */
-		if (min_mem && (cr_type & CR_MEMORY)) {
+		if (min_mem && (cr_type & SELECT_MEMORY)) {
 			avail_mem = node_ptr->real_memory -
 				    node_ptr->mem_spec_limit;
 			if (avail_mem > node_usage[i].alloc_memory) {
@@ -1065,7 +1080,7 @@ static int _verify_node_state(part_res_record_t *cr_part_ptr,
 				       free_mem, min_mem, job_ptr);
 				goto clear_bit;
 			}
-		} else if (cr_type & CR_MEMORY) {   /* --mem=0 for all memory */
+		} else if (cr_type & SELECT_MEMORY) { /* mem=0 for all memory */
 			if (node_usage[i].alloc_memory) {
 				debug3("Not considering node %s, allocated memory = %"PRIu64" and all memory requested for %pJ",
 				       node_ptr->name,
@@ -2070,7 +2085,7 @@ alloc_job:
 			 */
 			job_ptr->total_cpus += node_ptr->cpus_efctv;
 		}
-	} else if (cr_type & CR_SOCKET) {
+	} else if (cr_type & SELECT_SOCKET) {
 		int ci = 0;
 		int s, last_s, sock_cnt = 0;
 
@@ -2126,7 +2141,7 @@ alloc_job:
 		return error_code;
 	}
 
-	if (!(cr_type & CR_MEMORY))
+	if (!(cr_type & SELECT_MEMORY))
 		return error_code;
 
 	if (!(job_ptr->bit_flags & JOB_MEM_SET) &&
@@ -2202,8 +2217,10 @@ static uint16_t _setup_cr_type(job_record_t *job_ptr)
 	uint16_t tmp_cr_type = slurm_conf.select_type_param;
 
 	if (job_ptr->part_ptr->cr_type) {
-		if ((tmp_cr_type & CR_SOCKET) || (tmp_cr_type & CR_CORE)) {
-			tmp_cr_type &= ~(CR_SOCKET | CR_CORE | CR_MEMORY);
+		if ((tmp_cr_type & SELECT_SOCKET) ||
+		    (tmp_cr_type & SELECT_CORE)) {
+			tmp_cr_type &=
+				~(SELECT_SOCKET | SELECT_CORE | SELECT_MEMORY);
 			tmp_cr_type |= job_ptr->part_ptr->cr_type;
 		} else
 			info("%s: Can't use Partition SelectType unless using CR_Socket or CR_Core",
@@ -2428,6 +2445,157 @@ static void _set_sched_weight(bitstr_t *node_bitmap, bool future)
 	}
 }
 
+/*
+ * Find a license_t record by license id (for use by list_find_first)
+ */
+static int _license_find_rec_by_id(void *x, void *key)
+{
+	licenses_t *license_entry = x;
+	licenses_id_t *id = key;
+
+	xassert(id->lic_id != NO_VAL16);
+
+	if (license_entry->id.lic_id == id->lic_id)
+		return 1;
+	return 0;
+}
+
+static licenses_t *_find_license_in_list(list_t *license_list,
+					 licenses_id_t *id)
+{
+	return list_find_first(license_list, _license_find_rec_by_id, id);
+}
+
+/* Return true if the removed job's end time can not be safely ignored */
+static int _is_job_relevant(void *x, void *key)
+{
+	job_record_t *running_job_ptr = x;
+	first_relevant_job_arg_t *args = key;
+	bitstr_t *effective_bitmap;
+	licenses_t *match;
+
+	xassert(args);
+	xassert(args->selected_nodes);
+
+	effective_bitmap =
+		_select_topo_bitmap(running_job_ptr, args->selected_nodes,
+				    &args->effective_nodes, args->topology_idx);
+
+	/* If nodes overlap assume it is not safe to ignore */
+	if (bit_overlap_any(effective_bitmap, running_job_ptr->node_bitmap))
+		return true;
+
+	/*
+	* Verify there are enough licenses without this job's licenses.
+	* This is only dealing with normal licenses, not hierarchal resources.
+	* see the comment in _set_license_req() for more details.
+	*/
+	if (running_job_ptr->license_list && args->needed_licenses) {
+		for (uint32_t i = 0; i < args->license_cnt; i++) {
+			license_req_t *needed_lic = &args->needed_licenses[i];
+			match = _find_license_in_list(
+				running_job_ptr->license_list, needed_lic->id);
+			if (!match)
+				continue;
+
+			/*
+			 * At this point, we know that there are enough
+			 * licenses in the cluster to run the job request. If
+			 * we remove licenses used by running_job, then are
+			 * there still enough for the job to run? If not, then
+			 * we know running_job is relevant for this job request.
+			 */
+			if (needed_lic->remaining < match->total)
+				needed_lic->remaining = 0;
+			else
+				needed_lic->remaining -= match->total;
+			if (needed_lic->remaining < needed_lic->required)
+				return true;
+		}
+	}
+
+	if (slurm_conf.debug_flags & DEBUG_FLAG_SELECT_TYPE)
+		verbose("%pJ no longer overlaps after resource selection",
+			running_job_ptr);
+	return false;
+}
+
+static int _set_license_req(void *x, void *arg)
+{
+	first_relevant_job_arg_t *args = arg;
+	licenses_t *job_license = x;
+	licenses_t *future_license = NULL;
+
+	/*
+	 * Populate needed_licenses with the required # of licenses for the job
+	 * and the amount of licenses available to be used.
+	 * Hierarchal resource licenses are ignored. This logic is currently
+	 * only used by --test-only job option, which does not support checking
+	 * hierarchal resources.
+	 */
+	if ((job_license->id.hres_id == NO_VAL16) &&
+	    (future_license = _find_license_in_list(args->future_license_list,
+						    &job_license->id))) {
+		args->needed_licenses[args->license_cnt].id =
+			&future_license->id;
+		args->needed_licenses[args->license_cnt].required =
+			job_license->total;
+		args->needed_licenses[args->license_cnt].remaining =
+			future_license->total - future_license->used;
+
+		args->license_cnt++;
+	}
+
+	return SLURM_SUCCESS;
+}
+
+/*
+ * Returns a pointer to the job with the latest endtime that can't be ignored.
+ * IN job_ptr      - job being scheduled
+ * IN node_bitmap  - nodes selected for job_ptr
+ * IN removed_jobs - list of jobs whose resources where considered for job_ptr
+ *		     sorted by latest end time to soonest end time.
+ * IN future_license_list - list of licenses in the state they would be at the
+ *			    end time of the first job in removed_jobs.
+ *			    (Note: For Backfill cycles this will be NULL)
+ * IN topology_idx - pointer to topology index
+ */
+static job_record_t *_get_last_relevant_job(job_record_t *job_ptr,
+					    bitstr_t *node_bitmap,
+					    list_t *removed_jobs,
+					    list_t *future_license_list,
+					    int *topology_idx)
+{
+	job_record_t *last_relevant_job;
+	first_relevant_job_arg_t relevant_job_args = {
+		.selected_nodes = node_bitmap,
+		.topology_idx = topology_idx,
+	};
+
+	xassert(removed_jobs);
+
+	if (future_license_list && job_ptr->license_list) {
+		/*
+		 * Only pass relevant future license to
+		 * _is_job_relevant() to reduce looping
+		 */
+		relevant_job_args.needed_licenses =
+			xcalloc(list_count(job_ptr->license_list),
+				sizeof(license_req_t));
+		relevant_job_args.future_license_list = future_license_list;
+
+		list_for_each(job_ptr->license_list, _set_license_req,
+			      &relevant_job_args);
+	}
+
+	last_relevant_job = list_find_first(removed_jobs, _is_job_relevant,
+					    &relevant_job_args);
+
+	xfree(relevant_job_args.needed_licenses);
+
+	return last_relevant_job;
+}
+
 static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 			    uint32_t min_nodes, uint32_t max_nodes,
 			    uint32_t req_nodes, uint16_t job_node_req,
@@ -2441,6 +2609,7 @@ static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 	node_use_record_t *future_usage;
 	list_t *future_license_list = NULL;
 	list_t *cr_job_list;
+	list_t *removed_jobs = NULL;
 	list_itr_t *job_iterator;
 	int rc = SLURM_ERROR;
 	time_t now = time(NULL);
@@ -2516,6 +2685,8 @@ static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 	 */
 	list_sort(cr_job_list, _cr_job_list_sort);
 
+	removed_jobs = list_create(NULL);
+
 	START_TIMER;
 	job_iterator = list_iterator_create(cr_job_list);
 	while (more_jobs) {
@@ -2551,8 +2722,9 @@ static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 						node_bitmap);
 			if (overlap == 0 && /* job has no usable nodes */
 			    (!future_license_list ||
-			     !license_list_overlap(tmp_job_ptr->license_list,
-						   job_ptr->license_list))) {
+			     !license_list_overlap_non_hres( /* ignore hres */
+				tmp_job_ptr->license_list,
+				job_ptr->license_list))) {
 				continue;  /* skip it */
 			}
 			if (!end_time) {
@@ -2576,6 +2748,7 @@ static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 				future_part, future_usage,
 				future_license_list, tmp_job_ptr, 0,
 				efctv_bitmap_ptr);
+			list_push(removed_jobs, tmp_job_ptr);
 			next_job_ptr = list_peek_next(job_iterator);
 			if (!next_job_ptr) {
 				more_jobs = false;
@@ -2598,6 +2771,20 @@ static int _future_run_test(job_record_t *job_ptr, bitstr_t *node_bitmap,
 			       backfill_busy_nodes, qos_preemptor,
 			       true, NULL);
 		if (rc == SLURM_SUCCESS) {
+			job_record_t *last_relevant_job =
+				_get_last_relevant_job(job_ptr, node_bitmap,
+						       removed_jobs,
+						       future_license_list,
+						       &topology_idx);
+			/*
+			 * _get_last_relevant_job() should never return NULL
+			 * since we know at least one job's resources needed to
+			 * be added back in order for _job_test() to succeed.
+			 */
+			xassert(last_relevant_job); /* should never be NULL */
+			if (last_relevant_job)
+				last_job_ptr = last_relevant_job;
+
 			if (last_job_ptr->end_time <= now) {
 				job_ptr->start_time =
 					_guess_job_end(last_job_ptr,
@@ -2641,6 +2828,7 @@ cleanup:
 	part_data_destroy_res(future_part);
 	node_data_destroy(future_usage);
 	FREE_NULL_LIST(future_license_list);
+	FREE_NULL_LIST(removed_jobs);
 
 	return rc;
 }
@@ -3214,7 +3402,7 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 		/*
 		 * Socket CPUs restrictions:
 		 * 1. Partially allocated socket, but entire_sockets_only:
-		 *    Enabled when CR_SOCKET. This mode counts unusable CPUs as
+		 *    Enabled when SELECT_SOCKET. This mode counts unusable CPUs as
 		 *    allocated, so it also counts them against MaxCpusPerNode.
 		 * 2. Partially allocated socket, up/beyond MaxCPUsPerSocket:
 		 *    This mode does not count unusable CPUs as allocated, nor
@@ -3418,7 +3606,7 @@ static avail_res_t *_allocate_sc(job_record_t *job_ptr, bitstr_t *core_map,
 		i = sockets;
 	}
 
-	if ((slurm_conf.select_type_param & CR_ONE_TASK_PER_CORE) &&
+	if ((slurm_conf.select_type_param & SELECT_ONE_TASK_PER_CORE) &&
 	    (details_ptr->min_gres_cpu > 0)) {
 		use_tpc = true;
 	}
@@ -3559,7 +3747,7 @@ static avail_res_t *_allocate(job_record_t *job_ptr,
 {
 	bool alloc_sockets;
 
-	if (cr_type & CR_SOCKET) {
+	if (cr_type & SELECT_SOCKET) {
 		/* cpu_alloc_size = CPUs per socket */
 		alloc_sockets = true;
 		*cpu_alloc_size = node_record_table_ptr[node_i]->cores *
@@ -3567,7 +3755,7 @@ static avail_res_t *_allocate(job_record_t *job_ptr,
 	} else {
 		/* cpu_alloc_size = # of CPUs per core || 1 individual CPU */
 		alloc_sockets = false;
-		*cpu_alloc_size = (cr_type & CR_CORE) ?
+		*cpu_alloc_size = (cr_type & SELECT_CORE) ?
 			node_record_table_ptr[node_i]->tpc : 1;
 	}
 

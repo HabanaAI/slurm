@@ -825,6 +825,29 @@ static void _set_user_default_wckey(slurmdb_wckey_rec_t *wckey,
 	}
 }
 
+/* locks should be put in place before calling this function USER_WRITE */
+static void _clear_user_default_wckey(slurmdb_wckey_rec_t *wckey)
+{
+	xassert(wckey);
+	xassert(assoc_mgr_user_list);
+
+	if ((wckey->is_def == 1) && (wckey->uid != NO_VAL)) {
+		slurmdb_user_rec_t *user = list_find_first(assoc_mgr_user_list,
+							   _list_find_uid,
+							   &wckey->uid);
+
+		if (!user)
+			return;
+
+		if (!user->default_wckey ||
+		    !xstrcmp(user->default_wckey, wckey->name)) {
+			xfree(user->default_wckey);
+			debug2("user %s default wckey %s removed",
+			       user->name, wckey->name);
+		}
+	}
+}
+
 /* Return first parent that is not SLURMDB_FS_USE_PARENT unless
  * direct is set */
 static slurmdb_assoc_rec_t* _find_assoc_parent(
@@ -4614,6 +4637,8 @@ extern int assoc_mgr_update_wckeys(slurmdb_update_object_t *update, bool locked)
 				//rc = SLURM_ERROR;
 				break;
 			}
+			if (rec->is_def == 1)
+				_clear_user_default_wckey(rec);
 			list_delete_item(itr);
 			break;
 		default:
@@ -6416,7 +6441,7 @@ extern void assoc_mgr_set_uid(uid_t uid, char *username)
 	assoc_mgr_lock_t write_locks = {
 		.assoc = WRITE_LOCK,
 		.user = WRITE_LOCK,
-		.wckey = WRITE_LOCK
+		.wckey = WRITE_LOCK,
 	};
 	slurmdb_user_rec_t lookup = { .uid = NO_VAL, .name = username };
 	slurmdb_user_rec_t *user = NULL;
@@ -7453,7 +7478,7 @@ extern bool assoc_mgr_tree_has_user_coord(slurmdb_assoc_rec_t *assoc,
 					  bool locked)
 {
 	assoc_mgr_lock_t locks = {
-		.assoc = READ_LOCK
+		.assoc = READ_LOCK,
 	};
 	bool rc = false;
 

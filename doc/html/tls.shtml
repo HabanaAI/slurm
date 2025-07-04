@@ -23,7 +23,7 @@ fast, and with security as a priority.
 Build s2n-tls from their public GitHub repository:
 </p>
 <pre>
-git clone git@github.com:aws/s2n-tls.git
+git clone https://github.com/aws/s2n-tls.git
 cd s2n-tls/
 cmake . -B build/ -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
 cmake --build build/ -j $(nproc)
@@ -111,6 +111,7 @@ Note that when tls/s2n is not configured, this line will always be seen:
 debug:  tls/none: init: tls/none loaded
 </pre>
 
+<p>
 With <a href="slurm.conf.html#OPT_TLS">DebugFlags=TLS</a> configured, an extremely verbose view of RPC connections can be seen in the logs. For example, here's what appears for a connection between slurmctld and slurmdbd:
 </p>
 <pre>
@@ -152,6 +153,6 @@ openssl x509 -req -in ctld_csr.pem -CA ca_cert.pem -CAkey ca_key.pem -out ctld_c
 chmod 0444 ctld_cert.pem
 </pre>
 
-<p style="text-align:center;">Last modified 25 May 2025</p>
+<p style="text-align:center;">Last modified 09 June 2025</p>
 
 <!--#include virtual="footer.txt"-->

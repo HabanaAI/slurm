@@ -221,7 +221,6 @@ static void _create_msg_socket(void);
 static void      _decrement_thd_count(void);
 static void      _destroy_conf(void);
 static void      _fill_registration_msg(slurm_node_registration_status_msg_t *);
-static void _get_tls_cert_work(conmgr_callback_args_t conmgr_args, void *arg);
 static int _increment_thd_count(bool block);
 static void      _init_conf(void);
 static int       _memory_spec_init(void);
@@ -492,6 +491,17 @@ main (int argc, char **argv)
 	if (!under_systemd)
 		pidfd = create_pidfile(conf->pidfile, 0);
 
+	/* Periodically renew TLS certificate indefinitely */
+	if (tls_enabled()) {
+		if (conn_g_own_cert_loaded()) {
+			log_flag(AUDIT_TLS, "Loaded static certificate key pair, will not do any certificate renewal.");
+		} else if (certmgr_enabled()) {
+			certmgr_client_daemon_init(conf->node_name);
+		} else {
+			fatal("No static TLS certificate key pair loaded, and the certmgr plugin is not enabled to get signed certificates.");
+		}
+	}
+
 	conmgr_run(false);
 
 	if (original)
@@ -511,17 +521,6 @@ main (int argc, char **argv)
 
 	/* Allow listening socket to start accept()ing incoming */
 	_unquiesce_fd_listener();
-
-	/* Periodically renew TLS certificate indefinitely */
-	if (tls_enabled()) {
-		if (conn_g_own_cert_loaded()) {
-			log_flag(AUDIT_TLS, "Loaded static certificate key pair, will not do any certificate renewal.");
-		} else if (certmgr_enabled()) {
-			conmgr_add_work_fifo(_get_tls_cert_work, NULL);
-		} else {
-			fatal("No static TLS certificate key pair loaded, and the certmgr plugin is not enabled to get signed certificates.");
-		}
-	}
 
 	conmgr_run(true);
 
@@ -567,31 +566,6 @@ main (int argc, char **argv)
 	log_fini();
 
 	return SLURM_SUCCESS;
-}
-
-static void _get_tls_cert_work(conmgr_callback_args_t conmgr_args, void *arg)
-{
-	time_t delay_seconds;
-
-	if (conmgr_args.status != CONMGR_WORK_STATUS_RUN)
-		return;
-
-	if (certmgr_get_cert_from_ctld(conf->node_name)) {
-		/*
-		 * Don't do full delay between tries to get TLS certificate if
-		 * we failed to get it.
-		 */
-		delay_seconds = slurm_conf.msg_timeout;
-		debug("Retry getting TLS certificate in %lu seconds...",
-		      delay_seconds);
-	} else {
-		delay_seconds =
-			certmgr_get_renewal_period_mins() * MINUTE_SECONDS;
-	}
-
-	/* Periodically renew TLS certificate indefinitely */
-	conmgr_add_work_delayed_fifo(_get_tls_cert_work, NULL, delay_seconds,
-				     0);
 }
 
 /*
@@ -1728,6 +1702,9 @@ _print_config(void)
 	hours = (conf->up_time / 3600) % 24;
 	days  = (conf->up_time / 86400);
 	printf("UpTime=%u-%2.2u:%2.2u:%2.2u\n", days, hours, mins, secs);
+
+	xfree(gres_str);
+	xfree(autodetect_str);
 }
 
 static void _print_gres(void)
@@ -1818,6 +1795,7 @@ _process_cmdline(int ac, char **av)
 				exit(1);
 			}
 			conf->dynamic_type = DYN_NODE_FUTURE;
+			xfree(conf->dynamic_feature);
 			conf->dynamic_feature = xstrdup(optarg);
 			break;
 		case 'G':
@@ -1866,24 +1844,31 @@ _process_cmdline(int ac, char **av)
 			conf->dynamic_type = DYN_NODE_NORM;
 			break;
 		case LONG_OPT_AUTHINFO:
+			xfree(slurm_conf.authinfo);
 			slurm_conf.authinfo = xstrdup(optarg);
 			break;
 		case LONG_OPT_CA_CERT_FILE:
+			xfree(ca_cert_file);
 			ca_cert_file = xstrdup(optarg);
 			break;
 		case LONG_OPT_CONF:
+			xfree(conf->dynamic_conf);
 			conf->dynamic_conf = xstrdup(optarg);
 			break;
 		case LONG_OPT_CONF_SERVER:
+			xfree(conf->conf_server);
 			conf->conf_server = xstrdup(optarg);
 			break;
 		case LONG_OPT_EXTRA:
+			xfree(conf->extra);
 			conf->extra = xstrdup(optarg);
 			break;
 		case LONG_OPT_INSTANCE_ID:
+			xfree(conf->instance_id);
 			conf->instance_id = xstrdup(optarg);
 			break;
 		case LONG_OPT_INSTANCE_TYPE:
+			xfree(conf->instance_type);
 			conf->instance_type = xstrdup(optarg);
 			break;
 		case LONG_OPT_SYSTEMD:
@@ -1938,8 +1923,19 @@ _process_cmdline(int ac, char **av)
 	 * after an upgrade.
 	 */
 	if (conf->argv[0][0] != '/') {
-		if (readlink("/proc/self/exe", conf->binary, PATH_MAX) < 0)
+		int read_bytes = readlink("/proc/self/exe", conf->binary,
+					  PATH_MAX);
+		if (read_bytes < 0)
 			fatal("%s: readlink failed: %m", __func__);
+		if (read_bytes == PATH_MAX)
+			fatal("%s: readlink truncation may have occurred",
+			      __func__);
+		/*
+		 * readlink() does not set a terminating null character and
+		 * when running under valgrind, as it intercepts readlink()
+		 * calls, we can get a wrong path.
+		 */
+		conf->binary[read_bytes] = '\0';
 	} else {
 		strlcpy(conf->binary, conf->argv[0], PATH_MAX);
 	}
@@ -2696,7 +2692,7 @@ _slurmd_init(void)
 	 * If configured, apply resource specialization
 	 */
 
-	/* Apply the configured CpuSpecList and MemSpecList */
+	/* Apply the configured CpuSpecList and MemSpecLimit */
 	_resource_spec_init();
 
 	_print_conf();
@@ -3102,7 +3098,7 @@ static int _memory_spec_init(void)
 		return SLURM_SUCCESS;
 	}
 	if (!cgroup_memcg_job_confinement()) {
-		if (slurm_conf.select_type_param & CR_MEMORY) {
+		if (slurm_conf.select_type_param & SELECT_MEMORY) {
 			error("Resource spec: Limited MemSpecLimit support. "
 			     "Slurmd daemon not memory constrained. "
 			     "Reserved %"PRIu64" MB", conf->mem_spec_limit);

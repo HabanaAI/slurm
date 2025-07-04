@@ -105,6 +105,7 @@ typedef struct {
 	int index; /* MUST ALWAYS BE FIRST. DO NOT PACK. */
 	int input_fd;
 	int output_fd;
+	bool maybe;
 	struct s2n_connection *s2n_conn;
 	/* absolute time shutdown() delayed until (instead of sleep()ing) */
 	timespec_t delay;
@@ -182,7 +183,7 @@ static void _on_s2n_error(tls_conn_t *conn, void *(*func_ptr)(void),
 		      caller, funcname, s2n_strerror_name(alert), alert,
 		      s2n_strerror(alert, NULL),
 		      s2n_strerror_debug(alert, NULL));
-	} else {
+	} else if (!conn->maybe) {
 		xassert(s2n_errno != S2N_ERR_T_OK);
 
 		error("%s: %s() failed %s[%d]: %s -> %s",
@@ -191,7 +192,7 @@ static void _on_s2n_error(tls_conn_t *conn, void *(*func_ptr)(void),
 		      s2n_strerror_debug(s2n_errno, NULL));
 	}
 
-	if ((slurm_conf.debug_flags & DEBUG_FLAG_TLS) &&
+	if (!conn->maybe && (slurm_conf.debug_flags & DEBUG_FLAG_TLS) &&
 	    s2n_stack_traces_enabled())
 		s2n_print_stacktrace(log_fp());
 
@@ -280,7 +281,7 @@ static struct s2n_config *_create_config(void)
 
 	if (xstrstr(slurm_conf.tls_params, "load_system_certificates")) {
 		if (!(new_conf = s2n_config_new())) {
-			on_s2n_error(NULL, s2n_config_new_minimal);
+			on_s2n_error(NULL, s2n_config_new);
 			return NULL;
 		}
 	} else {
@@ -661,15 +662,18 @@ extern int init(void)
 		return SLURM_SUCCESS;
 	init_run = true;
 
-	debug("%s loaded", plugin_type);
-
 	if (s2n_init() != S2N_SUCCESS) {
 		on_s2n_error(NULL, s2n_init);
 		return errno;
 	}
 
-	if (slurm_conf.debug_flags & DEBUG_FLAG_TLS)
-		s2n_stack_traces_enabled_set(true);
+#ifdef NDEBUG
+	/* Always disable backtraces unless compiled in developer mode */
+	s2n_stack_traces_enabled_set(false);
+#else
+	/* Only enable backtraces with TLS debugflag active */
+	s2n_stack_traces_enabled_set(slurm_conf.debug_flags & DEBUG_FLAG_TLS);
+#endif
 
 	/* Create client s2n_config */
 	if (!(client_config = _create_config())) {
@@ -683,17 +687,33 @@ extern int init(void)
 		return errno;
 	}
 
+	/*
+	 * Description of OpenSSL versions:
+	 * https://docs.openssl.org/1.1.1/man3/OPENSSL_VERSION_NUMBER/#description
+	 */
+	debug("Initialized %s. DEBUG_FLAG_TLS:%s s2n_stack_traces_enabled:%s s2n_get_openssl_version:0x%09zx",
+		 plugin_type,
+		 BOOL_STRINGIFY(slurm_conf.debug_flags & DEBUG_FLAG_TLS),
+		 BOOL_STRINGIFY(s2n_stack_traces_enabled()),
+		 s2n_get_openssl_version());
+
 	return SLURM_SUCCESS;
 }
 
 extern int fini(void)
 {
+	static bool fini_run = false;
+
+	if (fini_run)
+		return SLURM_SUCCESS;
+	fini_run = true;
+
 	if (s2n_config_free(client_config))
 		on_s2n_error(NULL, s2n_config_free);
 
 	if (server_config &&
 	    s2n_config_free_cert_chain_and_key(server_config)) {
-		on_s2n_error(NULL, s2n_cert_chain_and_key_free);
+		on_s2n_error(NULL, s2n_config_free_cert_chain_and_key);
 	}
 
 	if (own_cert_and_key &&
@@ -844,17 +864,20 @@ static void _cleanup_tls_conn(tls_conn_t *conn)
 	if (conn->s2n_config && (conn->s2n_config != server_config) &&
 	    (conn->s2n_config != client_config))
 		if (s2n_config_free(conn->s2n_config))
-			on_s2n_error(NULL, s2n_config_free);
+			on_s2n_error(conn, s2n_config_free);
 
 	if (conn->cert_and_key &&
 	    (s2n_cert_chain_and_key_free(conn->cert_and_key) != S2N_SUCCESS))
-		on_s2n_error(NULL, s2n_cert_chain_and_key_free);
+		on_s2n_error(conn, s2n_cert_chain_and_key_free);
 
 	if (conn->s2n_conn && s2n_connection_free(conn->s2n_conn) < 0)
 		on_s2n_error(conn, s2n_connection_free);
 
 	if (conn->using_global_s2n_conf)
 		_s2n_config_dec(conn);
+
+	if (s2n_stack_traces_enabled())
+		s2n_free_stacktrace();
 }
 
 static int _set_conn_s2n_conf(tls_conn_t *conn,
@@ -939,6 +962,7 @@ extern void *tls_p_create_conn(const conn_args_t *tls_conn_args)
 	conn = xmalloc(sizeof(*conn));
 	conn->input_fd = tls_conn_args->input_fd;
 	conn->output_fd = tls_conn_args->output_fd;
+	conn->maybe = tls_conn_args->maybe;
 
 	switch (tls_conn_args->mode) {
 	case TLS_CONN_SERVER:

@@ -68,21 +68,16 @@ daemons and commands with a version of 23.11.x, 23.02.x or 22.05.x. It is also
 capable of updating the records in the database that were recorded by an
 instance of slurmdbd running these versions.</p>
 
-<p>The Slurm 24.11 release will introduce compatibility with three previous
+<p>The Slurm 24.11 release introduces compatibility with three previous
 major releases to provide a similar support duration with the more frequent
 6-month release cycle:</p>
 
-<table class="tlist">
+<table class="tlist centered">
 <tbody>
 <tr>
 <td><strong>Slurm Release</strong></td>
 <td><strong>Revised End of Support</strong><br>(total length)</td>
 <td><strong>Compatible Prior Version</strong></td>
-</tr>
-<tr>
-<td>23.02</td>
-<td>November 2024 (21 months)</td>
-<td>22.05, 21.08</td>
 </tr>
 <tr>
 <td>23.11</td>
@@ -108,6 +103,11 @@ major releases to provide a similar support duration with the more frequent
 <td>25.11</td>
 <td>May 2027 (18 months)</td>
 <td>25.05, 24.11, 24.05</td>
+</tr>
+<tr>
+<td>26.05</td>
+<td>November 2028 (18 months)</td>
+<td>25.11, 25.05, 24.11</td>
 </tr>
 </tbody>
 </table>
@@ -203,19 +203,25 @@ running to finish. Any jobs started before the <b>slurmd</b> system was upgraded
 will be running with the old version of <b>slurmstepd</b>, so starting another
 upgrade or trying to use new features in the new version may cause problems.</p>
 
-<p><b>NOTE</b>: If multiple daemons are present on the same system, they may
-need to be upgraded at the same time due to dependencies to the general
-<b>slurm</b> package. After upgrading, daemons should be started in the order
-listed above. This is <b>not</b> a recommended setup for production; sites are
-strongly advised to assign a single core Slurm daemon to each system.</p>
+<p><b>NOTE</b>: If RPM/DEB packages are used, all packages present on each
+system must be upgraded together instead of piecewise. This is because the
+packages that contain Slurm daemons and client commands depend on the general
+<b>slurm</b> package. Avoid using low-level package managers like <code>rpm</code>
+or <code>dpkg</code> as they may not properly enforce these dependencies.
+After upgrading, daemons should be started in the order listed above.</p>
+
+<p>Running multiple daemons on the same system is <b>not a recommended setup</b>
+for production, in part because of the stated restriction to piecewise upgrades.
+Sites are strongly advised to assign a single Slurm daemon (slurmd, slurmctld,
+or slurmdbd) to each system.</p>
 
 <h3 id="preparation">Preparation
 <a class="slurm_link" href="#preparation"></a></h3>
 
-<h4 id="release_notes">RELEASE_NOTES and NEWS
+<h4 id="release_notes">RELEASE_NOTES and CHANGELOG
 <a class="slurm_link" href="#release_notes"></a></h4>
 
-<p>Review relevant release notes in the <b>RELEASE_NOTES</b> file in root of
+<p>Review relevant release notes in the <b>RELEASE_NOTES.md</b> file in root of
 Slurm source directory for the target release and any major versions between
 what you're currently running and the target you are upgrading to. Pay
 particular attention to any entries in which items are <b>removed</b> or
@@ -225,12 +231,15 @@ that you are using. You may also notice new items added to Slurm that you wish
 to start using after the upgrade.</p>
 
 <p>Release notes for the latest major version are
-available <a href="release_notes.html">here</a>. Release notes for other
-versions can be found in the source, which can be viewed on
-<a href="https://github.com/SchedMD/slurm/blob/master/RELEASE_NOTES">GitHub</a>
-by selecting the branch or tag corresponding to the desired version. More
-detailed changes, including minor release changes, can be found in the
-<b>NEWS</b> file, but are usually not needed to prepare for upgrades.</p>
+available <a href="release_notes.html">here</a> or on GitHub
+(<a href="https://github.com/SchedMD/slurm/blob/master/RELEASE_NOTES.md">RELEASE_NOTES.md</a>).
+Release notes for other versions can be found in the source, which can be viewed
+on GitHub by selecting the branch or tag corresponding to the desired version.
+(Refer to
+<a href="https://github.com/SchedMD/slurm/blob/slurm-24.11/RELEASE_NOTES">
+RELEASE_NOTES</a> for Slurm 24.11 and older.) More detailed changes, including
+minor release changes, can be found in the <b>CHANGELOG</b> directory (formerly
+the NEWS file), but are usually not needed to prepare for upgrades.</p>
 
 <h4 id="config_changes">Configuration Changes
 <a class="slurm_link" href="#config_changes"></a></h4>
@@ -265,49 +274,13 @@ the values parsed and dumped as JSON and YAML are handled by the data_parser
 and openapi plugins. Changes to the formats are tracked in the
 <a href="openapi_release_notes.html">OpenAPI release notes</a>.</p>
 
-<table class="tlist">
+<table class="tlist centered">
 <tbody>
 <tr>
 <td><strong>Release Notes</strong></td>
 <td><strong>Added OpenAPI plugins</strong></td>
 <td><strong>Added Data_Parser plugin</strong></td>
 <td><strong>Removed in Release</strong></td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#20020">20.02</a></td>
-<td>v0.0.35,dbv0.0.35</td>
-<td></td>
-<td>22.05</td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#20110">20.11</a></td>
-<td>v0.0.36, dbv0.0.36</td>
-<td></td>
-<td>23.02</td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#21080">21.08</a></td>
-<td>v0.0.37, dbv0.0.37</td>
-<td></td>
-<td>23.11</td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#22050">22.05</a></td>
-<td>v0.0.38, dbv0.0.38</td>
-<td></td>
-<td>24.05</td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#23020">23.02</a></td>
-<td>v0.0.39, dbv0.0.39</td>
-<td>v0.0.39</td>
-<td>24.11</td>
-</tr>
-<tr>
-<td><a href="openapi_release_notes.html#23110">23.11</a></td>
-<td>slurmctld, slurmdbd</td>
-<td>v0.0.40</td>
-<td>25.11</td>
 </tr>
 <tr>
 <td><a href="openapi_release_notes.html#24050">24.05</a></td>
@@ -322,10 +295,16 @@ and openapi plugins. Changes to the formats are tracked in the
 <td>26.11</td>
 </tr>
 <tr>
-<td><a href="openapi_release_notes.html#24110">25.05</a></td>
+<td><a href="openapi_release_notes.html#25050">25.05</a></td>
 <td></td>
 <td>v0.0.43</td>
-<td>26.11</td>
+<td>27.05</td>
+</tr>
+<tr>
+<td><a href="openapi_release_notes.html#25110">25.05</a></td>
+<td></td>
+<td>v0.0.44</td>
+<td>27.11</td>
 </tr>
 </tbody>
 </table>
@@ -632,6 +611,6 @@ period as well as easily switch between versions should you need to roll
 back for any reason. It also avoids potential problems with library conflicts
 that might arise from installing different versions to the same directory.</p>
 
-<p style="text-align:center;">Last modified 15 January 2025</p>
+<p style="text-align:center;">Last modified 05 June 2025</p>
 
 <!--#include virtual="footer.txt"-->

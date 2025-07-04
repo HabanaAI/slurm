@@ -635,6 +635,7 @@ env_vars_t env_vars[] = {
   { "SRUN_ERROR", 'e' },
   { "SRUN_INPUT", 'i' },
   { "SRUN_OUTPUT", 'o' },
+  { "SRUN_SEGMENT_SIZE", LONG_OPT_SEGMENT_SIZE },
   { NULL }
 };
 
@@ -933,7 +934,7 @@ static bool _opt_verify(void)
 	 * If they are requesting block without 'nopack' and the system
 	 * is setup to pack nodes set it here.
 	 */
-	if ((slurm_conf.select_type_param & CR_PACK_NODES) &&
+	if ((slurm_conf.select_type_param & SELECT_PACK_NODES) &&
 	    !(opt.distribution & SLURM_DIST_NO_PACK_NODES) &&
 	    ((opt.distribution & SLURM_DIST_BLOCK) ||
 	     (opt.distribution == SLURM_DIST_UNKNOWN)))

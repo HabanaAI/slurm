@@ -1,4 +1,4 @@
-.TH srun "1" "Slurm Commands" "May 2025" "Slurm Commands"
+.TH srun "1" "Slurm Commands" "July 2025" "Slurm Commands"
 
 .SH "NAME"
 srun \- Run parallel jobs
@@ -1735,6 +1735,10 @@ or \fBsbatch\fR).
 grants the job access to all of the memory on each node for newly submitted jobs
 and all available job memory to new job steps.
 
+\fBNOTE\fR: The memory used by each slurmstepd process is included in the job's
+total memory usage. It typically consumes between 20MiB and 200MiB, though this
+can vary depending on system configuration and any loaded plugins.
+
 \fBNOTE\fR: Memory requests will not be strictly enforced unless Slurm is
 configured to use an enforcement mechanism. See \fBConstrainRAMSpace\fR in
 the \fBcgroup.conf\fR(5) man page and \fBOverMemoryKill\fR in the
@@ -2744,8 +2748,8 @@ will be used to create the job allocation.
 No requirement would be placed on all segments for a job needing to
 be placed within the same higher-level block.
 
-\fBNOTE\fR: The segment size must always be evenly divisible by
-the requested node count.
+\fBNOTE\fR: The requested node count must always be evenly divisible by
+the requested segment size.
 
 \fBNOTE\fR: The segment size must be less than or equal to
 the planning base block size. E.g., for a system with 30 nodes as the
@@ -3152,7 +3156,7 @@ Display version information and exit.
 .IP
 
 .TP
-\fB\-W\fR, \fB\-\-wait-for-children\fR>
+\fB\-\-wait\-for\-children\fR
 Wait for all processes in each task to finish before considering a task as
 ended. The default behavior without this option is to only wait for the parent
 process in each task to finish. Note that if the parent process exits with a
@@ -3320,7 +3324,8 @@ Job array ID (index) number.
 
 .TP
 \fB%J\fR
-jobid.stepid of the running job. (e.g. "128.0")
+jobid.stepid of the running job (e.g. "128.0"). The stepid is only expanded for
+regular steps, not for special steps like "batch" or "extern".
 .IP
 
 .TP
@@ -3974,6 +3979,11 @@ Same as \fB\-\-container-id\fR.
 \fBSRUN_EXPORT_ENV\fR
 Same as \fB\-\-export\fR, and will override any setting for
 \fBSLURM_EXPORT_ENV\fR.
+.IP
+
+.TP
+\fBSRUN_SEGMENT_SIZE\fR
+Same as \fB\-\-segment\fR
 .IP
 
 .SH "OUTPUT ENVIRONMENT VARIABLES"

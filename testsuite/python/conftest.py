@@ -150,11 +150,6 @@ def update_tmp_path_exec_permissions():
                 os.chmod(os.path.join(root, d), 0o777)
 
 
-@pytest.fixture(scope="function", autouse=True)
-def tmp_path_setup(request):
-    update_tmp_path_exec_permissions()
-
-
 @pytest.fixture(scope="module", autouse=True)
 def module_setup(request, tmp_path_factory):
     atf.properties["slurm-started"] = False
@@ -162,11 +157,25 @@ def module_setup(request, tmp_path_factory):
     atf.properties["configurations-modified"] = set()
     atf.properties["orig-environment"] = dict(os.environ)
     atf.properties["orig-pypath"] = list(sys.path)
+    if "old-slurm-prefix" in atf.properties.keys():
+        del atf.properties["old-slurm-prefix"]
+    if "new-slurm-prefix" in atf.properties.keys():
+        del atf.properties["new-slurm-prefix"]
+
+    # Ensure that slurm-spool-dir, slurm-tmpfs and nodes are set.
+    atf.properties["slurm-spool-dir"] = atf.get_config_parameter(
+        "SlurmdSpoolDir", live=False, quiet=True
+    )
+    atf.properties["slurm-tmpfs"] = atf.get_config_parameter(
+        "TmpFS", live=False, quiet=True
+    )
+    atf.properties["nodes"] = []
 
     # Creating a module level tmp_path mimicking what tmp_path does
     name = request.node.name
     name = re.sub(r"[\W]", "_", name)
     name = name[:30]
+    atf.properties["test_name"] = name
     atf.module_tmp_path = tmp_path_factory.mktemp(name, numbered=True)
     update_tmp_path_exec_permissions()
 
@@ -180,20 +189,34 @@ def module_setup(request, tmp_path_factory):
         )
         atf.stop_slurm(quiet=True)
 
-    # Cleanup StateSaveLocation for auto-config
     if atf.properties["auto-config"]:
-        statesaveloc = atf.get_config_parameter(
+        # Cleanup StateSaveLocation for auto-config
+        atf.properties["statesaveloc"] = atf.get_config_parameter(
             "StateSaveLocation", live=False, quiet=True
         )
-        if os.path.exists(statesaveloc):
-            if os.path.exists(statesaveloc + name):
+        if os.path.exists(atf.properties["statesaveloc"]):
+            if os.path.exists(atf.properties["statesaveloc"] + name):
                 logging.warning(
-                    f"Backup for StateSaveLocation already exists ({statesaveloc+name}). Removing it."
+                    f"Backup for StateSaveLocation already exists ({atf.properties['statesaveloc']+name}). Removing it."
                 )
-                atf.run_command(f"rm -rf {statesaveloc+name}", user="root", quiet=True)
+                atf.run_command(
+                    f"rm -rf {atf.properties['statesaveloc']+name}",
+                    user="root",
+                    quiet=True,
+                )
             atf.run_command(
-                f"mv {statesaveloc} {statesaveloc+name}", user="root", quiet=True
+                f"mv {atf.properties['statesaveloc']} {atf.properties['statesaveloc']+name}",
+                user="root",
+                quiet=True,
             )
+
+        # Create the required node directories for node0
+        node_name = "node0"
+        spool_dir = atf.properties["slurm-spool-dir"].replace("%n", node_name)
+        tmpfs_dir = atf.properties["slurm-tmpfs"].replace("%n", node_name)
+        atf.properties["nodes"].append(node_name)
+        atf.run_command(f"sudo mkdir -p {spool_dir}", fatal=True, quiet=True)
+        atf.run_command(f"sudo mkdir -p {tmpfs_dir}", fatal=True, quiet=True)
 
     yield
 
@@ -202,14 +225,6 @@ def module_setup(request, tmp_path_factory):
 
     # Teardown
     module_teardown()
-
-    # Restore StateSaveLocation for auto-config
-    if atf.properties["auto-config"]:
-        atf.run_command(f"rm -rf {statesaveloc}", user="root", quiet=True)
-        if os.path.exists(statesaveloc + name):
-            atf.run_command(
-                f"mv {statesaveloc+name} {statesaveloc}", user="root", quiet=True
-            )
 
 
 def module_teardown():
@@ -225,12 +240,59 @@ def module_teardown():
             if not atf.stop_slurm(fatal=False, quiet=True):
                 failures.append("Not all Slurm daemons were successfully stopped")
 
+        # Restore the Slurm database
+        atf.restore_accounting_database()
+
+        # Restore StateSaveLocation for auto-config
+        atf.run_command(
+            f"rm -rf {atf.properties['statesaveloc']}", user="root", quiet=True
+        )
+        if os.path.exists(atf.properties["statesaveloc"] + atf.properties["test_name"]):
+            atf.run_command(
+                f"mv {atf.properties['statesaveloc']+atf.properties['test_name']} {atf.properties['statesaveloc']}",
+                user="root",
+                quiet=True,
+            )
+
+        # Remove Nodes directories:
+        if "nodes" not in atf.properties:
+            atf.properties["nodes"] = ["node0"]
+        for node_name in atf.properties["nodes"]:
+            spool_dir = atf.properties["slurm-spool-dir"].replace("%n", node_name)
+            tmpfs_dir = atf.properties["slurm-tmpfs"].replace("%n", node_name)
+            atf.run_command(f"sudo rm -rf {spool_dir}", quiet=True)
+            atf.run_command(f"sudo rm -rf {tmpfs_dir}", quiet=True)
+
+        # Restore upgrade setup
+        if "old-slurm-prefix" in atf.properties.keys():
+            logging.debug("Restoring upgrade setup...")
+            if not os.path.exists(f"{atf.module_tmp_path}/upgrade-sbin"):
+                pytest.fail(
+                    f"Can't restore upgrade setup, {atf.module_tmp_path}/upgrade-sbin doesn't exists."
+                )
+            if not os.path.exists(f"{atf.module_tmp_path}/upgrade-bin"):
+                pytest.fail(
+                    f"Can't restore upgrade setup, {atf.module_tmp_path}/upgrade-bin doesn't exists."
+                )
+            atf.run_command(
+                f"sudo rm -rf {atf.properties['slurm-sbin-dir']} {atf.properties['slurm-bin-dir']}",
+                quiet=True,
+                fatal=True,
+            )
+            atf.run_command(
+                f"sudo mv {atf.module_tmp_path}/upgrade-sbin {atf.properties['slurm-sbin-dir']}",
+                quiet=True,
+                fatal=True,
+            )
+            atf.run_command(
+                f"sudo mv {atf.module_tmp_path}/upgrade-bin {atf.properties['slurm-bin-dir']}",
+                quiet=True,
+                fatal=True,
+            )
+
         # Restore any backed up configuration files
         for config in set(atf.properties["configurations-modified"]):
             atf.restore_config_file(config)
-
-        # Restore the Slurm database
-        atf.restore_accounting_database()
 
     else:
         atf.cancel_jobs(atf.properties["submitted-jobs"])
@@ -261,12 +323,26 @@ def class_setup(request):
         logging.info(request.cls.__doc__)
 
 
-def pytest_fixture_setup(fixturedef, request):
-    # Log fixture docstring when invoked if present
-    if fixturedef.func.__doc__ is not None:
-        logging.info(fixturedef.func.__doc__)
-
-
 def pytest_keyboard_interrupt(excinfo):
     """Called for keyboard interrupt"""
     module_teardown()
+
+
+@pytest.fixture(scope="module")
+def mpi_program(module_setup):
+    """Create the MPI program from the mpi_program.c in scripts directory.
+    Returns the bin path of the mpi_program."""
+
+    # Check for MPI setup
+    atf.require_mpi("pmix", "mpicc")
+
+    # Use the external C source file
+    src_path = atf.properties["testsuite_scripts_dir"] + "/mpi_program.c"
+    bin_path = os.getcwd() + "/mpi_program"
+
+    # Compile the MPI program
+    atf.run_command(f"mpicc -o {bin_path} {src_path}", fatal=True)
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
