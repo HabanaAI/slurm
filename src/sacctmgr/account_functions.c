@@ -51,7 +51,6 @@ static int _set_cond(int *start, int argc, char **argv,
 	int end = 0;
 	slurmdb_assoc_cond_t *assoc_cond = NULL;
 	int command_len = 0;
-	int option = 0;
 
 	if (!acct_cond) {
 		exit_code=1;
@@ -67,16 +66,10 @@ static int _set_cond(int *start, int argc, char **argv,
 	assoc_cond = acct_cond->assoc_cond;
 
 	for (i=(*start); i<argc; i++) {
-		end = parse_option_end(argv[i]);
-		if (!end)
-			command_len=strlen(argv[i]);
-		else {
-			command_len=end-1;
-			if (argv[i][end] == '=') {
-				option = (int)argv[i][end-1];
-				end++;
-			}
-		}
+		int op_type;
+		end = parse_option_end(argv[i], &op_type, &command_len);
+		if (!common_verify_option_syntax(argv[i], op_type, false))
+			continue;
 
 		if (!xstrncasecmp(argv[i], "Set", MAX(command_len, 3))) {
 			i--;
@@ -129,9 +122,19 @@ static int _set_cond(int *start, int argc, char **argv,
 				cond_set |= SA_SET_USER;
 		} else if (!xstrncasecmp(argv[i], "Flags",
 					 MAX(command_len, 2))) {
-			acct_cond->flags |= str_2_slurmdb_acct_flags(
-				argv[i]+end);
-			cond_set |= SA_SET_USER;
+			const char *flag_str = (argv[i] + end);
+			slurmdb_acct_flags_t *flags_ptr = &acct_cond->flags;
+			int rc;
+
+			if ((rc = str_2_slurmdb_acct_flags(flag_str,
+							   flags_ptr))) {
+				fprintf(stderr, " Unknown Flag(s)=%s\n",
+					flag_str);
+				exit_code = 1;
+				break;
+			} else {
+				cond_set |= SA_SET_USER;
+			}
 		} else if (!xstrncasecmp(argv[i], "Format",
 					 MAX(command_len, 2))) {
 			if (format_list)
@@ -146,8 +149,8 @@ static int _set_cond(int *start, int argc, char **argv,
 						 argv[i]+end))
 				cond_set |= SA_SET_USER;
 		} else if (sacctmgr_set_assoc_cond(
-				    assoc_cond, argv[i], argv[i]+end,
-				    command_len, option)) {
+				   assoc_cond, argv[i], argv[i]+end,
+				   command_len)) {
 			cond_set |= SA_SET_ASSOC;
 		} else {
 			exit_code=1;
@@ -173,21 +176,13 @@ static int _set_rec(int *start, int argc, char **argv,
 	int end = 0;
 	int command_len = 0;
 	int option = 0;
+	bool allow_option = false;
 
 	xassert(acct);
 	xassert(assoc);
 
 	for (i=(*start); i<argc; i++) {
-		end = parse_option_end(argv[i]);
-		if (!end)
-			command_len=strlen(argv[i]);
-		else {
-			command_len=end-1;
-			if (argv[i][end] == '=') {
-				option = (int)argv[i][end-1];
-				end++;
-			}
-		}
+		end = parse_option_end(argv[i], &option, &command_len);
 
 		if (!xstrncasecmp(argv[i], "Where", MAX(command_len, 5))) {
 			i--;
@@ -228,8 +223,18 @@ static int _set_rec(int *start, int argc, char **argv,
 
 		} else if (!xstrncasecmp(argv[i], "Flags",
 					 MAX(command_len, 2))) {
-			acct->flags = str_2_slurmdb_acct_flags(argv[i]+end);
-			rec_set |= SA_SET_USER;
+			const char *flag_str = (argv[i] + end);
+			int rc;
+
+			if ((rc = str_2_slurmdb_acct_flags(flag_str,
+							   &acct->flags))) {
+				fprintf(stderr, " Unknown Flag(s)=%s\n",
+					flag_str);
+				exit_code = 1;
+				break;
+			} else {
+				rec_set |= SA_SET_USER;
+			}
 		} else if (!xstrncasecmp(argv[i], "Organization",
 					 MAX(command_len, 1))) {
 			acct->organization = strip_quotes(argv[i]+end, NULL, 1);
@@ -247,15 +252,19 @@ static int _set_rec(int *start, int argc, char **argv,
 				rec_set |= SA_SET_ASSOC;
 			}
 		} else if (sacctmgr_set_assoc_rec(
-					      assoc, argv[i], argv[i]+end,
-					      command_len, option)) {
+				   assoc, argv[i], argv[i]+end,
+				   command_len, option,
+				   &allow_option)) {
 			rec_set |= SA_SET_ASSOC;
 		} else {
+			allow_option = true;
 			exit_code=1;
 			fprintf(stderr, " Unknown option: %s\n"
 				" Use keyword 'where' to modify condition\n",
 				argv[i]);
 		}
+
+		common_verify_option_syntax(argv[i], option, allow_option);
 	}
 
 	(*start) = i;

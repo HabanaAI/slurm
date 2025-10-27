@@ -760,13 +760,9 @@ static void _set_user_default_acct(slurmdb_assoc_rec_t *assoc,
 		if (!user->default_acct
 		    || xstrcmp(user->default_acct, assoc->acct)) {
 			xfree(user->default_acct);
-			if (assoc->is_def == 1) {
-				user->default_acct = xstrdup(assoc->acct);
-				debug2("user %s default acct is %s",
-				       user->name, user->default_acct);
-			} else
-				debug2("user %s default acct %s removed",
-				       user->name, assoc->acct);
+			user->default_acct = xstrdup(assoc->acct);
+			debug2("user %s default acct is %s", user->name,
+			       user->default_acct);
 		}
 		/* cache user rec reference for backfill*/
 		assoc->user_rec = user;
@@ -3539,7 +3535,6 @@ extern void assoc_mgr_get_shares(void *db_conn,
 		memcpy(share->tres_run_secs,
 		       assoc->usage->grp_used_tres_run_secs,
 		       sizeof(uint64_t) * g_tres_count);
-		share->fs_factor = assoc->usage->fs_factor;
 		share->level_fs = assoc->usage->level_fs;
 
 		if (assoc->partition) {
@@ -3567,8 +3562,11 @@ extern void assoc_mgr_get_shares(void *db_conn,
 			else
 				share->parent = xstrdup(assoc->parent_acct);
 		}
+
+		/* These can all be set in priority_g_set_assoc_usage */
 		share->usage_norm = (double)assoc->usage->usage_norm;
 		share->usage_efctv = (double)assoc->usage->usage_efctv;
+		share->fs_factor = assoc->usage->fs_factor;
 	}
 	list_iterator_destroy(itr);
 	assoc_mgr_unlock(&locks);
@@ -7220,7 +7218,7 @@ static char *_make_tres_str(char *spec, int tres_pos)
 }
 
 extern bool assoc_mgr_check_assoc_lim_incr(slurmdb_assoc_rec_t *assoc,
-					   char **str)
+					   char **str, bool assoc_tres_locked)
 {
 	slurmdb_assoc_rec_t *curr;
 	bool rc = false;
@@ -7231,7 +7229,11 @@ extern bool assoc_mgr_check_assoc_lim_incr(slurmdb_assoc_rec_t *assoc,
 		.tres = READ_LOCK,
 	};
 
-	assoc_mgr_lock(&locks);
+	if (!assoc_tres_locked)
+		assoc_mgr_lock(&locks);
+
+	xassert(verify_assoc_lock(ASSOC_LOCK, locks.assoc));
+	xassert(verify_assoc_lock(TRES_LOCK, locks.tres));
 
 	if (!assoc_mgr_assoc_list)
 		goto end_it;
@@ -7380,7 +7382,8 @@ extern bool assoc_mgr_check_assoc_lim_incr(slurmdb_assoc_rec_t *assoc,
 	}
 
 end_it:
-	assoc_mgr_unlock(&locks);
+	if (!assoc_tres_locked)
+		assoc_mgr_unlock(&locks);
 
 	return rc;
 }
@@ -7397,9 +7400,10 @@ extern int assoc_mgr_find_coord_in_user(void *x, void *y)
 	return slurm_find_char_exact_in_list(coord->name, y);
 }
 
-/* assoc_mgr_lock_t should be clear before coming in here. */
+/* assoc and user locks need to already be owned if assoc_mgr_locked is true */
 extern bool assoc_mgr_check_coord_qos(char *cluster_name, char *account,
-				      char *coord_name, list_t *qos_list)
+				      char *coord_name, list_t *qos_list,
+				      bool assoc_mgr_locked)
 {
 	bool rc = true;
 	slurmdb_assoc_rec_t *assoc = NULL;
@@ -7421,7 +7425,11 @@ extern bool assoc_mgr_check_coord_qos(char *cluster_name, char *account,
 	if (!qos_list || !list_count(qos_list))
 		return true;
 
-	assoc_mgr_lock(&locks);
+	if (!assoc_mgr_locked)
+		assoc_mgr_lock(&locks);
+
+	xassert(verify_assoc_lock(ASSOC_LOCK, locks.assoc));
+	xassert(verify_assoc_lock(USER_LOCK, locks.user));
 
 	/* check if coord_name is coord of account name */
 
@@ -7469,7 +7477,8 @@ extern bool assoc_mgr_check_coord_qos(char *cluster_name, char *account,
 		rc = false;
 
 end_it:
-	assoc_mgr_unlock(&locks);
+	if (!assoc_mgr_locked)
+		assoc_mgr_unlock(&locks);
 
 	return rc;
 }

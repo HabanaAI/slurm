@@ -46,10 +46,11 @@
 #include "src/common/cpu_frequency.h"
 #include "src/common/forward.h"
 #include "src/common/parse_time.h"
-#include "src/interfaces/select.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/select.h"
 
 /* Data structures for pthreads used to gather step information from multiple
  * clusters in parallel */
@@ -64,14 +65,6 @@ typedef struct load_step_resp_struct {
 	bool local_cluster;
 	job_step_info_response_msg_t *new_msg;
 } load_step_resp_struct_t;
-
-static int _nodes_in_list(char *node_list)
-{
-	hostset_t *host_set = hostset_create(node_list);
-	int count = hostset_count(host_set);
-	hostset_destroy(host_set);
-	return count;
-}
 
 static int _sort_pids_by_name(void *x, void *y)
 {
@@ -100,238 +93,6 @@ static int _sort_stats_by_name(void *x, void *y)
 		return 0;
 
 	return _sort_pids_by_name((void *)&rec_a->step_pids, (void *)&rec_b->step_pids);
-}
-
-/*
- * slurm_print_job_step_info_msg - output information about all Slurm
- *	job steps based upon message as loaded using slurm_get_job_steps
- * IN out - file to write to
- * IN job_step_info_msg_ptr - job step information message pointer
- * IN one_liner - print as a single line if true
- */
-void
-slurm_print_job_step_info_msg ( FILE* out,
-		job_step_info_response_msg_t * job_step_info_msg_ptr,
-		int one_liner )
-{
-	int i;
-	job_step_info_t *job_step_ptr = job_step_info_msg_ptr->job_steps ;
-	char time_str[256];
-
-	slurm_make_time_str ((time_t *)&job_step_info_msg_ptr->last_update,
-			time_str, sizeof(time_str));
-	fprintf( out, "Job step data as of %s, record count %d\n",
-		time_str, job_step_info_msg_ptr->job_step_count);
-
-	for (i = 0; i < job_step_info_msg_ptr-> job_step_count; i++)
-	{
-		slurm_print_job_step_info ( out, & job_step_ptr[i],
-					    one_liner ) ;
-	}
-}
-
-/*
- * slurm_print_job_step_info - output information about a specific Slurm
- *	job step based upon message as loaded using slurm_get_job_steps
- * IN out - file to write to
- * IN job_ptr - an individual job step information record pointer
- * IN one_liner - print as a single line if true
- */
-void
-slurm_print_job_step_info ( FILE* out, job_step_info_t * job_step_ptr,
-			    int one_liner )
-{
-	char *print_this = slurm_sprint_job_step_info(job_step_ptr, one_liner);
-	fprintf ( out, "%s", print_this);
-	xfree(print_this);
-}
-
-/*
- * slurm_sprint_job_step_info - output information about a specific Slurm
- *	job step based upon message as loaded using slurm_get_job_steps
- * IN job_ptr - an individual job step information record pointer
- * IN one_liner - print as a single line if true
- * RET out - char * containing formatted output (must be freed after call)
- *           NULL is returned on failure.
- */
-char *
-slurm_sprint_job_step_info ( job_step_info_t * job_step_ptr,
-			    int one_liner )
-{
-	char tmp_node_cnt[40];
-	char time_str[256];
-	char limit_str[32];
-	char tmp_line[128];
-	char *out = NULL;
-	char *line_end = (one_liner) ? " " : "\n   ";
-	char *sorted_nodelist = NULL;
-	uint16_t flags = STEP_ID_FLAG_NONE;
-
-	/****** Line 1 ******/
-	slurm_make_time_str ((time_t *)&job_step_ptr->start_time, time_str,
-		sizeof(time_str));
-	if (job_step_ptr->time_limit == INFINITE)
-		snprintf(limit_str, sizeof(limit_str), "UNLIMITED");
-	else
-		secs2time_str ((time_t)job_step_ptr->time_limit * 60,
-				limit_str, sizeof(limit_str));
-
-	if (job_step_ptr->array_job_id) {
-		xstrfmtcat(out, "StepId=%u_%u.",
-			   job_step_ptr->array_job_id,
-			   job_step_ptr->array_task_id);
-		flags = STEP_ID_FLAG_NO_PREFIX | STEP_ID_FLAG_NO_JOB;
-	}
-
-	log_build_step_id_str(&job_step_ptr->step_id,
-			      tmp_line, sizeof(tmp_line),
-			      flags);
-	xstrfmtcat(out, "%s ", tmp_line);
-
-	xstrfmtcat(out, "UserId=%u StartTime=%s TimeLimit=%s",
-		   job_step_ptr->user_id, time_str, limit_str);
-
-	/****** Line 2 ******/
-	xstrcat(out, line_end);
-	sorted_nodelist = slurm_sort_node_list_str(job_step_ptr->nodes);
-	xstrfmtcat(out, "State=%s Partition=%s NodeList=%s",
-		   job_state_string(job_step_ptr->state),
-		   job_step_ptr->partition, sorted_nodelist);
-	xfree(sorted_nodelist);
-
-	/****** Line 3 ******/
-	convert_num_unit((float)_nodes_in_list(job_step_ptr->nodes),
-			 tmp_node_cnt, sizeof(tmp_node_cnt), UNIT_NONE,
-			 NO_VAL, CONVERT_NUM_UNIT_EXACT);
-	xstrcat(out, line_end);
-	xstrfmtcat(out, "Nodes=%s CPUs=%u Tasks=%u Name=%s Network=%s",
-		   tmp_node_cnt, job_step_ptr->num_cpus,
-		   job_step_ptr->num_tasks, job_step_ptr->name,
-		   job_step_ptr->network);
-
-	/****** Line 4 ******/
-	xstrcat(out, line_end);
-	xstrfmtcat(out, "TRES=%s", job_step_ptr->tres_fmt_alloc_str);
-
-	/****** Line 5 ******/
-	xstrcat(out, line_end);
-	xstrfmtcat(out, "ResvPorts=%s", job_step_ptr->resv_ports);
-
-	/****** Line 6 ******/
-	xstrcat(out, line_end);
-	if (cpu_freq_debug(NULL, NULL, tmp_line, sizeof(tmp_line),
-			   job_step_ptr->cpu_freq_gov,
-			   job_step_ptr->cpu_freq_min,
-			   job_step_ptr->cpu_freq_max, NO_VAL) != 0) {
-		xstrcat(out, tmp_line);
-	} else {
-		xstrcat(out, "CPUFreqReq=Default");
-	}
-
-	if (job_step_ptr->task_dist) {
-		char *name =
-			slurm_step_layout_type_name(job_step_ptr->task_dist);
-		xstrfmtcat(out, " Dist=%s", name);
-		xfree(name);
-	}
-
-	/****** Line 7 ******/
-	xstrcat(out, line_end);
-	xstrfmtcat(out, "SrunHost:Pid=%s:%u",
-		   job_step_ptr->srun_host, job_step_ptr->srun_pid);
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->cpus_per_tres) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "CpusPerTres=%s", job_step_ptr->cpus_per_tres);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->mem_per_tres) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "MemPerTres=%s", job_step_ptr->mem_per_tres);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_bind) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresBind=%s", job_step_ptr->tres_bind);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_freq) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresFreq=%s", job_step_ptr->tres_freq);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_per_step) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresPerStep=%s", job_step_ptr->tres_per_step);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_per_node) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresPerNode=%s", job_step_ptr->tres_per_node);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_per_socket) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresPerSocket=%s",
-			   job_step_ptr->tres_per_socket);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->tres_per_task) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "TresPerTask=%s", job_step_ptr->tres_per_task);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->container || job_step_ptr->container_id) {
-		xstrcat(out, line_end);
-		xstrfmtcat(out, "Container=%s ContainerID=%s",
-			   job_step_ptr->container, job_step_ptr->container_id);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->std_in) {
-		char *tmp_path;
-		xstrcat(out, line_end);
-		tmp_path = slurm_expand_step_stdio_fields(job_step_ptr->std_in,
-							  job_step_ptr);
-		xstrfmtcat(out, "StdIn=%s", tmp_path);
-		xfree(tmp_path);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->std_err) {
-		char *tmp_path;
-		xstrcat(out, line_end);
-		tmp_path = slurm_expand_step_stdio_fields(job_step_ptr->std_err,
-							  job_step_ptr);
-		xstrfmtcat(out, "StdErr=%s", tmp_path);
-		xfree(tmp_path);
-	}
-
-	/****** Line (optional) ******/
-	if (job_step_ptr->std_out) {
-		char *tmp_path;
-		xstrcat(out, line_end);
-		tmp_path = slurm_expand_step_stdio_fields(job_step_ptr->std_out,
-							  job_step_ptr);
-		xstrfmtcat(out, "StdOut=%s", tmp_path);
-		xfree(tmp_path);
-	}
-
-	/****** END OF JOB RECORD ******/
-	if (one_liner)
-		xstrcat(out, "\n");
-	else
-		xstrcat(out, "\n\n");
-	return out;
 }
 
 static int _get_stepmgr_steps(void *x, void *arg)
@@ -363,7 +124,7 @@ static int _get_stepmgr_steps(void *x, void *arg)
 	}
 
 	job_step_info_request_msg_t req_data = {0};
-	req_data.step_id.job_id = sji->job_id;
+	req_data.step_id.job_id = sji->step_id.job_id;
 	req_data.step_id.step_id = NO_VAL;
 	req_data.step_id.step_het_comp = NO_VAL;
 
@@ -553,49 +314,31 @@ _load_fed_steps(slurm_msg_t *req_msg, job_step_info_response_msg_t **resp,
 	return SLURM_SUCCESS;
 }
 
-/*
- * slurm_get_job_steps - issue RPC to get specific slurm job step
- *	configuration information if changed since update_time.
- *	a job_id value of NO_VAL implies all jobs, a step_id value of
- *	NO_VAL implies all steps
- * IN update_time - time of current configuration data
- * IN job_id - get information for specific job id, NO_VAL for all jobs
- * IN step_id - get information for specific job step id, NO_VAL for all
- *	job steps
- * IN job_info_msg_pptr - place to store a job configuration pointer
- * IN show_flags - job step filtering options
- * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set
- * NOTE: free the response using slurm_free_job_step_info_response_msg
- */
-int
-slurm_get_job_steps (time_t update_time, uint32_t job_id, uint32_t step_id,
-		     job_step_info_response_msg_t **resp, uint16_t show_flags)
+extern int slurm_get_job_steps(slurm_step_id_t *step_id,
+			       job_step_info_response_msg_t **resp,
+			       uint16_t show_flags)
 {
 	int rc;
 	slurm_msg_t req_msg;
 	job_step_info_request_msg_t req;
 	slurmdb_federation_rec_t *fed;
 	void *ptr = NULL;
-	slurm_step_id_t tmp_step_id = {
-		.job_id = job_id,
-		.step_het_comp = NO_VAL,
-		.step_id = step_id,
-	};
+	slurm_step_id_t null_step_id = SLURM_STEP_ID_INITIALIZER;
+
+	if (!step_id)
+		step_id = &null_step_id;
+
 	if ((show_flags & SHOW_LOCAL) == 0) {
 		if (slurm_load_federation(&ptr) ||
 		    !cluster_in_federation(ptr, slurm_conf.cluster_name)) {
 			/* Not in federation */
 			show_flags |= SHOW_LOCAL;
-		} else {
-			/* In federation. Need full info from all clusters */
-			update_time = (time_t) 0;
 		}
 	}
 
 	slurm_msg_t_init(&req_msg);
 	memset(&req, 0, sizeof(req));
-	req.last_update  = update_time;
-	memcpy(&req.step_id, &tmp_step_id, sizeof(req.step_id));
+	req.step_id = *step_id;
 	req.show_flags   = show_flags;
 	req_msg.msg_type = REQUEST_JOB_STEP_INFO;
 	req_msg.data     = &req;

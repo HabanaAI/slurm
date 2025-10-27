@@ -5,7 +5,8 @@ import atf
 import pytest
 import time
 
-node_prefix = "atf_node"
+# Note that node_prefix needs to be known or handled properly in s2n variant
+node_prefix = "node"
 # Note that power_interval has to be at least 5 seconds, recommended 10 seconds
 # for later tests
 power_interval = 10
@@ -660,8 +661,8 @@ def test_scontrol_power_down_force():
     atf.wait_for_node_state(
         f"{node_prefix}1", "ALLOCATED", timeout=5, poll_interval=0.1, fatal=True
     )
-    assert "CONFIGURING" == atf.get_job_parameter(
-        job_id, "JobState", default="NOT_FOUND", quiet=True
+    assert atf.wait_for_job_state(
+        job_id, "CONFIGURING"
     ), "Submitted job should be CONFIGURING while there is a corresponding ALLOCATED cloud node"
 
     # Now POWER_DOWN_FORCE the cloud node, make sure it enters POWER_DOWN and

@@ -146,8 +146,8 @@ static void _set_cpu_affinity(node_config_load_t *node_conf, char *bus_id,
 	xfree(path);
 }
 
-static void _set_name_and_file(node_config_load_t *node_conf, char *bus_id,
-			       char **device_name, char **device_file)
+static void _set_basic_info(node_config_load_t *node_conf, char *bus_id,
+			    char **device_name, char **device_file, char **uuid)
 {
 	FILE *f;
 	uint32_t minor_number = NO_VAL;
@@ -156,12 +156,20 @@ static void _set_name_and_file(node_config_load_t *node_conf, char *bus_id,
 	const char whitespace[] = " \f\n\r\t\v";
 
 	path = xstrdup_printf(NVIDIA_INFORMATION_PREFIX, bus_id);
-	f = fopen(path, "r");
+	if (!(f = fopen(path, "r"))) {
+		error("Unable to open %s", path);
+		xfree(path);
+		return;
+	}
 
 	while (fgets(buffer, sizeof(buffer), f) != NULL) {
 		if (!xstrncmp("Device Minor:", buffer, 13)) {
 			minor_number = strtol(buffer + 13, NULL, 10);
 			xstrfmtcat(*device_file, "/dev/nvidia%u", minor_number);
+		} else if (!xstrncmp("GPU UUID:", buffer, 9)) {
+			buffer[strcspn(buffer, "\n")] = 0; /* Remove newline */
+			*uuid = xstrdup(buffer + 9 +
+					strspn(buffer + 9, whitespace));
 		} else if (!xstrncmp("Model:", buffer, 6)) {
 			buffer[strcspn(buffer, "\n")] = 0; /* Remove newline */
 			*device_name = xstrdup(buffer + 6 +
@@ -175,9 +183,12 @@ static void _set_name_and_file(node_config_load_t *node_conf, char *bus_id,
 		error("Device file and Minor number not found");
 	if (!*device_name)
 		error("Device name not found");
+	if (!*uuid)
+		error("Device UUID not found");
 
 	debug2("Name: %s", *device_name);
 	debug2("Device File (minor number): %s", *device_file);
+	debug2("UUID: %s", *uuid);
 	xfree(path);
 }
 
@@ -201,9 +212,10 @@ static list_t *_get_system_gpu_list_nvidia(node_config_load_t *node_conf)
 			.name = "gpu",
 		};
 
-		_set_name_and_file(node_conf, de->d_name,
-				   &gres_slurmd_conf.type_name,
-				   &gres_slurmd_conf.file);
+		_set_basic_info(node_conf, de->d_name,
+				&gres_slurmd_conf.type_name,
+				&gres_slurmd_conf.file,
+				&gres_slurmd_conf.unique_id);
 		_set_cpu_affinity(node_conf, de->d_name,
 				  &gres_slurmd_conf.cpus);
 
@@ -230,11 +242,9 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
-extern int fini(void)
+extern void fini(void)
 {
 	debug("%s: unloading %s", __func__, plugin_name);
-
-	return SLURM_SUCCESS;
 }
 
 extern void gpu_p_get_device_count(unsigned int *device_count)

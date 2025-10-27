@@ -97,6 +97,7 @@ typedef struct node_record node_record_t;
 #define DEFAULT_ENFORCE_PART_LIMITS 0
 #define DEFAULT_ALLOW_SPEC_RESOURCE_USAGE 0
 #define DEFAULT_HASH_PLUGIN "hash/k12"
+#define DEFAULT_HTTP_PARSER_TYPE "http_parser/libhttp_parser"
 #define DEFAULT_HOST_UNREACH_RETRY_COUNT 0
 #define DEFAULT_KEEPALIVE_TIME (NO_VAL)
 #define DEFAULT_KEEPALIVE_INTERVAL (NO_VAL)
@@ -157,6 +158,7 @@ typedef struct node_record node_record_t;
 #define DEFAULT_WAIT_TIME           0
 #define DEFAULT_TREE_WIDTH	    16
 #define DEFAULT_UNKILLABLE_TIMEOUT  60 /* seconds */
+#define DEFAULT_URL_PARSER_TYPE "url_parser/libhttp_parser"
 #define DEFAULT_BATCH_SCRIPT_LIMIT (4 * 1024 * 1024) /* 4MB */
 #define MAX_BATCH_SCRIPT_SIZE (512 * 1024 * 1024) /* 512MB */
 #define DEFAULT_MAX_SUBMIT_LINE_SIZE (1024 * 1024) /* 1MB */
@@ -172,6 +174,8 @@ typedef struct slurm_conf_node {
 	char *addresses;
 	char *bcast_addresses;
 	char *gres;		/* arbitrary list of node's generic resources */
+	char *gres_conf; /* '+' delimited gres_slurmd_conf_t's as
+			  * comma-separated key=value pairs. */
 	char *feature;		/* arbitrary list of node's features */
 	char *port_str;
 	uint32_t cpu_bind;	/* default CPU bind type */
@@ -184,6 +188,7 @@ typedef struct slurm_conf_node {
 	uint16_t threads;       /* number of threads per core */
 	uint64_t real_memory;	/* MB real memory on the node */
 	uint64_t mem_spec_limit; /* MB real memory for memory specialization */
+	char *parameters; /* node-specific additions to SlurmdParameters */
 	char *reason;
 	uint16_t res_cores_per_gpu; /* number of cores per GPU to allow
 				     * to only GPU jobs */
@@ -607,6 +612,11 @@ extern char *reconfig_flags2str(uint16_t reconfig_flags);
  * Returns NO_VAL if invalid
  */
 extern uint16_t reconfig_str2flags(char *reconfig_flags);
+
+/*
+ * Parse flags from provided string, will alter slurm_conf.conf_flags.
+ */
+extern void parse_slurmd_params(const char *slurmd_params);
 
 extern void destroy_config_plugin_params(void *object);
 extern void pack_config_plugin_params(void *in, uint16_t protocol_version,

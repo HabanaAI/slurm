@@ -51,12 +51,16 @@ libcommon_interfaces_la_SOURCES =    \
 	gres.h					\
 	hash.c					\
 	hash.h					\
+	http_parser.c				\
+	http_parser.h				\
 	jobacct_gather.c			\
 	jobacct_gather.h			\
 	jobcomp.c				\
 	jobcomp.h				\
 	mcs.c					\
 	mcs.h					\
+	metrics.c				\
+	metrics.h				\
 	mpi.c					\
 	mpi.h					\
 	node_features.c				\
@@ -76,7 +80,9 @@ libcommon_interfaces_la_SOURCES =    \
 	tls.c				        \
 	tls.h				        \
 	topology.c				\
-	topology.h
+	topology.h                              \
+	url_parser.c                            \
+	url_parser.h
 
 libslurmctld_interfaces_la_SOURCES =    \
 	burst_buffer.c	\
@@ -89,8 +95,8 @@ libslurmctld_interfaces_la_SOURCES =    \
 	sched_plugin.h
 
 libslurmd_interfaces_la_SOURCES =    \
-	job_container.c \
-	job_container.h \
+	namespace.c \
+	namespace.h \
 	proctrack.c \
 	proctrack.h \
 	task.c \

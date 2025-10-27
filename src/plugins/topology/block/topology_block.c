@@ -43,6 +43,7 @@
 #include "src/common/bitstring.h"
 #include "src/common/log.h"
 #include "src/common/node_conf.h"
+#include "src/common/slurm_protocol_pack.h"
 #include "src/common/xstring.h"
 #include "src/slurmctld/slurmctld.h"
 
@@ -128,33 +129,44 @@ static void _print_topo_record(topoinfo_bblock_t * topo_ptr, char **out)
 
 }
 
-/*
- * init() is called when the plugin is loaded, before any other functions
- *	are called.  Put global initialization here.
- */
 extern int init(void)
 {
 	verbose("%s loaded", plugin_name);
 	return SLURM_SUCCESS;
 }
 
-/*
- * fini() is called when the plugin is removed. Clear any allocated
- *	storage here.
- */
-extern int fini(void)
+extern void fini(void)
 {
-	return SLURM_SUCCESS;
+	return;
 }
 
 extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
 				  topology_ctx_t *tctx)
 {
 	block_context_t *ctx = tctx->plugin_ctx;
-	int *change =
-		xcalloc(ctx->block_count + ctx->ablock_count, sizeof(int));
+	int *change;
 
 	bit_clear(ctx->blocks_nodes_bitmap, node_ptr->index);
+
+	if (unit) {
+		/*
+		 * Check for a valid block first before being destructive on
+		 * bitmaps.
+		 */
+		bool found_one_block = false;
+		for (int i = 0; i < ctx->block_count; i++) {
+			if (!xstrcmp(ctx->block_record_table[i].name, unit)) {
+				found_one_block = true;
+				break;
+			}
+		}
+		if (!found_one_block) {
+			/* Tried to add to a block that doesn't exist */
+			return SLURM_ERROR;
+		}
+	}
+
+	change = xcalloc(ctx->block_count + ctx->ablock_count, sizeof(int));
 
 	for (int i = 0; i < ctx->block_count; i++) {
 		bool in_block = bit_test(ctx->block_record_table[i].node_bitmap,
@@ -265,6 +277,12 @@ extern int topology_p_eval_nodes(topology_eval_t *topo_eval)
 		topo_eval->trump_others = true;
 	}
 
+	xassert(!topo_eval->job_ptr->topo_jobinfo);
+
+	topo_eval->job_ptr->topo_jobinfo =
+		xmalloc(sizeof(*topo_eval->job_ptr->topo_jobinfo));
+	topo_eval->job_ptr->topo_jobinfo->plugin_id = plugin_id;
+
 	return common_topo_choose_nodes(topo_eval);
 }
 
@@ -301,7 +319,39 @@ extern bitstr_t *topology_p_get_bitmap(char *name, void *tctx)
 
 extern bool topology_p_generate_node_ranking(topology_ctx_t *tctx)
 {
-	return false;
+	/* By default, node_rank is 0, so start at 1 */
+	int block_rank = 1;
+	block_context_t *ctx;
+	node_record_t *node_ptr;
+
+	if (!xstrcasestr(slurm_conf.topology_param, "BlockAsNodeRank"))
+		return false;
+
+	block_record_validate(tctx);
+
+	ctx = tctx->plugin_ctx;
+
+	if (ctx->block_count == 0) {
+		topology_p_destroy_config(tctx);
+		return false;
+	}
+
+	for (int i = 0; i < ctx->block_count; i++) {
+		for (int n = 0;
+		     (node_ptr = next_node_bitmap(ctx->block_record_table[i]
+							  .node_bitmap,
+						  &n));
+		     n++) {
+			node_ptr->node_rank = block_rank;
+			debug("node=%s rank=%d", node_ptr->name, block_rank);
+		}
+		block_rank++;
+	}
+
+	/* Discard the temporary topology */
+	topology_p_destroy_config(tctx);
+
+	return true;
 }
 
 /*
@@ -342,23 +392,6 @@ extern int topology_p_split_hostlist(hostlist_t *hl, hostlist_t ***sp_hl,
 {
 	return common_topo_split_hostlist_treewidth(
 		hl, sp_hl, count, tree_width);
-}
-
-extern int topology_p_topology_free(void *topoinfo_ptr)
-{
-	int i = 0;
-	topoinfo_block_t *topoinfo = topoinfo_ptr;
-	if (topoinfo) {
-		if (topoinfo->topo_array) {
-			for (i = 0; i < topoinfo->record_count; i++) {
-				xfree(topoinfo->topo_array[i].name);
-				xfree(topoinfo->topo_array[i].nodes);
-			}
-			xfree(topoinfo->topo_array);
-		}
-		xfree(topoinfo);
-	}
-	return SLURM_SUCCESS;
 }
 
 extern int topology_p_get(topology_data_t type, void *data, void *tctx)
@@ -420,7 +453,24 @@ extern int topology_p_get(topology_data_t type, void *data, void *tctx)
 	return rc;
 }
 
-extern int topology_p_topology_pack(void *topoinfo_ptr, buf_t *buffer,
+extern int topology_p_topoinfo_free(void *topoinfo_ptr)
+{
+	int i = 0;
+	topoinfo_block_t *topoinfo = topoinfo_ptr;
+	if (topoinfo) {
+		if (topoinfo->topo_array) {
+			for (i = 0; i < topoinfo->record_count; i++) {
+				xfree(topoinfo->topo_array[i].name);
+				xfree(topoinfo->topo_array[i].nodes);
+			}
+			xfree(topoinfo->topo_array);
+		}
+		xfree(topoinfo);
+	}
+	return SLURM_SUCCESS;
+}
+
+extern int topology_p_topoinfo_pack(void *topoinfo_ptr, buf_t *buffer,
 				    uint16_t protocol_version)
 {
 	int i;
@@ -449,7 +499,7 @@ extern int topology_p_topology_pack(void *topoinfo_ptr, buf_t *buffer,
 	return SLURM_SUCCESS;
 }
 
-extern int topology_p_topology_print(void *topoinfo_ptr, char *nodes_list,
+extern int topology_p_topoinfo_print(void *topoinfo_ptr, char *nodes_list,
 				     char *unit, char **out)
 {
 	int i, match, match_cnt = 0;;
@@ -503,7 +553,7 @@ extern int topology_p_topology_print(void *topoinfo_ptr, char *nodes_list,
 	return SLURM_SUCCESS;
 }
 
-extern int topology_p_topology_unpack(void **topoinfo_pptr, buf_t *buffer,
+extern int topology_p_topoinfo_unpack(void **topoinfo_pptr, buf_t *buffer,
 				      uint16_t protocol_version)
 {
 	int i = 0;
@@ -549,8 +599,85 @@ extern int topology_p_topology_unpack(void **topoinfo_pptr, buf_t *buffer,
 	return SLURM_SUCCESS;
 
 unpack_error:
-	topology_p_topology_free(topoinfo_ptr);
+	topology_p_topoinfo_free(topoinfo_ptr);
 	*topoinfo_pptr = NULL;
+	return SLURM_ERROR;
+}
+
+extern void topology_p_jobinfo_free(
+	topology_jobinfo_t *topo_jobinfo)
+{
+	if (!topo_jobinfo)
+		return;
+
+	FREE_NULL_LIST(topo_jobinfo->segment_list);
+	xfree(topo_jobinfo);
+
+	return;
+}
+
+extern void topology_p_jobinfo_pack(
+	topology_jobinfo_t *topo_jobinfo,
+	buf_t *buffer,
+	uint16_t protocol_version)
+{
+	xassert(topo_jobinfo);
+
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		list_t *segment_list = NULL;
+
+		if (topo_jobinfo)
+			segment_list = topo_jobinfo->segment_list;
+
+		slurm_pack_list(segment_list, packstr_with_version, buffer,
+				protocol_version);
+	}
+}
+
+extern int topology_p_jobinfo_unpack(
+	topology_jobinfo_t **topo_jobinfo,
+	buf_t *buffer,
+	uint16_t protocol_version)
+{
+	xassert(topo_jobinfo);
+
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		*topo_jobinfo = xmalloc(sizeof(**topo_jobinfo));
+		if (slurm_unpack_list(&((*topo_jobinfo)->segment_list),
+				      unpackstr_with_version, xfree_ptr, buffer,
+				      protocol_version))
+			goto unpack_error;
+	} else {
+		error("%s: protocol_version %hu not supported",
+		      __func__, protocol_version);
+		goto unpack_error;
+	}
+
+	return SLURM_SUCCESS;
+unpack_error:
+	error("%s: unpack error", __func__);
+	xfree(*topo_jobinfo);
+
+	return SLURM_ERROR;
+}
+
+extern int topology_p_jobinfo_get(
+	topology_jobinfo_type_t type,
+	topology_jobinfo_t *topo_jobinfo,
+	void *data)
+{
+	if (!topo_jobinfo)
+		return SLURM_ERROR;
+
+	switch (type) {
+	case TOPO_JOBINFO_SEGMENT_LIST:
+		*(list_t **) data = topo_jobinfo->segment_list;
+		return SLURM_SUCCESS;
+	default:
+		error("Unknown topology_jobinfo_type_t: %u", type);
+		break;
+	}
+
 	return SLURM_ERROR;
 }
 
@@ -590,4 +717,22 @@ extern uint32_t topology_p_get_fragmentation(bitstr_t *node_mask, void *tctx)
 	frag -= bit_overlap(node_mask, ctx->blocks_nodes_bitmap);
 
 	return frag;
+}
+
+extern void topology_p_get_topology_str(node_record_t *node_ptr,
+					char **topology_str_ptr,
+					topology_ctx_t *tctx)
+{
+	block_context_t *ctx = tctx->plugin_ctx;
+
+	for (int i = 0; i < ctx->block_count; i++) {
+		if (bit_test(ctx->block_record_table[i].node_bitmap,
+			     node_ptr->index)) {
+			xstrfmtcat(*topology_str_ptr, "%s%s:%s",
+				   *topology_str_ptr ? "," : "", tctx->name,
+				   ctx->block_record_table[i].name);
+			break;
+		}
+	}
+	return;
 }

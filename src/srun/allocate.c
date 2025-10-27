@@ -76,13 +76,13 @@ struct pollfd global_fds[1];
 
 extern char **environ;
 
-static uint32_t pending_job_id = 0;
+static slurm_step_id_t pending_job_id = SLURM_STEP_ID_INITIALIZER;
 
 /*
  * Static Prototypes
  */
 static job_desc_msg_t *_job_desc_msg_create_from_opts(slurm_opt_t *opt_local);
-static void _set_pending_job_id(uint32_t job_id);
+static void _set_pending_job_id(slurm_step_id_t *step_id);
 static void _signal_while_allocating(int signo);
 static int _wait_nodes_ready(resource_allocation_response_msg_t *alloc);
 
@@ -90,10 +90,10 @@ static sig_atomic_t destroy_job = 0;
 static bool is_het_job = false;
 static bool revoke_job = false;
 
-static void _set_pending_job_id(uint32_t job_id)
+static void _set_pending_job_id(slurm_step_id_t *step_id)
 {
-	debug2("Pending job allocation %u", job_id);
-	pending_job_id = job_id;
+	debug2("Pending job allocation %pI", step_id);
+	pending_job_id = *step_id;
 }
 
 static void *_safe_signal_while_allocating(void *in_data)
@@ -102,8 +102,8 @@ static void *_safe_signal_while_allocating(void *in_data)
 
 	debug("Got signal %d", signo);
 	xfree(in_data);
-	if (pending_job_id != 0) {
-		slurm_complete_job(pending_job_id, 128 + signo);
+	if (pending_job_id.job_id != NO_VAL) {
+		slurm_complete_job(pending_job_id.job_id, 128 + signo);
 	}
 
 	return NULL;
@@ -137,9 +137,10 @@ static void _signal_while_allocating(int signo)
 /* This typically signifies the job was cancelled by scancel */
 static void _job_complete_handler(srun_job_complete_msg_t *msg)
 {
-	if (!is_het_job && pending_job_id && (pending_job_id != msg->job_id)) {
-		error("Ignoring job_complete for job %u because our job ID is %u",
-		      msg->job_id, pending_job_id);
+	if (!is_het_job && (pending_job_id.job_id != NO_VAL) &&
+	    (pending_job_id.job_id != msg->job_id)) {
+		error("Ignoring job_complete for %pI because we are %pI",
+		      msg, &pending_job_id);
 		return;
 	}
 
@@ -236,7 +237,7 @@ static int _wait_nodes_ready(resource_allocation_response_msg_t *alloc)
 	int is_ready = 0, i = 0, rc;
 	bool job_killed = false;
 
-	pending_job_id = alloc->job_id;
+	pending_job_id = alloc->step_id;
 
 	while (true) {
 		if (i) {
@@ -260,7 +261,7 @@ static int _wait_nodes_ready(resource_allocation_response_msg_t *alloc)
 		}
 		i += 1;
 
-		rc = slurm_job_node_ready(alloc->job_id);
+		rc = slurm_job_node_ready(alloc->step_id.job_id);
 		if (rc == READY_JOB_FATAL)
 			break;				/* fatal error */
 		if (destroy_job || revoke_job)
@@ -283,14 +284,14 @@ static int _wait_nodes_ready(resource_allocation_response_msg_t *alloc)
 	} else if (!destroy_job) {
 		if (job_killed) {
 			error("Job allocation %u has been revoked",
-			      alloc->job_id);
+			      alloc->step_id.job_id);
 			destroy_job = true;
 		} else
 			error("Nodes %s are still not ready", alloc->node_list);
 	} else	/* allocation_interrupted and slurmctld not responing */
 		is_ready = 0;
 
-	pending_job_id = 0;
+	pending_job_id = SLURM_STEP_ID_INITIALIZER;
 
 	return is_ready;
 }
@@ -392,9 +393,9 @@ extern resource_allocation_response_msg_t *allocate_nodes(
 							 opt_local->immediate,
 							 _set_pending_job_id);
 		if (destroy_job) {
-			if (pending_job_id != 0)
+			if (pending_job_id.job_id != NO_VAL)
 				info("Job allocation %u has been revoked",
-				     pending_job_id);
+				     pending_job_id.job_id);
 			/* cancelled by signal */
 			break;
 		} else if (!resp && !_retry()) {
@@ -410,7 +411,7 @@ extern resource_allocation_response_msg_t *allocate_nodes(
 		/*
 		 * Allocation granted!
 		 */
-		pending_job_id = resp->job_id;
+		pending_job_id = resp->step_id;
 
 		/*
 		 * These values could be changed while the job was
@@ -455,7 +456,7 @@ extern resource_allocation_response_msg_t *allocate_nodes(
 relinquish:
 	if (resp) {
 		if (destroy_job || revoke_job)
-			slurm_complete_job(resp->job_id, 1);
+			slurm_complete_job(resp->step_id.job_id, 1);
 		slurm_free_resource_allocation_response_msg(resp);
 	}
 	exit(error_exit);
@@ -486,7 +487,7 @@ list_t *allocate_het_job_nodes(void)
 	list_itr_t *opt_iter, *resp_iter;
 	slurm_opt_t *opt_local, *first_opt = NULL;
 	list_t *job_req_list = NULL, *job_resp_list = NULL;
-	uint32_t my_job_id = 0;
+	slurm_step_id_t my_step_id = SLURM_STEP_ID_INITIALIZER;
 	int i, k;
 
 	job_req_list = list_create(NULL);
@@ -552,9 +553,9 @@ list_t *allocate_het_job_nodes(void)
 				 first_opt->immediate, _set_pending_job_id);
 		if (destroy_job) {
 			/* cancelled by signal */
-			if (pending_job_id != 0)
+			if (pending_job_id.job_id != NO_VAL)
 				info("Job allocation %u has been revoked",
-				     pending_job_id);
+				     pending_job_id.job_id);
 			break;
 		} else if (!job_resp_list && !_retry()) {
 			break;
@@ -575,10 +576,10 @@ list_t *allocate_het_job_nodes(void)
 			if (!resp)
 				break;
 
-			if (pending_job_id == 0)
-				pending_job_id = resp->job_id;
-			if (my_job_id == 0) {
-				my_job_id = resp->job_id;
+			if (pending_job_id.job_id == NO_VAL)
+				pending_job_id = resp->step_id;
+			if (my_step_id.job_id == NO_VAL) {
+				my_step_id = resp->step_id;
 				i = list_count(opt_list);
 				k = list_count(job_resp_list);
 				if (i != k) {
@@ -629,14 +630,13 @@ list_t *allocate_het_job_nodes(void)
 
 relinquish:
 	if (job_resp_list) {
-		if (my_job_id == 0) {
-			resp = (resource_allocation_response_msg_t *)
-			       list_peek(job_resp_list);
-			my_job_id = resp->job_id;
+		if (my_step_id.job_id == NO_VAL) {
+			resp = list_peek(job_resp_list);
+			my_step_id = resp->step_id;
 		}
 
-		if (destroy_job && my_job_id) {
-			slurm_complete_job(my_job_id, 1);
+		if (destroy_job && (my_step_id.job_id != NO_VAL)) {
+			slurm_complete_job(my_step_id.job_id, 1);
 		}
 		FREE_NULL_LIST(job_resp_list);
 	}

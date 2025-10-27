@@ -2,8 +2,10 @@
 
 <h1>REST API Quick Start Guide</h1>
 
-<p>Slurm provides a <a href="rest.html">REST API</a> through the slurmrestd
-daemon, using <a href="jwt.html">JSON Web Tokens</a> for authentication.
+<p>Slurm provides a <a href="https://restfulapi.net/">REST API</a> through the
+slurmrestd daemon, using <a href="jwt.html">JSON Web Tokens</a> for
+authentication. This daemon is designed to allow clients to communicate with
+Slurm via a REST API (in addition to the command line interface (CLI) or C API).
 This page provides a brief tutorial for setting up these components.</p>
 
 <p>
@@ -12,6 +14,8 @@ See also:
 <li><a href="rest.html">REST API Details</a></li>
 <li><a href="rest_api.html">REST API Methods and Models</a></li>
 <li><a href="slurmrestd.html">slurmrestd man page</a></li>
+<li><a href="openapi_release_notes.html">OpenAPI Plugin Release Notes</a></li>
+<li><a href="rest_clients.html">REST API Client Guide</a></li>
 </ul>
 </p>
 
@@ -51,21 +55,25 @@ See also:
 in order for slurmrestd to be compiled (minimum versions are on the related
 software page linked below):</p>
 <ul>
-	<li><a href="related_software.html#httpparser">HTTP Parser</a>
-	</li>
-	<li><a href="related_software.html#yaml">LibYAML</a> (optional)
-	</li>
+	<li><a href="related_software.html#httpparser">HTTP Parser</a></li>
 	<li><a href="related_software.html#json">JSON-C</a></li>
-	<li><a href="related_software.html#jwt">JWT Authentication</a>
-    (optional, used in this guide)</li>
 </ul>
 
-<p>Additionally, it is highly recommended that you have
-<a href="slurmdbd.html">SlurmDBD</a> set up for
-<a href="accounting.html">accounting</a>. Without slurmdbd, slurmrestd may fail
-when loading some plugins (use
-<a href="slurmrestd.html#OPT_-s-<OpenAPI-plugins-to-load>">-s</a> to specify
-which to load) or when attempting JWT authentication.</p>
+<p>The following development libraries are optional; if present at compile time
+the related functionality will be available:</p>
+
+<ul>
+	<li><a href="related_software.html#yaml">YAML</a> (YAML support)</li>
+	<li><a href="related_software.html#jwt">JWT</a>
+    (authentication for socket-based clients)</li>
+	<li><a href="tls.html#s2n">s2n</a> (TLS communications)</li>
+</ul>
+
+<p>It is generally recommended that you have
+<a href="slurmdbd.html">slurmdbd</a> set up for
+<a href="accounting.html">accounting</a>. Without slurmdbd you may need to
+start slurmrestd with the <a href="slurmrestd.html#OPT_-s-<plugin>">-s</a>
+flag to tell it not to load the slurmdbd plugin.</p>
 
 <h2 id="quick_start">Quick Start
 <a class="slurm_link" href="#quick_start"></a></h2>
@@ -338,7 +346,5 @@ place of the problematic character (e.g., <b>/</b> = <b>%2F</b>).
 <p>If SLURM_JWT is set, other slurm commands will attempt to use JWT
 authentication, causing failures. This can be fixed by clearing the variable:
 <pre>unset SLURM_JWT</pre></p>
-
-<p style="text-align:center;">Last modified 16 May 2025</p>
 
 <!--#include virtual="footer.txt"-->

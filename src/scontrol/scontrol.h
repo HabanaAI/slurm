@@ -86,7 +86,6 @@ extern int local_flag;	/* show only local jobs -- not remote remote sib jobs */
 extern int one_liner;	/* one record per line if =1 */
 extern int quiet_flag;	/* quiet=1, verbose=-1, normal=0 */
 extern int sibling_flag; /* show sibling jobs (if any fed job). */
-extern uint32_t cluster_flags; /* what type of cluster are we talking to */
 extern uint32_t euid; /* send request to the slurmctld in behave of this user */
 extern const char *mime_type; /* user requested JSON or YAML */
 extern const char *data_parser; /* data_parser args */
@@ -112,8 +111,8 @@ extern void scontrol_list_jobs(int argc, char **argv);
 extern void scontrol_list_pids(int argc, char **argv);
 extern void scontrol_list_steps(int argc, char **argv);
 extern void	scontrol_getent(const char *node_name);
-extern int	scontrol_load_job(job_info_msg_t ** job_buffer_pptr,
-				  uint32_t job_id);
+extern int scontrol_load_job(job_info_msg_t **job_buffer_pptr, sluid_t sluid,
+			     uint32_t job_id);
 extern int 	scontrol_load_nodes (node_info_msg_t ** node_buffer_pptr,
 				     uint16_t show_flags);
 extern int 	scontrol_load_partitions (partition_info_msg_t **

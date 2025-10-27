@@ -112,6 +112,7 @@ static void _clear_slurmdbd_conf(void)
 		slurmdbd_conf->purge_txn = 0;
 		slurmdbd_conf->purge_usage = 0;
 		xfree(slurmdbd_conf->storage_loc);
+		xfree(slurmdbd_conf->storage_pass_script);
 		xfree(slurmdbd_conf->storage_user);
 		slurmdbd_conf->track_wckey = 0;
 		slurmdbd_conf->track_ctld = 0;
@@ -153,10 +154,12 @@ extern int read_slurmdbd_conf(void)
 		{"DebugLevelSyslog", S_P_STRING},
 		{"DefaultQOS", S_P_STRING},
 		{"DisableCoordDBD", S_P_BOOLEAN},
+		{"DisableArchiveCommands", S_P_BOOLEAN},
 		{"HashPlugin", S_P_STRING},
 		{"JobPurge", S_P_UINT32},
 		{"LogFile", S_P_STRING},
 		{"LogTimeFormat", S_P_STRING},
+		{"MaxPurgeLimit", S_P_UINT32},
 		{"MaxQueryTimeRange", S_P_STRING},
 		{"MessageTimeout", S_P_UINT16},
 		{"Parameters", S_P_STRING},
@@ -183,6 +186,7 @@ extern int read_slurmdbd_conf(void)
 		{"StorageLoc", S_P_STRING},
 		{"StorageParameters", S_P_STRING},
 		{"StoragePass", S_P_STRING},
+		{"StoragePassScript", S_P_STRING},
 		{"StoragePort", S_P_UINT16},
 		{"StorageType", S_P_STRING},
 		{"StorageUser", S_P_STRING},
@@ -221,12 +225,12 @@ extern int read_slurmdbd_conf(void)
 		bool tmp_bool = false;
 		uint32_t parse_flags = 0;
 		uid_t conf_path_uid;
+		mode_t permission = buf.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO);
 		debug3("Checking slurmdbd.conf file:%s access permissions",
 		       conf_path);
-		if ((buf.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)) != 0600)
-			fatal("slurmdbd.conf file %s should be 600 is %o accessible for group or others",
-			      conf_path,
-			      buf.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO));
+		if ((permission != 0600) && (permission != 0640))
+			fatal("slurmdbd.conf file %s should be 600 or 640 but is %o",
+			      conf_path, permission);
 
 		debug("Reading slurmdbd.conf file %s", conf_path);
 
@@ -352,6 +356,11 @@ extern int read_slurmdbd_conf(void)
 			slurmdbd_conf->flags |=
 				DBD_CONF_FLAG_DISABLE_COORD_DBD;
 
+		s_p_get_boolean(&tmp_bool, "DisableArchiveCommands", tbl);
+		if (tmp_bool)
+			slurmdbd_conf->flags |=
+				DBD_CONF_FLAG_DISABLE_ARCHIVE_COMMANDS;
+
 		if (!s_p_get_string(&slurm_conf.hash_plugin, "HashPlugin", tbl))
 			slurm_conf.hash_plugin = xstrdup(DEFAULT_HASH_PLUGIN);
 
@@ -385,6 +394,11 @@ extern int read_slurmdbd_conf(void)
 				slurm_conf.log_fmt = LOG_FMT_THREAD_ID;
 			xfree(temp_str);
 		}
+
+		if (!s_p_get_uint32(&slurmdbd_conf->max_purge_limit,
+				    "MaxPurgeLimit", tbl))
+			slurmdbd_conf->max_purge_limit =
+				DEFAULT_SLURMDBD_MAX_PURGE_LIMIT;
 
 		if (s_p_get_string(&temp_str, "MaxQueryTimeRange", tbl)) {
 			slurmdbd_conf->max_time_range = time_str2secs(temp_str);
@@ -566,8 +580,9 @@ extern int read_slurmdbd_conf(void)
 			    SLURM_SUCCESS)
 				fatal("failed to look up SlurmUser uid");
 
-			if (conf_path_uid != uid)
-				fatal("slurmdbd.conf owned by %u not SlurmUser(%u)",
+			/* Validate slurmdbd.conf owner is SlurmUser or root */
+			if ((conf_path_uid != uid) && conf_path_uid)
+				fatal("slurmdbd.conf owned by %u not SlurmUser(%u) or root",
 				      conf_path_uid, uid);
 		}
 
@@ -590,6 +605,8 @@ extern int read_slurmdbd_conf(void)
 			       "StorageParameters", tbl);
 		s_p_get_string(&slurm_conf.accounting_storage_pass,
 			       "StoragePass", tbl);
+		s_p_get_string(&slurmdbd_conf->storage_pass_script,
+			       "StoragePassScript", tbl);
 		s_p_get_uint16(&slurm_conf.accounting_storage_port,
 		               "StoragePort", tbl);
 		s_p_get_string(&slurm_conf.accounting_storage_type,
@@ -835,9 +852,16 @@ extern list_t *dump_config(void)
 			  (slurmdbd_conf->flags &
 			   DBD_CONF_FLAG_DISABLE_COORD_DBD));
 
+	add_key_pair_bool(my_list, "DisableArchiveCommands",
+			  (slurmdbd_conf->flags &
+			   DBD_CONF_FLAG_DISABLE_ARCHIVE_COMMANDS));
+
 	add_key_pair(my_list, "HashPlugin", "%s", slurm_conf.hash_plugin);
 
 	add_key_pair(my_list, "LogFile", "%s", slurmdbd_conf->log_file);
+
+	add_key_pair(my_list, "MaxPurgeLimit", "%u",
+		     slurmdbd_conf->max_purge_limit);
 
 	secs2time_str(slurmdbd_conf->max_time_range, time_str,
 		      sizeof(time_str));
@@ -947,6 +971,9 @@ extern list_t *dump_config(void)
 		     slurm_conf.accounting_storage_params);
 
 	/* StoragePass should NOT be passed due to security reasons */
+
+	add_key_pair(my_list, "StoragePassScript", "%s",
+		     slurmdbd_conf->storage_pass_script);
 
 	add_key_pair(my_list, "StoragePort", "%u",
 		     slurm_conf.accounting_storage_port);

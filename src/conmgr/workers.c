@@ -43,6 +43,7 @@
 
 #include "src/common/macros.h"
 #include "src/common/read_config.h"
+#include "src/common/slurm_time.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xsched.h"
@@ -51,8 +52,12 @@
 #include "src/conmgr/events.h"
 #include "src/conmgr/mgr.h"
 
+/* Limit automatically set default thread count */
+#define THREAD_AUTO_MAX 32
 /* Threads to create per kernel reported CPU */
 #define CPU_THREAD_MULTIPLIER 2
+#define CPU_THREAD_HIGH 2
+#define CPU_THREAD_LOW 2
 
 /*
  * From man prctl:
@@ -60,6 +65,12 @@
  *	exceeds 16 bytes, the string is silently truncated.
  */
 #define PRCTL_BUF_BYTES 17
+
+/*
+ * Amount of time to sleep while polling for all threads to have started up
+ * during shutdown
+ */
+#define SHUTDOWN_WAIT_STARTUP_THREADS_SLEEP_NS 10
 
 static void *_worker(void *arg);
 
@@ -108,20 +119,6 @@ static void _worker_delete(void *x)
 	mgr.workers.total--;
 }
 
-static void _increase_thread_count(int count)
-{
-	for (int i = 0; i < count; i++) {
-		worker_t *worker = xmalloc(sizeof(*worker));
-		worker->magic = MAGIC_WORKER;
-		worker->id = i + 1;
-
-		slurm_thread_create(&worker->tid, _worker, worker);
-		_check_magic_worker(worker);
-
-		list_append(mgr.workers.workers, worker);
-	}
-}
-
 static int _detect_cpu_count(void)
 {
 	cpu_set_t mask = { { 0 } };
@@ -141,41 +138,52 @@ static int _detect_cpu_count(void)
 	return count;
 }
 
-extern void workers_init(int count)
+extern void workers_init(int count, int default_count)
 {
-	if (!count)
-		count = _detect_cpu_count() * CPU_THREAD_MULTIPLIER;
+	const int detected_cpus = _detect_cpu_count();
+	const int auto_threads_max = (detected_cpus * CPU_THREAD_MULTIPLIER);
+	const int auto_threads = MIN(THREAD_AUTO_MAX, auto_threads_max);
+	const int detected_threads_high = (detected_cpus * CPU_THREAD_HIGH);
+	const int detected_threads_low = (detected_cpus / CPU_THREAD_LOW);
+	const int warn_max_threads =
+		MIN(CONMGR_THREAD_COUNT_MAX, detected_threads_high);
+	const int min_def_threads =
+		MIN(THREAD_AUTO_MAX,
+		    MAX(CONMGR_THREAD_COUNT_MIN, default_count));
+	const int warn_min_threads = MIN(detected_threads_low, min_def_threads);
 
 	if (!count) {
-		count = CONMGR_THREAD_COUNT_DEFAULT;
-	} else if (count < CONMGR_THREAD_COUNT_MIN) {
-		error("%s: thread count=%d too low, increasing to %d",
-		      __func__, count, CONMGR_THREAD_COUNT_MIN);
-		count = CONMGR_THREAD_COUNT_MIN;
-	} else if (count > CONMGR_THREAD_COUNT_MAX) {
-		error("%s: thread count=%d too high, decreasing to %d",
-		      __func__, count, CONMGR_THREAD_COUNT_MAX);
-		count = CONMGR_THREAD_COUNT_MAX;
+		if ((mgr.workers.conf_threads > 0)) {
+			count = mgr.workers.conf_threads;
+			log_flag(CONMGR, "%s: Setting thread count to %s%d threads",
+				 __func__, CONMGR_PARAM_THREADS,
+				 mgr.workers.conf_threads);
+		} else if ((default_count > 0)) {
+			count = default_count;
+			log_flag(CONMGR, "%s: Setting thread count to default %d threads",
+				 __func__, default_count);
+		} else {
+			count = auto_threads;
+			log_flag(CONMGR, "%s: Setting thread count to %d/%d for %d available CPUs",
+				 __func__, auto_threads, auto_threads_max,
+				 detected_cpus);
+		}
+	} else if (((count > warn_max_threads) || (count < warn_min_threads))) {
+		warning("%s%d is configured outside of the suggested range of [%d, %d] for %d CPUs. Performance will be negatively impacted, potentially causing difficult to debug hangs. Please keep within the suggested range or use the automatically detected thread count of %d threads.",
+			CONMGR_PARAM_THREADS, count, warn_min_threads,
+			warn_max_threads, detected_cpus, auto_threads);
 	}
 
-	if (mgr.workers.threads) {
-		_check_magic_workers();
-
-		if (mgr.workers.threads >= count) {
-			int threads = mgr.workers.threads;
-			log_flag(CONMGR, "%s: ignoring duplicate init request with thread count=%d, current thread count=%d",
-				 __func__, count, threads);
-		} else {
-			int prev = mgr.workers.threads;
-
-			/* Need to increase thread count to match count */
-			_increase_thread_count(count - mgr.workers.threads);
-			mgr.workers.threads = count;
-
-			log_flag(CONMGR, "%s: increased thread count from %d to %d",
-				 __func__, prev, count);
-		}
-		return;
+	if (count < CONMGR_THREAD_COUNT_MIN) {
+		error("%s: %s%d too low, increasing to %d",
+		      __func__, CONMGR_PARAM_THREADS, count,
+		      CONMGR_THREAD_COUNT_MIN);
+		count = CONMGR_THREAD_COUNT_MIN;
+	} else if (count > CONMGR_THREAD_COUNT_MAX) {
+		error("%s: %s%d too high, decreasing to %d",
+		      __func__, CONMGR_PARAM_THREADS, count,
+		      CONMGR_THREAD_COUNT_MAX);
+		count = CONMGR_THREAD_COUNT_MAX;
 	}
 
 	log_flag(CONMGR, "%s: Initializing with %d workers", __func__, count);
@@ -185,7 +193,16 @@ extern void workers_init(int count)
 
 	_check_magic_workers();
 
-	_increase_thread_count(count);
+	for (int i = 0; i < count; i++) {
+		worker_t *worker = xmalloc(sizeof(*worker));
+		worker->magic = MAGIC_WORKER;
+		worker->id = i + 1;
+
+		slurm_thread_create(&worker->tid, _worker, worker);
+		_check_magic_worker(worker);
+
+		list_append(mgr.workers.workers, worker);
+	}
 }
 
 extern void workers_fini(void)
@@ -242,12 +259,8 @@ static void *_worker(void *arg)
 
 		/* wait for work if nothing to do */
 		if (!work) {
-			if (mgr.workers.shutdown_requested) {
-				log_flag(CONMGR, "%s: [%u] shutting down",
-					 __func__, worker->id);
-				_worker_delete(worker);
+			if (mgr.workers.shutdown_requested)
 				break;
-			}
 
 			log_flag(CONMGR, "%s: [%u] waiting for work. Current active workers %u/%u",
 				 __func__, worker->id, mgr.workers.active,
@@ -294,24 +307,29 @@ static void *_worker(void *arg)
 			EVENT_SIGNAL(&mgr.watch_sleep);
 	}
 
+	log_flag(CONMGR, "%s: [%u] shutting down",
+		 __func__, worker->id);
+	_worker_delete(worker);
 	EVENT_SIGNAL(&mgr.worker_return);
 	slurm_mutex_unlock(&mgr.mutex);
 	return NULL;
 }
 
-extern void wait_for_workers_idle(const char *caller)
-{
-	while (mgr.workers.active > 0) {
-		log_flag(CONMGR, "%s->%s: waiting for workers=%u/%u",
-			 caller, __func__, mgr.workers.active,
-			 mgr.workers.total);
-
-		EVENT_WAIT(&mgr.worker_return, &mgr.mutex);
-	}
-}
-
 extern void workers_shutdown(void)
 {
+	/*
+	 * Wait until all threads have started up fully to avoid a thread
+	 * starting after shutdown and hanging forever
+	 */
+	while (mgr.workers.threads &&
+	       (mgr.workers.threads != mgr.workers.total)) {
+		EVENT_BROADCAST(&mgr.worker_sleep);
+		slurm_mutex_unlock(&mgr.mutex);
+		(void) slurm_nanosleep(0,
+				       SHUTDOWN_WAIT_STARTUP_THREADS_SLEEP_NS);
+		slurm_mutex_lock(&mgr.mutex);
+	}
+
 	mgr.workers.shutdown_requested = true;
 
 	do {
@@ -324,4 +342,12 @@ extern void workers_shutdown(void)
 			EVENT_WAIT(&mgr.worker_return, &mgr.mutex);
 		}
 	} while (mgr.workers.total);
+}
+
+extern void conmgr_log_workers(void)
+{
+	info("workers: threads:%d/%d active:%d/%d shutdown_requested:%c",
+	     list_count(mgr.workers.workers), mgr.workers.threads,
+	     mgr.workers.active, mgr.workers.total,
+	     BOOL_CHARIFY(mgr.workers.shutdown_requested));
 }

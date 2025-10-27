@@ -146,6 +146,14 @@ typedef struct {
 	type_t match;
 } convert_args_t;
 
+#define CONVERT_DATA_FOREACH_LIST_DICT_ARGS_MAGIC 0x139414ab
+
+typedef struct {
+	int magic; /* CONVERT_DATA_FOREACH_LIST_DICT_ARGS_MAGIC */
+	data_t *src;
+	int64_t index;
+} convert_data_foreach_list_dict_args_t;
+
 static void _check_magic(const data_t *data);
 static void _release(data_t *data);
 static void _release_data_list_node(data_list_t *dl, data_list_node_t *dn);
@@ -1451,40 +1459,38 @@ extern int data_dict_for_each(data_t *d, DataDictForF f, void *arg)
 	return count;
 }
 
-static int _convert_data_string(data_t *data)
+static void _convert_data_string(data_t *data)
 {
 	_check_magic(data);
 
 	switch (data->type) {
 	case TYPE_STRING_INLINE:
 	case TYPE_STRING_PTR:
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_BOOL:
 		data_set_string(data, (data->data.bool_u ? "true" : "false"));
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_NULL:
 		data_set_string(data, "");
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_FLOAT:
 	{
 		char *str = xstrdup_printf("%lf", data->data.float_u);
 		data_set_string_own(data, str);
-		return SLURM_SUCCESS;
+		break;
 	}
 	case TYPE_INT_64:
 	{
 		char *str = xstrdup_printf("%"PRId64, data->data.int_u);
 		data_set_string_own(data, str);
-		return SLURM_SUCCESS;
+		break;
 	}
 	default:
-		return ESLURM_DATA_CONV_FAILED;
+		break;
 	}
-
-	return ESLURM_DATA_CONV_FAILED;
 }
 
-static int _convert_data_force_bool(data_t *data)
+static void _convert_data_force_bool(data_t *data)
 {
 	_check_magic(data);
 
@@ -1496,23 +1502,21 @@ static int _convert_data_force_bool(data_t *data)
 	case TYPE_STRING_PTR:
 		/* non-empty string but not recognized format */
 		data_set_bool(data, true);
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_BOOL:
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_NULL:
 		data_set_bool(data, false);
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_FLOAT:
 		data_set_bool(data, data->data.float_u != 0);
-		return SLURM_SUCCESS;
+		break;
 	case TYPE_INT_64:
 		data_set_bool(data, data->data.int_u != 0);
-		return SLURM_SUCCESS;
+		break;
 	default:
-		return ESLURM_DATA_CONV_FAILED;
+		break;
 	}
-
-	return ESLURM_DATA_CONV_FAILED;
 }
 
 static int _convert_data_null(data_t *data)
@@ -1813,6 +1817,66 @@ static int _convert_data_float(data_t *data)
 	return ESLURM_DATA_CONV_FAILED;
 }
 
+static data_for_each_cmd_t _convert_data_foreach_dict_list(const char *key,
+							   data_t *data,
+							   void *arg)
+{
+	data_t *src = arg;
+
+	_check_magic(src);
+
+	(void) data_move(data_list_append(src), data);
+
+	return DATA_FOR_EACH_CONT;
+}
+
+static int _convert_data_dict_list(data_t *src)
+{
+	int rc = SLURM_SUCCESS;
+	data_t *dict = data_new();
+
+	(void) data_move(dict, src);
+	(void) data_set_list(src);
+
+	if (data_dict_for_each(dict, _convert_data_foreach_dict_list, src) < 0)
+		rc = ESLURM_DATA_CONV_FAILED;
+
+	FREE_NULL_DATA(dict);
+	return rc;
+}
+
+static data_for_each_cmd_t _convert_data_foreach_list_dict(data_t *data,
+							   void *arg)
+{
+	convert_data_foreach_list_dict_args_t *args = arg;
+	xassert(args->magic == CONVERT_DATA_FOREACH_LIST_DICT_ARGS_MAGIC);
+
+	(void) data_move(data_key_set_int(args->src, args->index), data);
+	args->index++;
+
+	return DATA_FOR_EACH_CONT;
+}
+
+static int _convert_data_list_dict(data_t *src)
+{
+	int rc = SLURM_SUCCESS;
+	convert_data_foreach_list_dict_args_t args = {
+		.magic = CONVERT_DATA_FOREACH_LIST_DICT_ARGS_MAGIC,
+		.src = src,
+	};
+	data_t *list = data_new();
+
+	(void) data_move(list, src);
+	(void) data_set_dict(src);
+
+	if (data_list_for_each(list, _convert_data_foreach_list_dict, &args) <
+	    0)
+		rc = ESLURM_DATA_CONV_FAILED;
+
+	FREE_NULL_DATA(list);
+	return rc;
+}
+
 extern data_type_t data_convert_type(data_t *data, data_type_t match)
 {
 	_check_magic(data);
@@ -1822,47 +1886,54 @@ extern data_type_t data_convert_type(data_t *data, data_type_t match)
 
 	switch (match) {
 	case DATA_TYPE_STRING:
-		return _convert_data_string(data) ? DATA_TYPE_NONE :
-						    DATA_TYPE_STRING;
-	case DATA_TYPE_BOOL:
-		return _convert_data_force_bool(data) ? DATA_TYPE_NONE :
-							DATA_TYPE_BOOL;
-	case DATA_TYPE_INT_64:
-		return _convert_data_int(data, true) ? DATA_TYPE_NONE :
-						       DATA_TYPE_INT_64;
-	case DATA_TYPE_FLOAT:
-		return _convert_data_float(data) ? DATA_TYPE_NONE :
-						   DATA_TYPE_FLOAT;
-	case DATA_TYPE_NULL:
-		return _convert_data_null(data) ? DATA_TYPE_NONE :
-						  DATA_TYPE_NULL;
-	case DATA_TYPE_NONE:
-		if (!_convert_data_null(data))
-			return DATA_TYPE_NULL;
-
-		if (!_convert_data_int(data, false))
-			return DATA_TYPE_INT_64;
-
-		if (!_convert_data_float(data))
-			return DATA_TYPE_FLOAT;
-
-		if (!_convert_data_int(data, true))
-			return DATA_TYPE_INT_64;
-
-		if (!_convert_data_bool(data))
-			return DATA_TYPE_BOOL;
-
-		return DATA_TYPE_NONE;
-	case DATA_TYPE_DICT:
-	case DATA_TYPE_LIST:
-		/* data_parser should be used for this conversion instead. */
-		return DATA_TYPE_NONE;
-	case DATA_TYPE_MAX:
+		_convert_data_string(data);
 		break;
+	case DATA_TYPE_BOOL:
+		_convert_data_force_bool(data);
+		break;
+	case DATA_TYPE_INT_64:
+		(void) _convert_data_int(data, true);
+		break;
+	case DATA_TYPE_FLOAT:
+		(void) _convert_data_float(data);
+		break;
+	case DATA_TYPE_NULL:
+		(void) _convert_data_null(data);
+		break;
+	case DATA_TYPE_NONE:
+		/* If a conversion succeeds skip calling the others */
+		if (!_convert_data_null(data) ||
+		    !_convert_data_int(data, false) ||
+		    !_convert_data_float(data) ||
+		    !_convert_data_int(data, true) || !_convert_data_bool(data))
+			; /* blank on purpose */
+
+		break;
+	case DATA_TYPE_DICT:
+		if (data->type == TYPE_DICT)
+			return DATA_TYPE_DICT;
+		else if ((data->type == TYPE_LIST) &&
+			 !_convert_data_list_dict(data))
+			return DATA_TYPE_DICT;
+
+		/* data_parser should be used for this conversion instead. */
+		break;
+	case DATA_TYPE_LIST:
+		if (data->type == TYPE_LIST)
+			return DATA_TYPE_LIST;
+		else if ((data->type == TYPE_DICT) &&
+			 !_convert_data_dict_list(data))
+			return DATA_TYPE_LIST;
+
+		/* data_parser should be used for this conversion instead. */
+		break;
+	case DATA_TYPE_MAX:
+		fatal_abort("%s: unexpected data type", __func__);
+	default:
+		fatal_abort("%s: invalid conversion requested", __func__);
 	}
 
-	xassert(false);
-	return DATA_TYPE_NONE;
+	return data_get_type(data);
 }
 
 static data_for_each_cmd_t _convert_list_entry(data_t *data, void *arg)

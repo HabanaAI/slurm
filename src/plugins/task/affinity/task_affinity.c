@@ -82,11 +82,7 @@ const char plugin_name[]        = "task affinity plugin";
 const char plugin_type[]        = "task/affinity";
 const uint32_t plugin_version   = SLURM_VERSION_NUMBER;
 
-/*
- * init() is called when the plugin is loaded, before any other functions
- *	are called.  Put global initialization here.
- */
-extern int init (void)
+extern int init(void)
 {
 	cpu_set_t cur_mask;
 	char mstr[CPU_SET_HEX_STR_SIZE];
@@ -98,14 +94,9 @@ extern int init (void)
 	return SLURM_SUCCESS;
 }
 
-/*
- * fini() is called when the plugin is removed. Clear any allocated
- *	storage here.
- */
-extern int fini (void)
+extern void fini(void)
 {
 	debug("%s unloaded", plugin_name);
-	return SLURM_SUCCESS;
 }
 
 /*
@@ -113,7 +104,7 @@ extern int fini (void)
  */
 extern int task_p_slurmd_batch_request (batch_job_launch_msg_t *req)
 {
-	info("task_p_slurmd_batch_request: %u", req->job_id);
+	info("%s: %pI", __func__, &req->step_id);
 	batch_bind(req);
 	return SLURM_SUCCESS;
 }
@@ -207,7 +198,6 @@ extern int task_p_pre_launch (stepd_step_rec_t *step)
 
 		cur_mask = numa_get_membind();
 		if ((step->mem_bind_type & MEM_BIND_NONE) ||
-		    (step->mem_bind_type == MEM_BIND_SORT) ||
 		    (step->mem_bind_type == MEM_BIND_VERBOSE)) {
 			/* Do nothing */
 		} else if (get_memset(&new_mask, step)) {

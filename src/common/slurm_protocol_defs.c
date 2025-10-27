@@ -42,8 +42,10 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 
 #include "src/common/cron.h"
 #include "src/common/forward.h"
@@ -62,6 +64,7 @@
 #include "src/interfaces/acct_gather_energy.h"
 #include "src/interfaces/auth.h"
 #include "src/interfaces/cred.h"
+#include "src/interfaces/conn.h"
 #include "src/interfaces/jobacct_gather.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/switch.h"
@@ -222,6 +225,42 @@ extern void slurm_msg_t_init(slurm_msg_t *msg)
 	*msg = (slurm_msg_t) SLURM_MSG_INITIALIZER;
 }
 
+extern int slurm_msg_t_init_address(slurm_msg_t *msg)
+{
+	int rc = EINVAL, fd = -1;
+	void *conn = NULL;
+
+	if (!msg)
+		return rc;
+
+	/* Check if already populated */
+	if (msg->address.ss_family != AF_UNSPEC)
+		return SLURM_SUCCESS;
+
+	if (msg->conmgr_con) {
+		/* conmgr should always populate msg->address */
+		xassert(msg->address.ss_family != AF_UNSPEC);
+		return SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR;
+	}
+
+	if (msg->conn)
+		conn = msg->conn;
+	else if (msg->pcon)
+		conn = msg->pcon->conn;
+
+	if (!conn)
+		return SLURM_COMMUNICATIONS_MISSING_SOCKET_ERROR;
+
+	if ((fd = conn_g_get_fd(conn)) < 0)
+		return SLURM_COMMUNICATIONS_INVALID_FD;
+
+	if ((rc = slurm_get_peer_addr(fd, &msg->address)))
+		log_flag(NET, "%s: [fd:%d] resolving peer failed: %s",
+			 __func__, fd, slurm_strerror(rc));
+
+	return rc;
+}
+
 /*
  * slurm_msg_t_copy - initialize a slurm_msg_t structure "dest" with
  *	values from the "src" slurm_msg_t structure.
@@ -255,7 +294,7 @@ extern void slurm_msg_t_copy(slurm_msg_t *dest, slurm_msg_t *src)
 	if (src->auth_ids_set)
 		slurm_msg_set_r_uid(dest, src->auth_uid);
 
-	dest->tls_conn = src->tls_conn;
+	dest->conn = src->conn;
 }
 
 /* here to add \\ to all \" in a string this needs to be xfreed later */
@@ -1492,6 +1531,7 @@ extern void slurm_free_kill_jobs_msg(kill_jobs_msg_t *msg)
 		return;
 
 	xfree(msg->account);
+	xfree(msg->admin_comment);
 	xfree(msg->job_name);
 	xfree(msg->partition);
 	xfree(msg->qos);
@@ -1683,6 +1723,7 @@ extern void slurm_free_sib_msg(sib_msg_t *msg)
 		xfree(msg->resp_host);
 		if (msg->data)
 			slurm_free_msg_data(msg->data_type, msg->data);
+		xfree(msg->submit_host);
 		xfree(msg);
 	}
 }
@@ -1738,7 +1779,7 @@ extern void slurm_free_prolog_launch_msg(prolog_launch_msg_t * msg)
 	}
 }
 
-extern void slurm_free_complete_prolog_msg(complete_prolog_msg_t * msg)
+extern void slurm_free_prolog_complete_msg(prolog_complete_msg_t *msg)
 {
 	xfree(msg->node_name);
 	xfree(msg);
@@ -1859,6 +1900,7 @@ extern void slurm_free_job_info_members(job_info_t * job)
 		xfree(job->std_err);
 		xfree(job->std_in);
 		xfree(job->std_out);
+		xfree(job->submit_line);
 		xfree(job->system_comment);
 		xfree(job->tres_alloc_str);
 		xfree(job->tres_bind);
@@ -1912,6 +1954,7 @@ extern void slurm_free_node_registration_status_msg(
 		FREE_NULL_BUFFER(msg->gres_info);
 		xfree(msg->node_name);
 		xfree(msg->os);
+		xfree(msg->parameters);
 		xfree(msg->step_id);
 		xfree(msg->version);
 		xfree(msg);
@@ -1988,6 +2031,10 @@ extern void slurm_free_resv_desc_msg_part(resv_desc_msg_t *msg,
 		xfree(msg->burst_buffer);
 	if (res_free_flags & RESV_FREE_STR_COMMENT)
 		xfree(msg->comment);
+	if (res_free_flags & RESV_FREE_STR_ALLOWED_PARTS)
+		xfree(msg->allowed_parts);
+	if (res_free_flags & RESV_FREE_STR_QOS)
+		xfree(msg->qos);
 	if (res_free_flags & RESV_FREE_STR_TRES_LIC)
 		xfree(msg->licenses);
 	if (res_free_flags & RESV_FREE_STR_GROUP)
@@ -2177,7 +2224,7 @@ extern void slurm_free_launch_tasks_request_msg(launch_tasks_request_msg_t * msg
 	xfree(msg->complete_nodelist);
 
 	if (msg->switch_step)
-		switch_g_free_stepinfo(msg->switch_step);
+		switch_g_stepinfo_free(msg->switch_step);
 
 	FREE_NULL_LIST(msg->options);
 
@@ -2385,6 +2432,7 @@ extern void slurm_free_get_kvs_msg(kvs_get_msg_t *msg)
 {
 	if (msg) {
 		xfree(msg->hostname);
+		xfree(msg->tls_cert);
 		xfree(msg);
 	}
 }
@@ -2395,8 +2443,10 @@ extern void slurm_free_kvs_comm_set(kvs_comm_set_t *msg)
 
 	if (msg) {
 		if (msg->kvs_host_ptr) {
-			for (i = 0; i < msg->host_cnt; i++)
+			for (i = 0; i < msg->host_cnt; i++) {
 				xfree(msg->kvs_host_ptr[i].hostname);
+				xfree(msg->kvs_host_ptr[i].tls_cert);
+			}
 			xfree(msg->kvs_host_ptr);
 		}
 		if (msg->kvs_comm_ptr) {
@@ -2658,6 +2708,8 @@ extern char *job_state_string(uint32_t inx)
 		return "STAGE_OUT";
 	if (inx & JOB_CONFIGURING)
 		return "CONFIGURING";
+	if (inx & JOB_EXPEDITING)
+		return "EXPEDITING";
 	if (inx & JOB_RESIZING)
 		return "RESIZING";
 	if (inx & JOB_REQUEUE)
@@ -2829,6 +2881,8 @@ extern char *job_state_string_complete(uint32_t state)
 		xstrcat(state_str, ",COMPLETING");
 	if (state & JOB_CONFIGURING)
 		xstrcat(state_str, ",CONFIGURING");
+	if (state & JOB_EXPEDITING)
+		xstrcat(state_str, ",EXPEDITING");
 	if (state & JOB_POWER_UP_NODE)
 		xstrcat(state_str, ",POWER_UP_NODE");
 	if (state & JOB_RECONFIG_FAIL)
@@ -2879,6 +2933,8 @@ extern uint32_t job_state_num(const char *state_name)
 		return JOB_COMPLETING;
 	if (_job_name_test(JOB_CONFIGURING, state_name))
 		return JOB_CONFIGURING;
+	if (_job_name_test(JOB_EXPEDITING, state_name))
+		return JOB_EXPEDITING;
 	if (_job_name_test(JOB_RESIZING, state_name))
 		return JOB_RESIZING;
 	if (_job_name_test(JOB_RESV_DEL_HOLD, state_name))
@@ -2952,6 +3008,10 @@ extern char *health_check_node_state_str(uint32_t node_state)
 	}
 	if (node_state & HEALTH_CHECK_NODE_NONDRAINED_IDLE) {
 		xstrfmtcat(state_str, "%s%s", sep, "NONDRAINED_IDLE");
+		sep = ",";
+	}
+	if (node_state & HEALTH_CHECK_START_ONLY) {
+		xstrfmtcat(state_str, "%s%s", sep, "START_ONLY");
 		sep = ",";
 	}
 
@@ -3532,6 +3592,10 @@ extern char *node_state_string(uint32_t inx)
 		return "POWERING_UP";
 	if (inx == NODE_STATE_UNDRAIN)
 		return "UNDRAIN";
+	if (inx == NODE_STATE_DYNAMIC_FUTURE)
+		return "DYNAMIC_FUTURE";
+	if (inx == NODE_STATE_DYNAMIC_NORM)
+		return "DYNAMIC_NORM";
 	if (base == NODE_STATE_DOWN) {
 		if (maint_flag)
 			return "DOWN$";
@@ -4089,7 +4153,7 @@ extern void slurm_free_job_step_create_response_msg(
 		slurm_step_layout_destroy(msg->step_layout);
 		slurm_cred_destroy(msg->cred);
 		if (msg->switch_step)
-			switch_g_free_stepinfo(msg->switch_step);
+			switch_g_stepinfo_free(msg->switch_step);
 
 		xfree(msg);
 	}
@@ -4393,6 +4457,7 @@ extern void slurm_free_reserve_info_members(reserve_info_t * resv)
 	int i;
 	if (resv) {
 		xfree(resv->accounts);
+		xfree(resv->allowed_parts);
 		xfree(resv->burst_buffer);
 		xfree(resv->comment);
 		if (resv->core_spec) {
@@ -4409,6 +4474,7 @@ extern void slurm_free_reserve_info_members(reserve_info_t * resv)
 		xfree(resv->node_inx);
 		xfree(resv->node_list);
 		xfree(resv->partition);
+		xfree(resv->qos);
 		xfree(resv->tres_str);
 		xfree(resv->users);
 	}
@@ -4423,7 +4489,7 @@ extern void slurm_free_reserve_info_members(reserve_info_t * resv)
 extern void slurm_free_topo_info_msg(topo_info_response_msg_t *msg)
 {
 	if (msg) {
-		topology_g_topology_free(msg->topo_info);
+		topology_g_topoinfo_free(msg->topo_info);
 		xfree(msg);
 	}
 }
@@ -4788,12 +4854,21 @@ extern void slurm_free_tls_cert_request_msg(tls_cert_request_msg_t *msg)
 	xfree(msg);
 }
 
-extern void slurm_free_tls_cert_response_msg(tls_cert_response_msg_t *msg)
+extern void slurm_free_tls_cert_response_msg_members(tls_cert_response_msg_t
+							     *msg)
 {
 	if (!msg)
 		return;
 
 	xfree(msg->signed_cert);
+}
+
+extern void slurm_free_tls_cert_response_msg(tls_cert_response_msg_t *msg)
+{
+	if (!msg)
+		return;
+
+	slurm_free_tls_cert_response_msg_members(msg);
 	xfree(msg);
 }
 
@@ -4849,14 +4924,14 @@ extern void slurm_free_node_alias_addrs(slurm_node_alias_addrs_t *msg)
 	xfree(msg);
 }
 
-extern int slurm_free_msg_data(slurm_msg_type_t type, void *data)
+extern void slurm_free_msg_data(slurm_msg_type_t type, void *data)
 {
 	if (!data)
-		return SLURM_SUCCESS;
+		return;
 
 	/* this message was never loaded */
 	if ((uint16_t)type == NO_VAL16)
-		return SLURM_SUCCESS;
+		return;
 
 	switch (type) {
 	case RESPONSE_LAUNCH_TASKS:
@@ -4904,7 +4979,7 @@ extern int slurm_free_msg_data(slurm_msg_type_t type, void *data)
 		slurm_free_complete_job_allocation_msg(data);
 		break;
 	case REQUEST_COMPLETE_PROLOG:
-		slurm_free_complete_prolog_msg(data);
+		slurm_free_prolog_complete_msg(data);
 		break;
 	case REQUEST_COMPLETE_BATCH_SCRIPT:
 		slurm_free_complete_batch_script_msg(data);
@@ -5335,10 +5410,10 @@ extern int slurm_free_msg_data(slurm_msg_type_t type, void *data)
 		slurm_free_node_alias_addrs(data);
 		break;
 	default:
-		error("invalid type trying to be freed %u", type);
+		error("%s: Unable to free unknown msg_type=0x%x @ 0x%" PRIxPTR,
+		      __func__, type, (uintptr_t) data);
 		break;
 	}
-	return SLURM_SUCCESS;
 }
 
 extern uint32_t slurm_get_return_code(slurm_msg_type_t type, void *data)
@@ -6474,8 +6549,11 @@ extern int validate_resv_create_desc(resv_desc_msg_t *resv_msg, char **err_msg,
 
 	if (((resv_msg->users == NULL) || (resv_msg->users[0] == '\0')) &&
 	    ((resv_msg->groups == NULL) || (resv_msg->groups[0] == '\0')) &&
+	    (!resv_msg->qos || (resv_msg->qos[0] == '\0')) &&
+	    (!resv_msg->allowed_parts ||
+	     (resv_msg->allowed_parts[0] == '\0')) &&
 	    ((resv_msg->accounts == NULL) || (resv_msg->accounts[0] == '\0'))) {
-		*err_msg = "Either Users/Groups and/or Accounts must be specified.  No reservation created.";
+		*err_msg = "Either Users/Groups, AllowedPartitions, QOS and/or Accounts must be specified.  No reservation created.";
 		return SLURM_ERROR;
 	} else if (resv_msg->users && resv_msg->groups) {
 		*err_msg = "Users and Groups are mutually exclusive.  You can have one or the other, but not both.  No reservation created.";

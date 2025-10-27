@@ -1,4 +1,4 @@
-.TH scontrol "1" "Slurm Commands" "May 2025" "Slurm Commands"
+.TH scontrol "1" "Slurm Commands" "Slurm 25.11" "Slurm Commands"
 
 .SH "NAME"
 scontrol \- view or modify Slurm configuration and state.
@@ -150,13 +150,38 @@ COMPLETING or DOWN state.
 
 .TP
 \fBdelete\fR <\fISPECIFICATION\fR>
-Delete the entry with the specified \fISPECIFICATION\fP.
-The three \fISPECIFICATION\fP choices are \fINodeName=<nodelist>\fP,
-\fIPartitionName=<name>\fP and \fIReservationName=<name>\fP. Only dynamic nodes
-that have no running jobs and that are not part of a reservation can be
-deleted. Reservations and partitions should have no associated jobs at the time
-of their deletion (modify the jobs first). If the specified partition is in
-use, the request is denied.
+Delete the entry with the specified \fISPECIFICATION\fR. The following
+\fISPECIFICATION\fR choices are available:
+.IP
+
+.RS
+.TP
+\fBNodeName\fR=<\fInodelist\fR>
+Node name or list of node names to delete. Only dynamic nodes that have no
+running jobs and that are not part of a reservation can be deleted.
+
+Multiple node names may be specified using simple node range expressions
+(e.g., "lx[10\-20]"). Nodesets can also be specified by themselves or mixed with
+node range expressions, using a comma as a list separator. If the keyword "ALL"
+is specified alone, then the delete will be attempted against all the nodes in
+the local cluster (and will fail on nodes ineligible for deletion).
+.IP
+.TP
+\fBPartitionName\fR=<\fIname\fR>
+Name of partition to delete. The partition must have no associated jobs running
+or pending, otherwise the request is denied. It may be helpful to modify pending
+jobs or to change the partition state ahead of time.
+Note that if this partition is present in the \fBslurm.conf\fR file, it will be
+recreated the next time the controller is restarted or reconfigured.
+.IP
+.TP
+\fBReservationName\fR=<\fIname\fR>
+Name of reservation to delete. The reservation must have no associated jobs,
+otherwise the request is denied. It may be helpful to modify pending jobs to not
+use the reservation. You can also plan the reservation's deletion ahead of time
+by setting an \fBEndTime\fR or \fBDuration\fR.
+.IP
+.RE
 .IP
 
 .TP
@@ -244,7 +269,8 @@ Use <\fINodeName\fR> if using --enable-multiple-slurmd.
 .TP
 \fBping\fR
 Ping the primary and secondary slurmctld daemon and report if
-they are responding.
+they are responding. If \fB\-\-clusters\fR is specified it will only ping the
+primary slurmctld daemon of the specified cluster.
 .IP
 
 .TP
@@ -920,7 +946,7 @@ Arbitrary descriptive string.
 \fBContiguous\fR={yes|no}
 Set the job's requirement for contiguous (consecutive) nodes to be allocated.
 Possible values are "YES" and "NO".
-Only the Slurm administrator or root can change this parameter.
+Only a Slurm administrator or root can change this parameter.
 .IP
 
 .TP
@@ -937,21 +963,30 @@ Change the CPUsPerTask job's value.
 
 .TP
 \fBDeadline\fR=<\fItime_spec\fR>
-It accepts times of the form \fIHH:MM:SS\fR to specify a deadline to a job at
-a specific time of day (seconds are optional).
-You may also specify \fImidnight\fR, \fInoon\fR, \fIelevenses\fR (11 AM),
-\fIfika\fR (3 PM) or \fIteatime\fR (4 PM) and you can have a time\-of\-day
-suffixed with \fIAM\fR or \fIPM\fR for a deadline in the morning or the evening.
-You can specify a deadline for the job with
-a date of the form \fIMMDDYY\fR or \fIMM/DD/YY\fR or \fIMM.DD.YY\fR,
-or a date and time as \fIYYYY\-MM\-DD[THH:MM[:SS]]\fR. You can also
-give times like \fInow + count time\-units\fR, where the time\-units
-can be \fIseconds\fR (default), \fIminutes\fR, \fIhours\fR, \fIdays\fR,
-or \fIweeks\fR and you can tell Slurm to put a deadline for tomorrow with
-the keyword \fItomorrow\fR.
-The specified deadline must be later than the current time.
-Only pending jobs can have the deadline updated.
-Only the Slurm administrator or root can change this parameter.
+Remove the job if no ending is possible before this deadline
+(start > (deadline \- time[\-min])). Note that if neither \fBDefaultTime\fR nor
+\fBMaxTime\fR are configured on the partition the job is in, the job will
+need to specify some form of time limit (TimeMin/TimeLimit) if a deadline
+is to be used. The specified deadline must be later than
+the current time. Only pending jobs can have the deadline updated. Only a
+Slurm administrator or root can change this parameter.
+
+Valid time formats are:
+.br
+HH:MM[:SS] [AM|PM]
+.br
+MMDD[YY] or MM/DD[/YY] or MM.DD[.YY]
+.br
+MM/DD[/YY]\-HH:MM[:SS]
+.br
+YYYY\-MM\-DD[THH:MM[:SS]]
+.br
+now[+\fIcount\fR[seconds(default)|minutes|hours|days|weeks]]
+.br
+midnight, elevenses (11 AM), noon, fika (3 PM), teatime (4 PM), or tomorrow
+
+One or more time strings may be specified (e.g., 'tomorrow18:00'). If there is
+a conflict between them, the last one will silently take precedence.
 .IP
 
 .TP
@@ -1142,7 +1177,7 @@ Either \fIMinMemoryCPU\fP or \fIMinMemoryNode\fP may be set, but not both.
 .TP
 \fBMinTmpDiskNode\fR=<\fImegabytes\fR>
 Set the job's minimum temporary disk space required per node to the specified value.
-Only the Slurm administrator or root can change this parameter.
+Only a Slurm administrator or root can change this parameter.
 .IP
 
 .TP
@@ -1241,7 +1276,7 @@ Explicitly setting a job's priority clears any previously set nice value and
 removes the priority/multifactor plugin's ability to manage a job's priority.
 In order to restore the priority/multifactor plugin's ability to manage a
 job's priority, hold and then release the job.
-Only the Slurm administrator or root can increase job's priority.
+Only a Slurm administrator or root can increase job's priority.
 .IP
 
 .TP
@@ -1428,7 +1463,7 @@ the current time limit, the \fIJobId\fP specification must precede the
 \fITimeLimit\fP specification.
 Note that incrementing or decrementing the time limit for a job array is only
 allowed before the job array has been split into more than one job record.
-Only the Slurm administrator or root can increase job's TimeLimit.
+Only a Slurm administrator or root can increase job's TimeLimit.
 .IP
 
 .TP
@@ -1856,18 +1891,6 @@ Update slurm.conf with any changes meant to be persistent across normal
 restarts of slurmctld or the execution of \fBscontrol reconfig\fR.
 .IP
 
-.SH "NODES \- SPECIFICATIONS FOR DELETE COMMAND"
-
-.TP
-\fBNodeName\fR=<\fInodes\fR>
-Identify the node(s) to be deleted. Multiple node names may be specified using
-simple node range expressions (e.g. "lx[10\-20]"). Nodesets can also be
-specified by themselves or mixed with node range expressions, using a comma as
-a list separator. If the keyword "ALL" is specified alone, then the update
-will be attempted against all the nodes in the local cluster. This specification
-is required.
-.IP
-
 .SH "NODES \- SPECIFICATIONS FOR SHOW COMMAND"
 
 .TP
@@ -2080,7 +2103,7 @@ configured \fBAcctGatherEnergyType\fR plugin. If the reported value is zero, ene
 accounting for nodes is disabled.
 .RE
 
-.SH "PARTITIONS \- SPECIFICATIONS FOR CREATE, UPDATE, AND DELETE COMMANDS"
+.SH "PARTITIONS \- SPECIFICATIONS FOR CREATE AND UPDATE COMMANDS"
 
 .TP
 \fBAllocNodes\fR=<\fIname\fR>
@@ -2433,14 +2456,13 @@ Updates affect new jobs and not existing jobs.
 See the slurm.conf man page for more information.
 .IP
 
-.SH "RESERVATIONS \- SPECIFICATIONS FOR CREATE, UPDATE, AND DELETE COMMANDS"
+.SH "RESERVATIONS \- SPECIFICATIONS FOR CREATE AND UPDATE COMMANDS"
 
 .TP
 \fBReservationName\fR=<\fIname\fR>
-Identify the name of the reservation to be created, updated, or deleted.
-This parameter is required for update and is the only parameter for delete.
-For create, if you do not want to give a reservation name, use
-"scontrol create reservation ..." and a name will be created automatically.
+Identify the name of the reservation to be created or updated.
+This parameter is required for update. If omitted when creating a reservation,
+a name will be created automatically (e.g., "scontrol create reservation ...").
 .IP
 
 .TP
@@ -2448,7 +2470,8 @@ For create, if you do not want to give a reservation name, use
 List of accounts permitted to use the reserved nodes, for example
 "Accounts=physcode1,physcode2".
 A user in any of the specified accounts or subaccounts may use the reserved
-nodes. A new reservation must specify Users or Groups and/or Accounts.
+nodes. A new reservation must specify Users or Groups and/or QOS and/or
+AllowedPartitions and/or Accounts.
 If both Users/Groups and Accounts are specified, a job must match both in order
 to use the reservation.
 Accounts can also be denied access to reservations by preceding all of the
@@ -2462,6 +2485,28 @@ then all other accounts are implicitly allowed to use the reservation and it is
 not possible to also explicitly specify allowed accounts.
 Root and the SlurmUser are given access to all reservations, regardless of the
 accounts set here.
+.IP
+
+.TP
+\fBAllowedPartitions\fR=<\fIpartition list\fR>
+List of Partitions permitted to use the reserved resources, for example
+"Partition=debug,low".
+A user using any of the specified Partition may use the reserved
+resources. A new reservation must specify Users or Groups and/or QOS and/or
+AllowedPartitions and/or Accounts.
+If Users/Groups and/or Accounts and/or Partitions and/or QOS are specified, a
+job must match all in order to use the reservation.
+Partition can also be denied access to reservations by preceding all of the
+Partition names with '\-'. Alternately precede the equal sign with '\-'.
+For example, "Partition=\-debug,\-low" or "Partition\-=debug,low"
+will permit any Partition except debug and low to use the reservation.
+You can add or remove individual Partition from an existing reservation by
+using the update command and adding a '+' or '\-' sign before the '=' sign.
+If Partition are denied access to a reservation (Partition name preceded
+by a '\-'), then all other Partition are implicitly allowed to use the
+reservation and it is not possible to also explicitly specify allowed Partition.
+Root and the SlurmUser are given access to all reservations, regardless of the
+Partition set here.
 .IP
 
 .TP
@@ -2599,6 +2644,9 @@ is specified at submit time, this partition will override the job's default
 partition. Jobs explicitly requesting a different partition will still be
 allowed to use this reservation as long as there are enough overlapping nodes
 between both partitions to allocate the job.
+\fBNOTE\fR: If \fIAllowedPartitions\fR is used and \fIPartitionName\fR is not
+given, the first partition in \fIAllowedPartitions\fR is what is used as
+\fIPartitionName\fR.
 .IP
 
 .TP
@@ -2796,17 +2844,26 @@ Value may be cleared with blank data value, "Features=".
 \fBGroups\fR=<\fIgroup list\fR>
 List of groups permitted to use the reserved nodes, for example
 "Group=bio,chem".
-A new reservation must specify Users or Groups and/or Accounts.
+A new reservation must specify Users or Groups and/or Accounts, with Users and
+Groups being mutually exclusive.
 If both Users/Groups and Accounts are specified, a job must match both in order
 to use the reservation.
-Unlike users groups do not allow denied access to reservations.
-You can add or remove individual groups from an existing reservation by
-using the update command and adding a '+' or '\-' sign before the '=' sign.
+Unlike users, you cannot deny access to reservations based on group membership.
 Root and the SlurmUser are given access to all reservations, regardless of the
 groups set here.
-\fBNOTE\fR: Groups and Users are mutually exclusive in reservations, if you
-want to switch between the 2 you must update the reservation with a group=''
-or user='' and fill in the opposite with the appropriate setting.
+
+You can add or remove individual groups from an existing reservation by
+using the update command and adding a '+' or '\-' sign before the '=' sign.
+You can also unset the Groups field by updating the reservation with an empty
+string:
+.nf
+group=''
+.fi
+
+Prior to version 25.05, if a reservation used user- or group-based access
+controls and slurmctld ever failed to validate the user(s) or group(s), it would
+delete the reservation. Reservations are now resilient to temporary validation
+outages.
 .IP
 
 .TP
@@ -2816,26 +2873,77 @@ Used on a reoccurring reservation, skip to the next reservation iteration.
 .IP
 
 .TP
+\fBQOS\fR=<\fIqos list\fR>
+List of QOS permitted to use the reserved resources, for example
+"QOS=normal,standby".
+A user using any of the specified QOS may use the reserved
+resources. A new reservation must specify Users or Groups and/or QOS and/or
+AllowedPartitions and/or Accounts.
+If Users/Groups and/or Accounts and/or Partitions and/or QOS are specified, a
+job must match all in order to use the reservation.
+QOS can also be denied access to reservations by preceding all of the
+QOS names with '\-'. Alternately precede the equal sign with '\-'.
+For example, "QOS=\-normal,\-standby" or "QOS\-=normal,standby"
+will permit any QOS except normal and standby to use the reservation.
+You can add or remove individual QOS from an existing reservation by
+using the update command and adding a '+' or '\-' sign before the '=' sign.
+If QOS are denied access to a reservation (QOS name preceded by a '\-'),
+then all other QOS are implicitly allowed to use the reservation and it is
+not possible to also explicitly specify allowed QOS.
+Root and the SlurmUser are given access to all reservations, regardless of the
+QOS set here.
+.IP
+
+.TP
 \fBUsers\fR=<\fIuser list\fR>
 List of users permitted to use the reserved nodes, for example
-"User=jones1,smith2".
-A new reservation must specify Users or Groups and/or Accounts.
+"User=jones1,smith2". Users can also be denied access to a reservation,
+indicated by having a '-' sign before their name, e.g. "User=-jones1,-smith2".
+A new reservation must specify Users or Groups and/or Accounts, with Users and
+Groups being mutually exclusive.
 If both Users/Groups and Accounts are specified, a job must match both in order
 to use the reservation.
-Users can also be denied access to reservations by preceding all of the
-user names with '\-'. Alternately precede the equal sign with '\-'.
-For example, "User=\-jones1,\-smith2" or "User\-=jones1,smith2"
-will permit any user except jones1 and smith2 to use the reservation.
-You can add or remove individual users from an existing reservation by
-using the update command and adding a '+' or '\-' sign before the '=' sign.
-If users are denied access to a reservation (user name preceded by a '\-'),
-then all other users are implicitly allowed to use the reservation and it is
-not possible to also explicitly specify allowed users.
+
 Root and the SlurmUser are given access to all reservations, regardless of the
 users set here.
-\fBNOTE\fR: Groups and Users are mutually exclusive in reservations, if you
-want to switch between the 2 you must update the reservation with a group=''
-or user='' and fill in the opposite with the appropriate setting.
+
+Each user in the system may be in one of three states in a reservation:
+ - Explicitly allowed
+ - Unspecified
+ - Explicitly denied
+
+If any users are explicitly allowed to use a reservation, all other users are
+implicitly denied access. If any users are explicitly denied access to a
+reservation, all other users are implicitly allowed access to the reservation.
+
+When updating existing reservations, you may use the '+=' and '-=' operators to
+move users up (+) or down (-) on the list of states. However, you cannot have a
+mix of explicitly allowed and explicitly denied users on the same reservation,
+and an update command that would result in that state will result in an error.
+The '+' or '\-' sign can also be placed directly before the username.
+For example, the following are equivalent:
+.nf
+User\-=jones1,smith2
+.fi
+.nf
+User=\-jones1,\-smith2
+.fi
+
+In these examples, if the users were explicitly allowed before, this assignment
+would remove their names from the allowed list and place them in the unspecified
+state. If the command was repeated again the users would be explicitly denied
+from the reservation.
+
+You can also unset the Users field (reverting all to a neutral/unspecified
+state) by updating the reservation with an empty string:
+.nf
+user=''
+.fi
+
+Prior to version 25.05, if a reservation used user- or group-based access
+controls and slurmctld ever failed to validate the user(s) or group(s), it would
+delete the reservation. Reservations are now resilient to temporary validation
+outages.
 .IP
 
 .TP

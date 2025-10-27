@@ -72,6 +72,7 @@
 #include "src/common/node_conf.h"
 #include "src/common/pack.h"
 #include "src/common/parse_config.h"
+#include "src/common/parse_value.h"
 #include "src/common/plugin.h"
 #include "src/common/plugrack.h"
 #include "src/common/read_config.h"
@@ -473,6 +474,17 @@ extern int gres_find_id(void *x, void *key)
 	uint32_t *plugin_id = (uint32_t *)key;
 	gres_state_t *state_ptr = (gres_state_t *) x;
 	if (state_ptr->plugin_id == *plugin_id)
+		return 1;
+	return 0;
+}
+
+extern int gres_find_gpu_or_alt(void *x, void *key)
+{
+	gres_state_t *state_ptr = (gres_state_t *) x;
+
+	/* Currently all shared gres are gpu alt gres */
+	if ((state_ptr->plugin_id == gpu_plugin_id) ||
+	    state_ptr->config_flags & GRES_CONF_SHARED)
 		return 1;
 	return 0;
 }
@@ -1884,6 +1896,11 @@ static int _foreach_gres_conf(void *x, void *arg)
 
 	if (gres_slurmd_conf->config_flags & GRES_CONF_ONE_SHARING)
 		gres_ctx->config_flags |= GRES_CONF_ONE_SHARING;
+
+	if (!(gres_slurmd_conf->config_flags & GRES_CONF_ENV_DEF) &&
+	    gres_slurmd_conf->config_flags & GRES_CONF_ENV_SET)
+		gres_ctx->config_flags |=
+			(gres_slurmd_conf->config_flags & GRES_CONF_ENV_SET);
 	/*
 	 * Since there could be multiple types of the same plugin we
 	 * need to only make sure we load it once.
@@ -2285,11 +2302,18 @@ static void _merge_gres2(merge_gres_t *merge_gres,
 	 */
 
 	/* Set default env flags, and allow AutoDetect to override */
-	if (!xstrcasecmp(merge_gres->gres_ctx->gres_name, "gpu"))
-		gres_slurmd_conf.config_flags |=
-			(GRES_CONF_ENV_SET | GRES_CONF_ENV_DEF);
+	if (!xstrcasecmp(merge_gres->gres_ctx->gres_name, "gpu")) {
+		if (merge_gres->gres_ctx->config_flags & GRES_CONF_ENV_SET)
+			gres_slurmd_conf.config_flags |=
+				merge_gres->gres_ctx->config_flags;
+		else
+			gres_slurmd_conf.config_flags |=
+				(GRES_CONF_ENV_SET | GRES_CONF_ENV_DEF);
+	}
 	if (merge_gres->gres_ctx->config_flags & GRES_CONF_COUNT_ONLY)
 		gres_slurmd_conf.config_flags |= GRES_CONF_COUNT_ONLY;
+	if (merge_gres->gres_ctx->config_flags & GRES_CONF_EXPLICIT)
+		gres_slurmd_conf.config_flags |= GRES_CONF_EXPLICIT;
 
 	gres_slurmd_conf.count = count;
 
@@ -2692,6 +2716,9 @@ static int _foreach_fill_in_gres_devices(void *x, void *arg)
 				fill_in_gres_devices->max_dev_num =
 					gres_device->dev_num;
 
+			if (gres_slurmd_conf->config_flags & GRES_CONF_MIG)
+				gres_device->flags |= GRES_DEV_MIG;
+
 			list_append(*fill_in_gres_devices->gres_devices,
 				    gres_device);
 		}
@@ -2997,6 +3024,115 @@ extern int gres_node_config_pack(buf_t *buffer)
 	return rc;
 }
 
+static int _add_to_gres_conf_list(gres_slurmd_conf_t *conf, char *node_name)
+{
+	slurm_gres_context_t *gres_ctx;
+	bool new_has_file;
+	bool orig_has_file;
+
+	if (!conf->count)
+		goto empty;
+
+	log_flag(GRES, "Node:%s Gres:%s Type:%s UniqueId:%s Flags:%s CPU_IDs:%s CPU#:%u Count:%"PRIu64" Links:%s",
+		 node_name, conf->name, conf->type_name, conf->unique_id,
+		 gres_flags2str(conf->config_flags), conf->cpus, conf->cpu_cnt,
+		 conf->count, conf->links);
+
+	if (!(gres_ctx = _find_context_by_id(conf->plugin_id))) {
+		/*
+		 * GresPlugins is inconsistently configured.
+		 * Not a fatal error, but skip this data.
+		 */
+		error("%s: No plugin configured to process GRES data from node %s (Name:%s Type:%s PluginID:%u Count:%"PRIu64")",
+		      __func__, node_name, conf->name, conf->type_name,
+		      conf->plugin_id, conf->count);
+		return SLURM_ERROR;
+	}
+
+	if (xstrcmp(gres_ctx->gres_name, conf->name)) {
+		/*
+		 * Should have been caught in
+		 * gres_init()
+		 */
+		error("%s: gres/%s duplicate plugin ID with %s, unable to process",
+		      __func__, conf->name,
+		      gres_ctx->gres_name);
+		return SLURM_ERROR;
+	}
+	new_has_file = conf->config_flags & GRES_CONF_HAS_FILE;
+	orig_has_file = gres_ctx->config_flags & GRES_CONF_HAS_FILE;
+	if (orig_has_file && !new_has_file && conf->count) {
+		error("%s: gres/%s lacks \"File=\" parameter for node %s",
+		      __func__, conf->name, node_name);
+		conf->config_flags |= GRES_CONF_HAS_FILE;
+	}
+	if (new_has_file && (conf->count > MAX_GRES_BITMAP) &&
+	    !gres_id_shared(conf->config_flags)) {
+		/*
+		 * Avoid over-subscribing memory with
+		 * huge bitmaps
+		 */
+		error("%s: gres/%s has \"File=\" plus very large "
+		      "\"Count\" (%"PRIu64") for node %s, "
+		      "resetting value to %d",
+		      __func__, conf->name, conf->count,
+		      node_name, MAX_GRES_BITMAP);
+		conf->count = MAX_GRES_BITMAP;
+	}
+
+	/*
+	 * If one node in the bunch said a gres has removed
+	 * GRES_CONF_ONE_SHARING then remove it from the
+	 * context.
+	 */
+	if ((gres_ctx->config_flags & GRES_CONF_LOADED) &&
+	    gres_id_shared(conf->config_flags)) {
+		bool gc_one_sharing =
+			gres_ctx->config_flags & GRES_CONF_ONE_SHARING;
+		bool got_one_sharing =
+			conf->config_flags & GRES_CONF_ONE_SHARING;
+		if (gc_one_sharing == got_one_sharing) {
+		} else if (!gc_one_sharing && got_one_sharing) {
+			log_flag(GRES, "gres/%s was already set up to share all ignoring one_sharing from %s",
+				 conf->name, node_name);
+			conf->config_flags &= ~GRES_CONF_ONE_SHARING;
+		} else if (!got_one_sharing) {
+			log_flag(GRES, "gres/%s was already set up to only share one, but we just found the opposite from %s. Removing flag.",
+				 conf->name, node_name);
+			gres_ctx->config_flags &= ~GRES_CONF_ONE_SHARING;
+		}
+	}
+
+	/*
+	 * If we read in from state we want to take the slurmd's view
+	 * over our state.
+	 */
+	if (gres_ctx->config_flags & GRES_CONF_FROM_STATE)
+		gres_ctx->config_flags = conf->config_flags;
+	else
+		gres_ctx->config_flags |= conf->config_flags;
+
+	/*
+	 * On the slurmctld we need to load the plugins to
+	 * correctly set env vars.  We want to call this only
+	 * after we have the config_flags so we can tell if we
+	 * are CountOnly or not.
+	 */
+	if (!(gres_ctx->config_flags & GRES_CONF_LOADED)) {
+		(void) _load_plugin(gres_ctx);
+		gres_ctx->config_flags |= GRES_CONF_LOADED;
+	}
+empty:
+	if (gres_links_validate(conf->links) < -1) {
+		error("%s: Ignoring invalid Links=%s for Name=%s",
+		      __func__, conf->links, conf->name);
+		xfree(conf->links);
+	}
+	list_append(gres_conf_list, conf);
+
+	return SLURM_SUCCESS;
+}
+
 /*
  * Unpack this node's configuration from a buffer (built/packed by slurmd)
  * IN/OUT buffer - message buffer to unpack
@@ -3005,16 +3141,10 @@ extern int gres_node_config_pack(buf_t *buffer)
 extern int gres_node_config_unpack(buf_t *buffer, char *node_name)
 {
 	int i, rc = SLURM_SUCCESS;
-	uint32_t cpu_cnt = 0, magic = 0, plugin_id = 0;
-	uint64_t count64 = 0;
+	uint32_t magic = 0;
 	uint16_t rec_cnt = 0, protocol_version = 0;
-	uint32_t config_flags = 0;
-	char *tmp_cpus = NULL, *tmp_links = NULL, *tmp_name = NULL;
-	char *tmp_type = NULL;
-	char *tmp_unique_id = NULL;
-	gres_slurmd_conf_t *p;
+	gres_slurmd_conf_t *conf = NULL;
 	bool locked = false;
-	slurm_gres_context_t *gres_ctx;
 
 	xassert(gres_context_cnt >= 0);
 
@@ -3037,147 +3167,26 @@ extern int gres_node_config_unpack(buf_t *buffer, char *node_name)
 		goto unpack_error;
 	}
 	for (i = 0; i < rec_cnt; i++) {
-		bool new_has_file;
-		bool orig_has_file;
 		if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 			safe_unpack32(&magic, buffer);
 			if (magic != GRES_MAGIC)
 				goto unpack_error;
 
-			safe_unpack64(&count64, buffer);
-			safe_unpack32(&cpu_cnt, buffer);
-			safe_unpack32(&config_flags, buffer);
-			safe_unpack32(&plugin_id, buffer);
-			safe_unpackstr(&tmp_cpus, buffer);
-			safe_unpackstr(&tmp_links, buffer);
-			safe_unpackstr(&tmp_name, buffer);
-			safe_unpackstr(&tmp_type, buffer);
-			safe_unpackstr(&tmp_unique_id, buffer);
+			conf = xmalloc(sizeof(gres_slurmd_conf_t));
+			safe_unpack64(&conf->count, buffer);
+			safe_unpack32(&conf->cpu_cnt, buffer);
+			safe_unpack32(&conf->config_flags, buffer);
+			safe_unpack32(&conf->plugin_id, buffer);
+			safe_unpackstr(&conf->cpus, buffer);
+			safe_unpackstr(&conf->links, buffer);
+			safe_unpackstr(&conf->name, buffer);
+			safe_unpackstr(&conf->type_name, buffer);
+			safe_unpackstr(&conf->unique_id, buffer);
 		}
 
-		if (!count64)
-			goto empty;
-
-		log_flag(GRES, "Node:%s Gres:%s Type:%s UniqueId:%s Flags:%s CPU_IDs:%s CPU#:%u Count:%"PRIu64" Links:%s",
-			 node_name, tmp_name, tmp_type, tmp_unique_id,
-			 gres_flags2str(config_flags), tmp_cpus, cpu_cnt,
-			 count64, tmp_links);
-
-		if (!(gres_ctx = _find_context_by_id(plugin_id))) {
-			/*
-			 * GresPlugins is inconsistently configured.
-			 * Not a fatal error, but skip this data.
-			 */
-			error("%s: No plugin configured to process GRES data from node %s (Name:%s Type:%s PluginID:%u Count:%"PRIu64")",
-			      __func__, node_name, tmp_name, tmp_type,
-			      plugin_id, count64);
-			xfree(tmp_cpus);
-			xfree(tmp_links);
-			xfree(tmp_name);
-			xfree(tmp_type);
-			xfree(tmp_unique_id);
-			continue;
-		}
-
-		if (xstrcmp(gres_ctx->gres_name, tmp_name)) {
-			/*
-			 * Should have been caught in
-			 * gres_init()
-			 */
-			error("%s: gres/%s duplicate plugin ID with %s, unable to process",
-			      __func__, tmp_name,
-			      gres_ctx->gres_name);
-			continue;
-		}
-		new_has_file = config_flags & GRES_CONF_HAS_FILE;
-		orig_has_file = gres_ctx->config_flags &
-			GRES_CONF_HAS_FILE;
-		if (orig_has_file && !new_has_file && count64) {
-			error("%s: gres/%s lacks \"File=\" parameter for node %s",
-			      __func__, tmp_name, node_name);
-			config_flags |= GRES_CONF_HAS_FILE;
-		}
-		if (new_has_file && (count64 > MAX_GRES_BITMAP) &&
-		    !gres_id_shared(config_flags)) {
-			/*
-			 * Avoid over-subscribing memory with
-			 * huge bitmaps
-			 */
-			error("%s: gres/%s has \"File=\" plus very large "
-			      "\"Count\" (%"PRIu64") for node %s, "
-			      "resetting value to %d",
-			      __func__, tmp_name, count64,
-			      node_name, MAX_GRES_BITMAP);
-			count64 = MAX_GRES_BITMAP;
-		}
-
-		/*
-		 * If one node in the bunch said a gres has removed
-		 * GRES_CONF_ONE_SHARING then remove it from the
-		 * context.
-		 */
-		if ((gres_ctx->config_flags & GRES_CONF_LOADED) &&
-		    gres_id_shared(config_flags))  {
-			bool gc_one_sharing =
-				gres_ctx->config_flags &
-				GRES_CONF_ONE_SHARING;
-			bool got_one_sharing =
-				config_flags & GRES_CONF_ONE_SHARING;
-			if (gc_one_sharing == got_one_sharing) {
-			} else if (!gc_one_sharing && got_one_sharing) {
-				log_flag(GRES, "gres/%s was already set up to share all ignoring one_sharing from %s",
-					 tmp_name, node_name);
-				config_flags &= ~GRES_CONF_ONE_SHARING;
-			} else if (!got_one_sharing) {
-				log_flag(GRES, "gres/%s was already set up to only share one, but we just found the opposite from %s. Removing flag.",
-					 tmp_name, node_name);
-				gres_ctx->config_flags &=
-					~GRES_CONF_ONE_SHARING;
-			}
-		}
-
-		/*
-		 * If we read in from state we want to take the slurmd's view
-		 * over our state.
-		 */
-		if (gres_ctx->config_flags & GRES_CONF_FROM_STATE)
-			gres_ctx->config_flags = config_flags;
-		else
-			gres_ctx->config_flags |= config_flags;
-
-		/*
-		 * On the slurmctld we need to load the plugins to
-		 * correctly set env vars.  We want to call this only
-		 * after we have the config_flags so we can tell if we
-		 * are CountOnly or not.
-		 */
-		if (!(gres_ctx->config_flags &
-		      GRES_CONF_LOADED)) {
-			(void)_load_plugin(gres_ctx);
-			gres_ctx->config_flags |=
-				GRES_CONF_LOADED;
-		}
-	empty:
-		p = xmalloc(sizeof(gres_slurmd_conf_t));
-		p->config_flags = config_flags;
-		p->count = count64;
-		p->cpu_cnt = cpu_cnt;
-		p->cpus = tmp_cpus;
-		tmp_cpus = NULL;	/* Nothing left to xfree */
-		p->links = tmp_links;
-		tmp_links = NULL;	/* Nothing left to xfree */
-		p->name = tmp_name;     /* Preserve for accounting! */
-		p->type_name = tmp_type;
-		tmp_type = NULL;	/* Nothing left to xfree */
-		p->plugin_id = plugin_id;
-		p->unique_id = tmp_unique_id;
-		tmp_unique_id = NULL;
-		if (gres_links_validate(p->links) < -1) {
-			error("%s: Ignoring invalid Links=%s for Name=%s",
-			      __func__, p->links, p->name);
-			xfree(p->links);
-		}
-		list_append(gres_conf_list, p);
+		if (conf && _add_to_gres_conf_list(conf, node_name))
+			destroy_gres_slurmd_conf(conf);
+		conf = NULL;
 	}
 
 	slurm_mutex_unlock(&gres_context_lock);
@@ -3185,10 +3194,9 @@ extern int gres_node_config_unpack(buf_t *buffer, char *node_name)
 
 unpack_error:
 	error("%s: unpack error from node %s", __func__, node_name);
-	xfree(tmp_cpus);
-	xfree(tmp_links);
-	xfree(tmp_name);
-	xfree(tmp_type);
+	if (conf)
+		destroy_gres_slurmd_conf(conf);
+
 	if (locked)
 		slurm_mutex_unlock(&gres_context_lock);
 	return SLURM_ERROR;
@@ -3811,44 +3819,48 @@ static int _check_core_range_matches_sock(bitstr_t *tmp_bitmap,
 					  rebuild_topo_t *rebuild_topo,
 					  gres_slurmd_conf_t *gres_slurmd_conf)
 {
+	int total_core_cnt = bit_set_count(tmp_bitmap);
+	slurm_gres_context_t *gres_ctx = rebuild_topo->gres_ctx;
+	gres_node_state_t *gres_ns = rebuild_topo->gres_ns;
+	char *gres_cores_str, *tmp;
+	int first, last, core_cnt;
+
+	if (total_core_cnt == bit_size(tmp_bitmap))
+		return SLURM_SUCCESS;
+
 	for (int i = 0; (i < rebuild_topo->sock_cnt); i++) {
-		int first = i * rebuild_topo->cores_per_sock;
-		int last = (i + 1) * rebuild_topo->cores_per_sock;
-		int core_cnt = bit_set_count_range(tmp_bitmap, first, last);
+		first = i * rebuild_topo->cores_per_sock;
+		last = (i + 1) * rebuild_topo->cores_per_sock;
+		core_cnt = bit_set_count_range(tmp_bitmap, first, last);
 
-		if (core_cnt && (core_cnt != rebuild_topo->cores_per_sock)) {
-			slurm_gres_context_t *gres_ctx = rebuild_topo->gres_ctx;
-			gres_node_state_t *gres_ns = rebuild_topo->gres_ns;
-			char *gres_cores_str = bit_fmt_full(tmp_bitmap);
-			char *tmp;
+		if (!core_cnt || /* No cores set */
+		    ((core_cnt == rebuild_topo->cores_per_sock) &&
+		     (core_cnt == total_core_cnt))) /* Cores match 1 socket */
+			continue;
 
-			if (gres_slurmd_conf->config_flags &
-			    GRES_CONF_AUTODETECT) {
-				tmp = xstrdup_printf(
-					"%s GRES autodetected core affinity %s on node %s doesn't match socket boundaries. (Socket %d is cores %d-%d). "
-					"Consider setting SlurmdParameters=l3cache_as_socket (recommended) or override this by manually specifying core affinity in gres.conf.",
-					gres_ctx->gres_type, gres_cores_str,
-					rebuild_topo->node_name, i, first,
-					(last - 1));
-			} else {
-				tmp = xstrdup_printf(
-					"%s GRES core specification %s for node %s doesn't match socket boundaries. (Socket %d is cores %d-%d)",
-					gres_ctx->gres_type, gres_cores_str,
-					rebuild_topo->node_name, i, first,
-					(last - 1));
-			}
-			xfree(gres_cores_str);
-			FREE_NULL_BITMAP(gres_ns->topo_core_bitmap[
-						 rebuild_topo->topo_cnt]);
-			rebuild_topo->rc = EINVAL;
-			error("%s: %s", __func__, tmp);
-			if (rebuild_topo->reason_down &&
-			    !(*rebuild_topo->reason_down))
-				xstrfmtcat(*rebuild_topo->reason_down, "%s",
-					   tmp);
-			xfree(tmp);
-			return SLURM_ERROR;
+		gres_cores_str = bit_fmt_full(tmp_bitmap);
+
+		if (gres_slurmd_conf->config_flags & GRES_CONF_AUTODETECT) {
+			tmp = xstrdup_printf(
+				"%s GRES autodetected core affinity %s on node %s doesn't match socket boundaries. (Socket %d is cores %d-%d). "
+				"Consider setting Parameters=l3cache_as_socket as part of the Node configuration.",
+				gres_ctx->gres_type, gres_cores_str,
+				rebuild_topo->node_name, i, first, (last - 1));
+		} else {
+			tmp = xstrdup_printf(
+				"%s GRES core specification %s for node %s doesn't match socket boundaries. (Socket %d is cores %d-%d)",
+				gres_ctx->gres_type, gres_cores_str,
+				rebuild_topo->node_name, i, first, (last - 1));
 		}
+		xfree(gres_cores_str);
+		FREE_NULL_BITMAP(gres_ns->topo_core_bitmap[rebuild_topo
+								   ->topo_cnt]);
+		rebuild_topo->rc = EINVAL;
+		error("%s: %s", __func__, tmp);
+		if (rebuild_topo->reason_down && !(*rebuild_topo->reason_down))
+			xstrfmtcat(*rebuild_topo->reason_down, "%s", tmp);
+		xfree(tmp);
+		return SLURM_ERROR;
 	}
 	return SLURM_SUCCESS;
 }
@@ -4393,6 +4405,9 @@ static void _sync_node_shared_to_sharing(gres_state_t *sharing_gres_state_node)
 	for (i = sharing_cnt; i < shared_gres_ns->topo_cnt; i++) {
 		if (shared_gres_ns->topo_core_bitmap)
 			FREE_NULL_BITMAP(shared_gres_ns->topo_core_bitmap[i]);
+		if (shared_gres_ns->topo_res_core_bitmap)
+			FREE_NULL_BITMAP(
+				shared_gres_ns->topo_res_core_bitmap[i]);
 		if (shared_gres_ns->topo_gres_bitmap)
 			FREE_NULL_BITMAP(shared_gres_ns->topo_gres_bitmap[i]);
 		xfree(shared_gres_ns->topo_type_name[i]);
@@ -5441,8 +5456,10 @@ static void *_node_state_dup(gres_node_state_t *gres_ns)
 					bit_copy(gres_ns->
 						 topo_res_core_bitmap[i]);
 			}
-			new_gres_ns->topo_gres_bitmap[i] =
-				bit_copy(gres_ns->topo_gres_bitmap[i]);
+			if (gres_ns->topo_gres_bitmap[i]) {
+				new_gres_ns->topo_gres_bitmap[i] =
+					bit_copy(gres_ns->topo_gres_bitmap[i]);
+			}
 			new_gres_ns->topo_gres_cnt_alloc[i] =
 				gres_ns->topo_gres_cnt_alloc[i];
 			new_gres_ns->topo_gres_cnt_avail[i] =
@@ -5787,6 +5804,12 @@ static int _foreach_node_state_log(void *x, void *arg)
 			     (int)bit_size(gres_ns->topo_core_bitmap[i]));
 		} else
 			info("   topo_core_bitmap[%d]:NULL", i);
+		if (gres_ns->topo_res_core_bitmap[i]) {
+			bit_fmt(tmp_str, sizeof(tmp_str),
+				gres_ns->topo_res_core_bitmap[i]);
+			info("   topo_res_core_bitmap[%d]:%s of %d", i, tmp_str,
+			     (int)bit_size(gres_ns->topo_res_core_bitmap[i]));
+		}
 		if (gres_ns->topo_gres_bitmap[i]) {
 			bit_fmt(tmp_str, sizeof(tmp_str),
 				gres_ns->topo_gres_bitmap[i]);
@@ -9819,11 +9842,10 @@ static bitstr_t *_get_single_usable_gres(int context_inx,
  * Configure the GRES hardware allocated to the current step while privileged
  *
  * IN step_gres_list - Step's GRES specification
- * IN node_id        - relative position of this node in step
  * IN settings       - string containing configuration settings for the hardware
  */
 extern void gres_g_step_hardware_init(list_t *step_gres_list,
-				      uint32_t node_id, char *settings)
+				      char *settings)
 {
 	int i;
 	gres_state_t *gres_state_step;
@@ -10614,6 +10636,7 @@ static void _gres_device_pack(
 	pack32(gres_device->dev_desc.minor, buffer);
 	packstr(gres_device->path, buffer);
 	packstr(gres_device->unique_id, buffer);
+	pack32(gres_device->flags, buffer);
 }
 
 extern void gres_send_stepd(buf_t *buffer, list_t *gres_devices)
@@ -10640,6 +10663,7 @@ static int _gres_device_unpack(void **object, uint16_t protocol_version,
 	gres_device->dev_desc.minor = uint32_tmp;
 	safe_unpackstr(&gres_device->path, buffer);
 	safe_unpackstr(&gres_device->unique_id, buffer);
+	safe_unpack32(&gres_device->flags, buffer);
 	/* info("adding %d %s %s", gres_device->dev_num, */
 	/*      gres_device->major, gres_device->path); */
 
@@ -11034,6 +11058,12 @@ extern char *gres_flags2str(uint32_t config_flags)
 		sep = ",";
 	}
 
+	if (config_flags & GRES_CONF_MIG) {
+		strcat(flag_str, sep);
+		strcat(flag_str, "MIG");
+		sep = ",";
+	}
+
 	return flag_str;
 }
 
@@ -11151,4 +11181,92 @@ extern bool gres_valid_name(char *name)
 		return true;
 
 	return false;
+}
+
+static void _parse_gres_conf_values(char *gres_str, char *node_name)
+{
+	char *key, *saveptr;
+	gres_slurmd_conf_t *gsc;
+	gsc = xmalloc(sizeof(gres_slurmd_conf_t));
+
+	for (key = strtok_r(gres_str, ",", &saveptr);
+	     key;
+	     key = strtok_r(NULL, ",", &saveptr)) {
+		char *val = strchr(key, '=');
+		if (!val) {
+			error("Missing value in str: %s", key);
+			continue;
+		}
+		*val = '\0';
+		val++;
+
+		if (!xstrncasecmp(key, "count", strlen("count")))
+			s_p_handle_uint64(&gsc->count, key, val);
+		else if (!xstrncasecmp(key, "cpu_cnt", strlen("cpu_cnt")))
+			s_p_handle_uint32(&gsc->cpu_cnt, key, val);
+		else if (!xstrncasecmp(key, "flags", strlen("flags")))
+			s_p_handle_uint32(&gsc->config_flags, key, val);
+		else if (!xstrncasecmp(key, "cpus", strlen("cpus"))) {
+			xfree(gsc->cpus);
+			gsc->cpus = xstrdup(val);
+		} else if (!xstrncasecmp(key, "file", strlen("file"))) {
+			xfree(gsc->file);
+			gsc->file = xstrdup(val);
+		} else if (!xstrncasecmp(key, "links", strlen("links"))) {
+			xfree(gsc->links);
+			gsc->links = xstrdup(val);
+		} else if (!xstrncasecmp(key, "name", strlen("name"))) {
+			xfree(gsc->name);
+			gsc->name = xstrdup(val);
+		} else if (!xstrncasecmp(key, "type", strlen("type_name"))) {
+			xfree(gsc->type_name);
+			gsc->type_name = xstrdup(val);
+		} else if (!xstrncasecmp(key, "unique_id",
+					 strlen("unique_id"))) {
+			xfree(gsc->unique_id);
+			gsc->unique_id = xstrdup(val);
+		} else if (!xstrncasecmp(key, "plugin_id", strlen("plugin_id")))
+			s_p_handle_uint32(&gsc->plugin_id, key, val);
+		else
+			error("invalid key: %s", key);
+	}
+
+	if (gsc->file)
+		gsc->config_flags |= GRES_CONF_HAS_FILE;
+
+	if (!gsc->plugin_id) {
+		for (int i = 0; i < gres_context_cnt; i++) {
+			if (!xstrcmp(gres_context[i].gres_name, gsc->name)) {
+				gsc->plugin_id = gres_context[i].plugin_id;
+				break;
+			}
+		}
+		xassert(gsc->plugin_id);
+	}
+
+	if (_add_to_gres_conf_list(gsc, node_name))
+		destroy_gres_slurmd_conf(gsc);
+}
+
+extern void gres_add_dynamic_gres(char *gres_str, char *node_name)
+{
+	char *tmp_gres_str;
+	char *tok, *saveptr;
+
+	FREE_NULL_LIST(gres_conf_list);
+	gres_conf_list = list_create(destroy_gres_slurmd_conf);
+
+	tmp_gres_str = xstrdup(gres_str);
+
+	slurm_mutex_lock(&gres_context_lock);
+
+	for (tok = strtok_r(gres_str, "+", &saveptr);
+	     tok;
+	     tok = strtok_r(NULL, "+", &saveptr)) {
+		_parse_gres_conf_values(tok, node_name);
+	}
+
+	slurm_mutex_unlock(&gres_context_lock);
+
+	xfree(tmp_gres_str);
 }

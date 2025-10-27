@@ -300,6 +300,7 @@ static slurm_opt_t *_opt_copy(void)
 	opt_dup->ifname = xstrdup(opt.ifname);
 	opt_dup->job_name = xstrdup(opt.job_name);
 	opt.licenses = NULL;		/* Moved by memcpy */
+	opt.resources = NULL; /* Moved by memcpy */
 	opt.mail_user = NULL;		/* Moved by memcpy */
 	opt_dup->mcs_label = xstrdup(opt.mcs_label);
 	opt.mem_bind = NULL;		/* Moved by memcpy */
@@ -386,7 +387,9 @@ extern int initialize_and_process_args(int argc, char **argv, int *argc_off)
 
 		if (opt_found || (i > 0)) {
 			xstrfmtcat(sropt.het_group, "%d", i);
-			sropt.het_grp_bits = bit_alloc(MAX_HET_JOB_COMPONENTS);
+			if (!sropt.het_grp_bits)
+				sropt.het_grp_bits =
+					bit_alloc(MAX_HET_JOB_COMPONENTS);
 			bit_set(sropt.het_grp_bits, i);
 		}
 
@@ -547,6 +550,7 @@ env_vars_t env_vars[] = {
   { "SLURM_CLUSTERS", 'M' },
   { "SLURM_CLUSTER_CONSTRAINT", LONG_OPT_CLUSTER_CONSTRAINT },
   { "SLURM_COMPRESS", LONG_OPT_COMPRESS },
+  { "SLURM_CONSOLIDATE_SEGMENTS", LONG_OPT_CONSOLIDATE_SEGMENTS },
   { "SLURM_CONSTRAINT", 'C' },
   { "SLURM_CORE_SPEC", 'S' },
   { "SLURM_CPUS_PER_TASK", 'c' },
@@ -610,6 +614,7 @@ env_vars_t env_vars[] = {
   { "SLURM_SEND_LIBS", LONG_OPT_SEND_LIBS },
   { "SLURM_SIGNAL", LONG_OPT_SIGNAL },
   { "SLURM_SPREAD_JOB", LONG_OPT_SPREAD_JOB },
+  { "SLURM_SPREAD_SEGMENTS", LONG_OPT_SPREAD_SEGMENTS },
   { "SLURM_SRUN_MULTI", LONG_OPT_MULTI },
   { "SLURM_STDERRMODE", 'e' }, /* Left for backward compatibility */
   { "SLURM_STDINMODE", 'i' }, /* Left for backward compatibility */
@@ -1496,6 +1501,7 @@ static void _usage(void)
 "            [--task-prolog=fname] [--task-epilog=fname]\n"
 "            [--ctrl-comm-ifhn=addr] [--multi-prog] [--mcs-label=mcs]\n"
 "            [--cpu-freq=min[-max[:gov]]] [--power=flags] [--spread-job]\n"
+"            [--spread-segments]\n"
 "            [--switches=max-switches{@max-time-to-wait}] [--reboot]\n"
 "            [--core-spec=cores] [--thread-spec=threads]\n"
 "            [--bb=burst_buffer_spec] [--bbf=burst_buffer_file]\n"
@@ -1604,6 +1610,7 @@ static void _help(void)
 "      --signal=[R:]num[@time] send signal when time limit within time seconds\n"
 "      --slurmd-debug=level    slurmd debug level\n"
 "      --spread-job            spread job across as many nodes as possible\n"
+"      --spread-segments       spread job segments across separate base blocks\n"
 "      --switches=max-switches{@max-time-to-wait}\n"
 "                              Optimum switches and max time to wait for optimum\n"
 "      --task-epilog=program   run \"program\" after launching task\n"

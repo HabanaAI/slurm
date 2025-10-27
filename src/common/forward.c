@@ -120,7 +120,7 @@ static void *_forward_thread(void *arg)
 	forward_t *fwd_ptr = &fwd_msg->header.forward;
 	buf_t *buffer = init_buf(BUF_SIZE);	/* probably enough for header */
 	list_t *ret_list = NULL;
-	void *tls_conn = NULL;
+	void *conn = NULL;
 	ret_data_info_t *ret_data_info = NULL;
 	char *name = NULL;
 	hostlist_t *hl = hostlist_create(fwd_ptr->nodelist);
@@ -145,7 +145,7 @@ static void *_forward_thread(void *arg)
 			goto cleanup;
 		}
 
-		if (!(tls_conn = slurm_open_msg_conn(&addr, NULL))) {
+		if (!(conn = slurm_open_msg_conn(&addr, NULL))) {
 			error("%s: failed to %s (%pA): %m",
 			      __func__, name, &addr);
 
@@ -206,7 +206,7 @@ static void *_forward_thread(void *arg)
 		/*
 		 * forward message
 		 */
-		if (slurm_msg_sendto(tls_conn, get_buf_data(buffer),
+		if (slurm_msg_sendto(conn, get_buf_data(buffer),
 				     get_buf_offset(buffer)) < 0) {
 			error("%s: slurm_msg_sendto: %m", __func__);
 
@@ -218,8 +218,8 @@ static void *_forward_thread(void *arg)
 				FREE_NULL_BUFFER(buffer);
 				buffer = init_buf(fwd_struct->buf_len);
 				slurm_mutex_unlock(&fwd_struct->forward_mutex);
-				conn_g_destroy(tls_conn, true);
-				tls_conn = NULL;
+				conn_g_destroy(conn, true);
+				conn = NULL;
 				/* Abandon tree. This way if all the
 				 * nodes in the branch are down we
 				 * don't have to time out for each
@@ -255,9 +255,8 @@ static void *_forward_thread(void *arg)
 			goto cleanup;
 		}
 
-		ret_list =
-			slurm_receive_resp_msgs(tls_conn, fwd_ptr->tree_depth,
-						fwd_ptr->timeout);
+		ret_list = slurm_receive_resp_msgs(conn, fwd_ptr->tree_depth,
+						   fwd_ptr->timeout);
 		/* info("sent %d forwards got %d back", */
 		/*      fwd_ptr->cnt, list_count(ret_list)); */
 
@@ -271,8 +270,8 @@ static void *_forward_thread(void *arg)
 				FREE_NULL_BUFFER(buffer);
 				buffer = init_buf(fwd_struct->buf_len);
 				slurm_mutex_unlock(&fwd_struct->forward_mutex);
-				conn_g_destroy(tls_conn, true);
-				tls_conn = NULL;
+				conn_g_destroy(conn, true);
+				conn = NULL;
 				continue;
 			}
 			goto cleanup;
@@ -341,7 +340,7 @@ static void *_forward_thread(void *arg)
 	}
 	free(name);
 cleanup:
-	conn_g_destroy(tls_conn, true);
+	conn_g_destroy(conn, true);
 	hostlist_destroy(hl);
 	fwd_ptr->alias_addrs.net_cred = NULL;
 	fwd_ptr->alias_addrs.node_addrs = NULL;
@@ -364,8 +363,16 @@ static int _fwd_tree_get_addr(fwd_tree_t *fwd_tree, char *name,
 			hostlist_create(fwd_tree->orig_msg->forward.alias_addrs.node_list);
 		int n = hostlist_find(hl, name);
 		hostlist_destroy(hl);
-		if (n < 0)
+		if (n < 0) {
+			error("%s: can't find address for host %s in alias_addrs",
+			      __func__, name);
+			slurm_mutex_lock(fwd_tree->tree_mutex);
+			mark_as_failed_forward(&fwd_tree->ret_list, name,
+					       SLURM_UNKNOWN_FORWARD_ADDR);
+			slurm_cond_signal(fwd_tree->notify);
+			slurm_mutex_unlock(fwd_tree->tree_mutex);
 			return SLURM_ERROR;
+		}
 		*address =
 			fwd_tree->orig_msg->forward.alias_addrs.node_addrs[n];
 	} else if (slurm_conf_get_addr(name, address,
@@ -477,6 +484,8 @@ static void *_fwd_tree_thread(void *arg)
 			FREE_NULL_LIST(ret_list);
 			/* try next node */
 			if (ret_cnt <= send_msg.forward.cnt) {
+				error("%s: Abandon tree forward by %s, ret_cnt:%u forward.cnt:%u",
+				      __func__, name, ret_cnt, send_msg.forward.cnt);
 				free(name);
 				/* Abandon tree. This way if all the
 				 * nodes in the branch are down we
@@ -487,7 +496,7 @@ static void *_fwd_tree_thread(void *arg)
 					fwd_tree->tree_hl, NULL,
 					fwd_tree,
 					hostlist_count(fwd_tree->tree_hl));
-				continue;
+				break;
 			}
 		} else {
 			/* This should never happen (when this was
@@ -678,10 +687,22 @@ extern int forward_msg(forward_struct_t *forward_struct, header_t *header)
 	if (header->forward.tree_depth)
 		header->forward.timeout = (header->forward.timeout * depth) /
 					  header->forward.tree_depth;
-	else
-		header->forward.timeout *= 2 * depth;
+	else {
+		/*
+		 * tree_depth not packed - likely using 24.05- protocol version.
+		 * Calculate the timeout based on MessageTimeout instead.
+		 */
+		header->forward.timeout =
+			(2 * depth * slurm_conf.msg_timeout * MSEC_IN_SEC);
+		debug3("%s: original tree_depth was 0 so setting new timeout to %d",
+			__func__, header->forward.timeout);
+	}
 	header->forward.tree_depth = depth;
 	forward_struct->timeout = header->forward.timeout;
+
+	log_flag(NET, "%s: forwarding messages to %u nodes with timeout of %d",
+		 __func__, forward_struct->fwd_cnt, forward_struct->timeout);
+
 	_forward_msg_internal(NULL, sp_hl, forward_struct, header,
 			      forward_struct->timeout, hl_count);
 
@@ -711,7 +732,6 @@ static void _get_alias_addrs(hostlist_t *hl, slurm_msg_t *msg, int *cnt)
 			++addr_index;
 		} else {
 			hostlist_remove(hi);
-			forward->cnt--;
 			(*cnt)--;
 		}
 		free(node_name);
@@ -923,8 +943,7 @@ extern void forward_wait(slurm_msg_t * msg)
 		}
 		debug2("Got them all");
 		slurm_mutex_unlock(&msg->forward_struct->forward_mutex);
-		destroy_forward_struct(msg->forward_struct);
-		msg->forward_struct = NULL;
+		FREE_NULL_FORWARD_STRUCT(msg->forward_struct);
 	}
 	return;
 }

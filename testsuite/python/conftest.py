@@ -11,10 +11,12 @@ import os
 import pytest
 import re
 
-# import shutil
+import shutil
 import sys
 
-# from pathlib import Path
+from pathlib import Path
+
+import json
 
 sys.path.append(sys.path[0] + "/lib")
 import atf
@@ -84,27 +86,29 @@ def color_log_level(level: int, **color_kwargs):
     for handler in logging.getLogger().handlers:
         if isinstance(handler, _pytest.logging.LogCaptureHandler):
             formatter = handler.formatter
-            if match := formatter.LEVELNAME_FMT_REGEX.search(formatter._fmt):
-                levelname_fmt = match.group()
-                formatted_levelname = levelname_fmt % {
-                    "levelname": logging.getLevelName(level)
-                }
+            # Avoid errors if --color=no is used:
+            if hasattr(formatter, "LEVELNAME_FMT_REGEX"):
+                if match := formatter.LEVELNAME_FMT_REGEX.search(formatter._fmt):
+                    levelname_fmt = match.group()
+                    formatted_levelname = levelname_fmt % {
+                        "levelname": logging.getLevelName(level)
+                    }
 
-                esc = []
-                for option in color_kwargs:
-                    esc.append(_esctable[option])
+                    esc = []
+                    for option in color_kwargs:
+                        esc.append(_esctable[option])
 
-                colorized_formatted_levelname = (
-                    "".join(["\x1b[%sm" % cod for cod in esc])
-                    + formatted_levelname
-                    + "\x1b[0m"
-                )
-
-                formatter._level_to_fmt_mapping[level] = (
-                    formatter.LEVELNAME_FMT_REGEX.sub(
-                        colorized_formatted_levelname, formatter._fmt
+                    colorized_formatted_levelname = (
+                        "".join(["\x1b[%sm" % cod for cod in esc])
+                        + formatted_levelname
+                        + "\x1b[0m"
                     )
-                )
+
+                    formatter._level_to_fmt_mapping[level] = (
+                        formatter.LEVELNAME_FMT_REGEX.sub(
+                            colorized_formatted_levelname, formatter._fmt
+                        )
+                    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -125,7 +129,7 @@ def session_setup(request):
         color_log_level(logging.TRACE, purple=True, bold=True)
 
 
-def update_tmp_path_exec_permissions():
+def update_tmp_path_exec_permissions(path):
     """
     For pytest versions 6+  the tmp path it uses no longer has
     public exec permissions for dynamically created directories by default.
@@ -140,23 +144,32 @@ def update_tmp_path_exec_permissions():
     Bug 16568
     """
 
-    user_name = atf.get_user_name()
-    path = f"/tmp/pytest-of-{user_name}"
-
     if os.path.isdir(path):
         os.chmod(path, 0o777)
         for root, dirs, files in os.walk(path):
             for d in dirs:
                 os.chmod(os.path.join(root, d), 0o777)
 
+        # Ensure access for parent dirs too
+        path = path.resolve()
+        if not path.is_relative_to("/tmp"):
+            pytest.fail(f"Unexpected tmp path outside /tmp: {path}")
+
+        subdir = Path("/tmp")
+        for part in path.relative_to("/tmp").parts:
+            subdir = subdir / part
+            os.chmod(subdir, 0o777)
+
 
 @pytest.fixture(scope="module", autouse=True)
 def module_setup(request, tmp_path_factory):
     atf.properties["slurm-started"] = False
     atf.properties["slurmrestd-started"] = False
+    atf.properties["influxdb-started"] = False
     atf.properties["configurations-modified"] = set()
     atf.properties["orig-environment"] = dict(os.environ)
     atf.properties["orig-pypath"] = list(sys.path)
+    atf.properties["forced_upgrade_setup"] = False
     if "old-slurm-prefix" in atf.properties.keys():
         del atf.properties["old-slurm-prefix"]
     if "new-slurm-prefix" in atf.properties.keys():
@@ -177,7 +190,7 @@ def module_setup(request, tmp_path_factory):
     name = name[:30]
     atf.properties["test_name"] = name
     atf.module_tmp_path = tmp_path_factory.mktemp(name, numbered=True)
-    update_tmp_path_exec_permissions()
+    update_tmp_path_exec_permissions(atf.module_tmp_path)
 
     # Module-level fixtures should run from within the module_tmp_path
     os.chdir(atf.module_tmp_path)
@@ -264,7 +277,7 @@ def module_teardown():
             atf.run_command(f"sudo rm -rf {tmpfs_dir}", quiet=True)
 
         # Restore upgrade setup
-        if "old-slurm-prefix" in atf.properties.keys():
+        if atf.properties.get("forced_upgrade_setup"):
             logging.debug("Restoring upgrade setup...")
             if not os.path.exists(f"{atf.module_tmp_path}/upgrade-sbin"):
                 pytest.fail(
@@ -294,6 +307,9 @@ def module_teardown():
         for config in set(atf.properties["configurations-modified"]):
             atf.restore_config_file(config)
 
+        # Clean influxdb
+        if atf.properties["influxdb-started"]:
+            atf.request_influxdb(f"DROP DATABASE {atf.properties['influxdb_db']}")
     else:
         atf.cancel_jobs(atf.properties["submitted-jobs"])
 
@@ -313,6 +329,7 @@ def function_setup(request, monkeypatch, tmp_path):
         logging.info(request.function.__doc__)
 
     # Start each test inside the tmp_path
+    update_tmp_path_exec_permissions(tmp_path)
     monkeypatch.chdir(tmp_path)
 
 
@@ -329,6 +346,25 @@ def pytest_keyboard_interrupt(excinfo):
 
 
 @pytest.fixture(scope="module")
+def taskget(module_setup):
+    """
+    Create the taskget program from the taskget.c in scripts directory.
+    Returns its bin path.
+    """
+
+    atf.require_tool("gcc")
+
+    src_path = atf.properties["testsuite_scripts_dir"] + "/taskget.c"
+    bin_path = os.getcwd() + "/taskget"
+
+    atf.run_command(f"gcc -o {bin_path} {src_path}", fatal=True)
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+
+
+@pytest.fixture(scope="module")
 def mpi_program(module_setup):
     """Create the MPI program from the mpi_program.c in scripts directory.
     Returns the bin path of the mpi_program."""
@@ -342,6 +378,420 @@ def mpi_program(module_setup):
 
     # Compile the MPI program
     atf.run_command(f"mpicc -o {bin_path} {src_path}", fatal=True)
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+
+
+@pytest.fixture(scope="module")
+def use_memory_program(module_setup):
+    """
+    Returns the bin path of a program that allocates a certain amount of MB for some seconds.
+    """
+
+    atf.require_tool("python3")
+
+    src_path = atf.properties["testsuite_scripts_dir"] + "/use_memory_program.py"
+    bin_path = os.getcwd() + "/use_memory_program.py"
+
+    # Ensure x permissions
+    atf.run_command(f"cp {src_path} {bin_path}")
+    atf.run_command(f"chmod a+x {bin_path}")
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+
+
+@pytest.fixture(scope="module")
+def printenv(module_setup):
+    """
+    Returns the bin path of a program that emulates printenv in a JSON format.
+    """
+
+    atf.require_tool("python3")
+
+    src_path = atf.properties["testsuite_scripts_dir"] + "/printenv.py"
+    bin_path = os.getcwd() + "/printenv.py"
+
+    # Ensure x permissions
+    atf.run_command(f"cp {src_path} {bin_path}")
+    atf.run_command(f"chmod a+x {bin_path}")
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+
+
+@pytest.fixture(scope="module")
+def spank_fail_lib(module_setup):
+    """
+    Returns the bin path of the spank .so that will fail if configured.
+    """
+
+    # The plugin uses ESPANK_NODE_FAILURE, so it needs to compile against 25.05+
+    # It also needs to be built against the same version of slurmd and submit
+    # clients like sbatch
+    new_prefixes = False
+    if not atf.is_upgrade_setup():
+        atf.require_version((25, 5), "config.h")
+    else:
+        slurmd_version = atf.get_version("sbin/slurmd")
+        sbatch_version = atf.get_version("bin/sbatch")
+
+        if slurmd_version != sbatch_version:
+            pytest.skip(
+                f"We need to build SPANK against Slurm version of submit clients as sbatch {sbatch_version} and slurmd {slurmd_version}, but they diffear."
+            )
+
+        if slurmd_version < (25, 5):
+            pytest.skip(
+                f"This SPANK plugin needs a Slurm 25.05+, but slurmd version is {slurmd_version}"
+            )
+
+        if (
+            atf.get_version("config.h", slurm_prefix=atf.properties["new-build-prefix"])
+            == slurmd_version
+        ):
+            new_prefixes = True
+        elif (
+            not atf.get_version(
+                "config.h", slurm_prefix=atf.properties["old-build-prefix"]
+            )
+            == slurmd_version
+        ):
+            # This should never happen, slurmd should be one of those versions
+            pytest.fail(
+                "Unable to find build dir to match slurmd version {slurmd_version}"
+            )
+
+    src_path = atf.properties["testsuite_scripts_dir"] + "/spank_fail_test.c"
+    bin_path = os.getcwd() + "/spank_fail_test.so"
+
+    atf.compile_against_libslurm(
+        src_path, bin_path, full=True, shared=True, new_prefixes=new_prefixes
+    )
+
+    yield bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+
+
+@pytest.fixture(scope="module")
+def spank_tmp_lib(module_setup):
+    """
+    Compiles a SPANK plugin that will write files in a /tmp directory.
+    Returns the tmp_spank dir and the bin path of the spank .so that will write
+    files in the tmp_spank dir if configured.
+    """
+
+    # The plugin uses ESPANK_NODE_FAILURE, so it needs to compile against 25.05+
+    # It also needs to be built against the same version of slurmd and submit
+    # clients like sbatch
+    new_prefixes = False
+    if atf.is_upgrade_setup():
+        slurmd_version = atf.get_version("sbin/slurmd")
+        sbatch_version = atf.get_version("bin/sbatch")
+
+        if slurmd_version != sbatch_version:
+            pytest.skip(
+                f"We need to build SPANK against Slurm version of submit clients as sbatch {sbatch_version} and slurmd {slurmd_version}, but they diffear."
+            )
+        if (
+            atf.get_version("config.h", slurm_prefix=atf.properties["new-build-prefix"])
+            == slurmd_version
+        ):
+            new_prefixes = True
+        elif (
+            not atf.get_version(
+                "config.h", slurm_prefix=atf.properties["old-build-prefix"]
+            )
+            == slurmd_version
+        ):
+            # This should never happen, slurmd should be one of those versions
+            pytest.fail(
+                "Unable to find build dir to match slurmd version {slurmd_version}"
+            )
+
+    src_path = atf.properties["testsuite_scripts_dir"] + "/spank_tmp_plugin.c"
+    bin_path = os.getcwd() + "/spank_tmp_plugin.so"
+
+    atf.compile_against_libslurm(
+        src_path, bin_path, full=True, shared=True, new_prefixes=new_prefixes
+    )
+
+    tmp_spank = "/tmp/spank"
+    atf.run_command(f"mkdir -p {tmp_spank}", fatal=True)
+
+    yield tmp_spank, bin_path
+
+    atf.run_command(f"rm -f {bin_path}", fatal=True)
+    atf.run_command(f"rm -rf {tmp_spank}", fatal=True)
+
+
+@pytest.fixture(scope="module")
+def sql_statement_repeat(module_setup):
+    """Loads statement_repeat sql procedure.
+
+    This function may only be used in auto-config mode and only needs to be
+    called once to load the statement_repeat() sql procedure that may be called
+    as part of an sql query. See usage and examples below.
+
+    Args:
+        None
+
+    Returns:
+        mysql_command_base - string filled in with mysql command basic options
+                             to be used when running the mysql command
+    """
+
+    if not atf.properties["auto-config"]:
+        return
+
+    mysql_path = shutil.which("mysql")
+    if mysql_path is None:
+        pytest.fail(
+            "Unable to load statement_repeat sql procedure. mysql was not found in your path"
+        )
+
+    """
+    Usage:
+
+    statement_repeat(stmt_str, seq_start, seq_end, step, use_trans)
+
+    Execute statement(s) in stmt_str repeatedly at the sql server level to avoid
+    repeatedly sending statements from the client.
+
+    Arguments:
+
+    stmt_str  - A single sql statement or multiple ones separated by a semicolon
+                to be repeatedly executed.
+
+                Content of each statement in stmt_str is limited to what is
+                allowed by the "prepare" statement.
+
+                Note that a simple split on this character is done so care must
+                be taken when using it to avoid inadvertently
+                splitting the string. One
+                way would be to create a procedure containing the desired
+                statements and then call statement_repeat() with a single
+                statement calling that procedure. See Performance Considerations
+                (below).
+
+    seq_start - Starting sequence value. If specified as NULL, 1 will be used.
+
+                The sequence value is accessible to statements in the user
+                variable @seq. stmt_str will be repeated N times where
+                N=floor(abs(seq_start-seq_end)/step)+1. If nstart > nstop,
+                sequence will be decreasing.
+
+    seq_end   - Ending sequence value. If specified as NULL, 1 will be used.
+
+                Actual ending sequence value may be less than seq_end if
+                step > 1.
+
+    step      - Sequence step value. If specified as NULL, 1 will be used.
+                If step < 0, it will be set to its absolute value to avoid
+                an infinite loop.
+
+    use_trans - Execute statement(s) in stmt_str within a single transaction.
+                Use NULL or non-zero for true, 0 for false. Generally, a single
+                transaction will be faster but may not be desired when bench-
+                marking statements (and autocommit is ON).
+
+
+    User variables visible to statements in stmt_str as set in the procedure:
+
+    @now      - Current timestamp (seconds since epoch) at start of procedure.
+    @seq      - Sequence number (between seq_start and seq_end).
+    @stmt     - Statement string being executed.
+
+    Note that any user variables set outside the procedure are visible to the
+    statements.
+
+    This procedure was inspired my MariaDB's sequence engine which is not
+    available in MySQL.
+
+
+    Performance Considerations:
+
+    When one statement is given in stmt_str, "prepare" is run once then the
+    prepared statement is executed N times.
+
+    When multiple statements are given, "prepare" and "execute" are each run once
+    per statement and this is repeated N times.
+
+
+    Examples:
+
+    Decreasing sequence from 5 down to 1 using step 2 in a single transaction:
+     call statement_repeat('select @seq+5', 5, 1, 2, 1);
+
+    Run statement 10 times in a single transaction:
+     call statement_repeat('select unix_timestamp()', 10, null, null, null);
+
+    Increasing sequence from 1 up to 3 using step 1 not grouped in a
+    transaction:
+     call statement_repeat('select @seq as \'sequence number\',@now as timestamp,@stmt as statement', 1, 3, 1, 0);
+
+    Populate Slurm user table with 500 users named user1..user500 in a single transaction:
+     call statement_repeat('insert into user_table (creation_time,name) values (@now, concat(\'user\', @seq))', 1, 500, 1, 1)
+
+    Populate Slurm job table with 10000 jobs in a single transaction:
+     call statement_repeat('insert into mycluster_job_table (cpus_req,job_name,id_assoc,id_job,id_resv,id_wckey,id_user,id_group,het_job_id,het_job_offset,state_reason_prev,nodes_alloc,`partition`,priority,state,time_end,env_hash_inx,script_hash_inx) values (0,concat(\'job\', @seq),0,@seq,0,0,0,0,0,0,0,0,\'\',0,0,@now,@seq,@seq)', 1, 10000, 1, 1)
+    """
+
+    statement_repeat_sql = """
+        delimiter //
+        drop procedure if exists statement_repeat //
+        create procedure statement_repeat(stmt_str varchar(500), seq_start bigint, seq_end bigint, step bigint, use_trans int)
+        begin
+          declare counter bigint;
+          declare incr bigint;
+          declare max bigint;
+          declare multi int default 0;
+          declare pos int;
+          declare rem_str varchar(500);
+
+          -- ensure sane values
+          set seq_start = ifnull(seq_start, 1);
+          set counter = seq_start;
+          set seq_end = ifnull(seq_end, 1);
+          set max = seq_end;
+          set step = abs(ifnull(step, 1));
+          set incr = step;
+
+          -- user variables visible to statement(s) in stmt_str
+          set @now = unix_timestamp();
+          set @seq = seq_start;
+          set @stmt = stmt_str;
+
+          -- adjust for descending sequence
+          if seq_start > seq_end then
+            set counter = seq_end;
+            set max = seq_start;
+            set step = -step;
+          end if;
+
+          -- see if we were given multiple statements
+          --  they will be tokenized and prepared later
+          set multi = locate(';', @stmt);
+          if not multi then
+            -- have single statement so prepare it once
+            prepare tmp_stmt from @stmt;
+          end if;
+
+          if use_trans is NULL or use_trans then
+            start transaction;
+          end if;
+          while counter <= max do
+            if multi then
+              -- tokenize multi-statement string
+              set rem_str = stmt_str;
+              repeat
+                set pos = locate(';', rem_str);
+                if pos then
+                  set @stmt = substring(rem_str, 1, pos - 1);
+                  set rem_str = substring(rem_str, pos + 1);
+                else
+                  -- last token
+                  set @stmt = rem_str;
+                  set rem_str = '';
+                end if;
+
+                prepare tmp_stmt from @stmt;
+                execute tmp_stmt;
+              until rem_str = '' end repeat;
+            else
+              execute tmp_stmt;
+            end if;
+
+            set @seq = @seq + step;
+            set counter = counter + incr;
+          end while;
+          if use_trans is NULL or use_trans then
+            commit;
+          end if;
+
+          deallocate prepare tmp_stmt;
+        end //
+    """
+
+    slurmdbd_dict = atf.get_config(live=False, source="slurmdbd", quiet=True)
+    database_host, database_port, database_name, database_user, database_password = (
+        slurmdbd_dict.get(key)
+        for key in [
+            "StorageHost",
+            "StoragePort",
+            "StorageLoc",
+            "StorageUser",
+            "StoragePass",
+        ]
+    )
+
+    mysql_options = ""
+    if database_host:
+        mysql_options += f" -h {database_host}"
+    if database_port:
+        mysql_options += f" -P {database_port}"
+    if database_user:
+        mysql_options += f" -u {database_user}"
+    else:
+        mysql_options += f" -u {atf.properties['slurm-user']}"
+    if database_password:
+        mysql_options += f" -p {database_password}"
+    if not database_name:
+        database_name = "slurm_acct_db"
+    mysql_options += f" -D {database_name}"
+
+    mysql_command_base = f"{mysql_path}{mysql_options}"
+    mysql_command = f'{mysql_command_base} -e "{statement_repeat_sql}"'
+    if atf.run_command_exit(mysql_command, quiet=True) != 0:
+        logging.debug(f"Slurm accounting database ({database_name}) is not present")
+
+    return mysql_command_base
+
+
+@pytest.fixture(scope="module")
+def openapi_spec(request, module_setup):
+    """
+    Returns the given version of the OpenAPI specs saved in testsuite_data_dir
+    """
+    openapi_specs = None
+    version = request.param
+    json_file = f"{atf.properties['testsuite_data_dir']}/openapi_spec_v{version}.json"
+    with open(json_file, "r") as f:
+        openapi_specs = json.load(f)
+        f.close()
+    if openapi_specs is None:
+        pytest.fail(f"Error parsing OpenAPI specs from: {json_file}")
+
+    yield openapi_specs
+
+
+@pytest.fixture(scope="module")
+def prio_multifactor(module_setup):
+    """
+    Compiles the prio_multifactor.c in scripts directory.
+    Returns the bin path of it.
+    """
+
+    # Check for compiler
+    atf.require_tool("gcc")
+
+    # Use the external C source file
+    src_path = atf.properties["testsuite_scripts_dir"] + "/prio_multifactor.c"
+    bin_path = os.getcwd() + "/prio_multifactor"
+
+    # Compile the program
+    atf.compile_against_libslurm(
+        src_path,
+        bin_path,
+        full=True,
+        build_args=f"-ldl -lm -export-dynamic {atf.properties['slurm-build-dir']}/src/slurmctld/locks.o {atf.properties['slurm-build-dir']}/src/sshare/process.o",
+        fatal=True,
+    )
 
     yield bin_path
 

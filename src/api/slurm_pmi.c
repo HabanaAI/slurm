@@ -185,6 +185,7 @@ extern int slurm_pmi_send_kvs_comm_set(kvs_comm_set_t *kvs_set_ptr,
 	msg_send.address = srun_addr;
 	msg_send.msg_type = PMI_KVS_PUT_REQ;
 	msg_send.data = (void *) kvs_set_ptr;
+	msg_send.tls_cert = getenv("SLURM_SRUN_TLS_CERT");
 
 	/* Send the RPC to the local srun communication manager.
 	 * Since the srun can be sent thousands of messages at
@@ -221,7 +222,7 @@ extern int slurm_pmi_get_kvs_comm_set(kvs_comm_set_t **kvs_set_ptr,
 				      int pmi_rank, int pmi_size)
 {
 	int rc, retries = 0, timeout = 0;
-	void *tls_conn = NULL;
+	void *conn = NULL;
 	slurm_msg_t msg_send, msg_rcv;
 	slurm_addr_t slurm_addr, srun_reply_addr;
 	char hostname[HOST_NAME_MAX];
@@ -263,12 +264,14 @@ extern int slurm_pmi_get_kvs_comm_set(kvs_comm_set_t **kvs_set_ptr,
 	data.size = pmi_size;
 	data.port = slurm_get_port(&slurm_addr);
 	data.hostname = hostname;
+	data.tls_cert = conn_g_get_own_public_cert();
 	slurm_msg_t_init(&msg_send);
 	slurm_msg_set_r_uid(&msg_send, SLURM_AUTH_UID_ANY);
 	slurm_msg_t_init(&msg_rcv);
 	msg_send.address = srun_addr;
 	msg_send.msg_type = PMI_KVS_GET_REQ;
 	msg_send.data = &data;
+	msg_send.tls_cert = getenv("SLURM_SRUN_TLS_CERT");
 
 	/* Send the RPC to the local srun communication manager.
 	 * Since the srun can be sent thousands of messages at
@@ -292,27 +295,30 @@ extern int slurm_pmi_get_kvs_comm_set(kvs_comm_set_t **kvs_set_ptr,
 	while (slurm_send_recv_rc_msg_only_one(&msg_send, &rc, timeout) < 0) {
 		if (retries++ > MAX_RETRIES) {
 			error("slurm_get_kvs_comm_set: %m");
+			xfree(data.tls_cert);
 			return SLURM_ERROR;
 		} else
 			debug("get kvs retry %d", retries);
 		_delay_rpc(pmi_rank, pmi_size);
 	}
+	xfree(data.tls_cert);
+
 	if (rc != SLURM_SUCCESS) {
 		error("slurm_get_kvs_comm_set error_code=%d", rc);
 		return rc;
 	}
 
 	/* get the message after all tasks reach the barrier */
-	if (!(tls_conn = slurm_accept_msg_conn(pmi_fd, &srun_reply_addr))) {
+	if (!(conn = slurm_accept_msg_conn(pmi_fd, &srun_reply_addr))) {
 		error("slurm_accept_msg_conn: %m");
 		return errno;
 	}
 
-	while ((rc = slurm_receive_msg(tls_conn, &msg_rcv, timeout)) != 0) {
+	while ((rc = slurm_receive_msg(conn, &msg_rcv, timeout)) != 0) {
 		if (errno == EINTR)
 			continue;
 		error("slurm_receive_msg: %m");
-		conn_g_destroy(tls_conn, true);
+		conn_g_destroy(conn, true);
 		return errno;
 	}
 	if (msg_rcv.auth_cred)
@@ -321,13 +327,13 @@ extern int slurm_pmi_get_kvs_comm_set(kvs_comm_set_t **kvs_set_ptr,
 	if (msg_rcv.msg_type != PMI_KVS_GET_RESP) {
 		error("slurm_get_kvs_comm_set msg_type=%s",
 		      rpc_num2string(msg_rcv.msg_type));
-		conn_g_destroy(tls_conn, true);
+		conn_g_destroy(conn, true);
 		return SLURM_UNEXPECTED_MSG_ERROR;
 	}
 	if (slurm_send_rc_msg(&msg_rcv, SLURM_SUCCESS) < 0)
 		error("slurm_send_rc_msg: %m");
 
-	conn_g_destroy(tls_conn, true);
+	conn_g_destroy(conn, true);
 	*kvs_set_ptr = msg_rcv.data;
 
 	rc = _forward_comm_set(*kvs_set_ptr);
@@ -352,6 +358,7 @@ static int _forward_comm_set(kvs_comm_set_t *kvs_set_ptr)
 		slurm_msg_set_r_uid(&msg_send, SLURM_AUTH_UID_ANY);
 		msg_send.msg_type = PMI_KVS_GET_RESP;
 		msg_send.data = (void *) kvs_set_ptr;
+		msg_send.tls_cert = kvs_set_ptr->kvs_host_ptr[i].tls_cert;
 		slurm_set_addr(&msg_send.address,
 			kvs_set_ptr->kvs_host_ptr[i].port,
 			kvs_set_ptr->kvs_host_ptr[i].hostname);
@@ -363,6 +370,7 @@ static int _forward_comm_set(kvs_comm_set_t *kvs_set_ptr)
 		}
 		rc = MAX(rc, msg_rc);
 		xfree(kvs_set_ptr->kvs_host_ptr[i].hostname);
+		xfree(kvs_set_ptr->kvs_host_ptr[i].tls_cert);
 	}
 	xfree(kvs_set_ptr->kvs_host_ptr);
 	return rc;
@@ -390,5 +398,12 @@ void slurm_pmi_finalize(void)
 extern int slurm_pmi_kill_job_step(uint32_t job_id, uint32_t step_id,
 				   uint16_t signal)
 {
-	return slurm_kill_job_step(job_id, step_id, signal, 0);
+	slurm_step_id_t tmp_step_id = {
+		.sluid = 0,
+		.job_id = job_id,
+		.step_id = step_id,
+		.step_het_comp = NO_VAL,
+	};
+
+	return slurm_kill_job_step(&tmp_step_id, signal, 0);
 }

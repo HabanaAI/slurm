@@ -100,9 +100,7 @@ static int _step_signal(int signal)
 	iter = list_iterator_create(local_job_list);
 	while ((my_srun_job = (srun_job_t *) list_next(iter))) {
 		info("Terminating %ps", &my_srun_job->step_id);
-		rc2 = slurm_kill_job_step(my_srun_job->step_id.job_id,
-					  my_srun_job->step_id.step_id, signal,
-					  0);
+		rc2 = slurm_kill_job_step(&my_srun_job->step_id, signal, 0);
 		if (rc2)
 			rc = rc2;
 	}
@@ -257,7 +255,6 @@ static void
 _handle_openmpi_port_error(const char *tasks, const char *hosts,
 			   slurm_step_ctx_t *step_ctx)
 {
-	slurm_step_id_t step_id = step_ctx->step_req->step_id;
 	char *msg = "retrying";
 
 	if (!retry_step_begin) {
@@ -270,8 +267,8 @@ _handle_openmpi_port_error(const char *tasks, const char *hosts,
 	error("%s: tasks %s unable to claim reserved port, %s.",
 	      hosts, tasks, msg);
 
-	info("Terminating job step %ps", &step_id);
-	slurm_kill_job_step(step_id.job_id, step_id.step_id, SIGKILL, 0);
+	info("Terminating job step %ps", &step_ctx->step_req->step_id);
+	slurm_kill_job_step(&step_ctx->step_req->step_id, SIGKILL, 0);
 }
 
 static char *_mpir_get_host_name(char *node_name)
@@ -511,7 +508,7 @@ static void _load_multi(int *argc, char **argv)
 		      argv[0]);
 		exit(error_exit);
 	}
-	if (stat_buf.st_size > 60000) {
+	if (stat_buf.st_size > MAX_BATCH_SCRIPT_SIZE) {
 		error("Multi_prog config file %s is too large",
 		      argv[0]);
 		exit(error_exit);
@@ -677,7 +674,7 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 	int rc;
 
 	xassert(srun_opt);
-
+	step_req->use_protocol_ver = job->use_protocol_ver;
 	step_req->host = xshort_hostname();
 	step_req->cpu_freq_min = opt_local->cpu_freq_min;
 	step_req->cpu_freq_max = opt_local->cpu_freq_max;
@@ -717,6 +714,11 @@ static job_step_create_request_msg_t *_create_job_step_create_request(
 		step_req->flags |= SSF_GRES_ALLOW_TASK_SHARING;
 	if (srun_opt->wait_for_children)
 		step_req->flags |= SSF_WAIT_FOR_CHILDREN;
+
+	if (((srun_opt->kill_bad_exit != NO_VAL) && srun_opt->kill_bad_exit) ||
+	    ((srun_opt->kill_bad_exit == NO_VAL) &&
+	     slurm_conf.kill_on_bad_exit))
+		step_req->flags |= SSF_KILL_ON_BAD_EXIT;
 
 	if (opt_local->immediate == 1)
 		step_req->immediate = opt_local->immediate;
@@ -1119,7 +1121,6 @@ extern bool launch_common_step_retry_errno(int rc)
 {
 	if ((rc == EAGAIN) ||
 	    (rc == ESLURM_DISABLED) ||
-	    (rc == ESLURM_INTERCONNECT_BUSY) ||
 	    (rc == ESLURM_NODES_BUSY) ||
 	    (rc == ESLURM_PORTS_BUSY) ||
 	    (rc == SLURM_PROTOCOL_SOCKET_IMPL_TIMEOUT))
@@ -1389,7 +1390,7 @@ extern int launch_g_step_launch(srun_job_t *job, slurm_step_io_fds_t *cio_fds,
 	launch_params.argc = opt_local->argc;
 	launch_params.argv = opt_local->argv;
 	launch_params.multi_prog = srun_opt->multi_prog ? true : false;
-	launch_params.container = xstrdup(opt_local->container);
+	launch_params.container = opt_local->container;
 	launch_params.cwd = opt_local->chdir;
 	launch_params.slurmd_debug = srun_opt->slurmd_debug;
 	launch_params.buffered_stdio = !srun_opt->unbuffered;

@@ -285,6 +285,18 @@ static char *_get_qos_list_str(list_t *qos_list)
 	return qos_char;
 }
 
+static int _unset_amending_tres(void *x, void *key)
+{
+	slurmdb_tres_rec_t *tres_rec = x;
+
+	if (tres_rec->modifier == '-')
+		tres_rec->count = 0;
+
+	tres_rec->modifier = '\0';
+
+	return 0;
+}
+
 extern int slurmdb_setup_cluster_rec(slurmdb_cluster_rec_t *cluster_rec)
 {
 	xassert(cluster_rec);
@@ -400,7 +412,7 @@ static const struct {
 	char *flag_str;
 	char *str;
 } slurmdb_qos_flags_map[] = {
-	T(QOS_FLAG_RELATIVE, "Deleted"),
+	T(QOS_FLAG_DELETED, "Deleted"),
 	T(QOS_FLAG_DENY_LIMIT, "DenyOnLimit"),
 	T(QOS_FLAG_ENFORCE_USAGE_THRES, "EnforceUsageThreshold"),
 	T(QOS_FLAG_PART_MIN_NODE, "PartitionMinNodes"),
@@ -413,23 +425,25 @@ static const struct {
 	T(QOS_FLAG_NO_DECAY, "NoDecay"),
 	T(QOS_FLAG_RELATIVE, "Relative"),
 	T(QOS_FLAG_USAGE_FACTOR_SAFE, "UsageFactorSafe"),
-	T(QOS_FLAG_INVALID, "INVALID"),
 };
 #undef T
 
-static slurmdb_qos_flags_t _str_2_qos_flags(char *flag_in)
+static int _str_2_qos_flags(char *flag_in, slurmdb_qos_flags_t *flags_ptr)
 {
 	if (!flag_in || !flag_in[0])
-		return QOS_FLAG_NONE;
+		return SLURM_SUCCESS;
 
-	for (int i = 0; i < ARRAY_SIZE(slurmdb_qos_flags_map); i++)
+	for (int i = 0; i < ARRAY_SIZE(slurmdb_qos_flags_map); i++) {
 		if (!xstrncasecmp(flag_in, slurmdb_qos_flags_map[i].str,
-				  strlen(flag_in)))
-			return slurmdb_qos_flags_map[i].flag;
+				  strlen(flag_in))) {
+			*flags_ptr |= slurmdb_qos_flags_map[i].flag;
+			return SLURM_SUCCESS;
+		}
+	}
 
 	debug("%s: Unable to match %s to a slurmdbd_qos_flags_t flag",
 	      __func__, flag_in);
-	return QOS_FLAG_INVALID;
+	return EINVAL;
 }
 
 static uint32_t _str_2_res_flags(char *flags)
@@ -475,8 +489,8 @@ static will_run_response_msg_t *_job_will_run(job_desc_msg_t *req)
 			char buf[256];
 			slurm_make_time_str(&will_run_resp->start_time, buf,
 					    sizeof(buf));
-			debug("Job %u to start at %s on cluster %s using %u processors on nodes %s in partition %s",
-			      will_run_resp->job_id, buf,
+			debug("%pI to start at %s on cluster %s using %u processors on nodes %s in partition %s",
+			      &will_run_resp->step_id, buf,
 			      working_cluster_rec->name,
 			      will_run_resp->proc_cnt, will_run_resp->node_list,
 			      will_run_resp->part_name);
@@ -1819,46 +1833,44 @@ static const struct {
 	T(SLURMDB_ACCT_FLAG_WCOORD, "WithCoordinators"),
 	T(SLURMDB_ACCT_FLAG_USER_COORD_NO, "NoUsersAreCoords"),
 	T(SLURMDB_ACCT_FLAG_USER_COORD, "UsersAreCoords"),
-	T(SLURMDB_ACCT_FLAG_INVALID, "INVALID"),
 };
 #undef T
 
-static slurmdb_acct_flags_t _str_2_acct_flag(char *flag_in)
+static int _str_2_acct_flag(const char *flag_in,
+			    slurmdb_acct_flags_t *flags_ptr)
 {
 	if (!flag_in || !flag_in[0])
-		return SLURMDB_ACCT_FLAG_NONE;
+		return SLURM_SUCCESS;
 
-	for (int i = 0; i < ARRAY_SIZE(slurmdb_acct_flags_map); i++)
+	for (int i = 0; i < ARRAY_SIZE(slurmdb_acct_flags_map); i++) {
 		if (!xstrncasecmp(flag_in, slurmdb_acct_flags_map[i].str,
-				  strlen(flag_in)))
-			return slurmdb_acct_flags_map[i].flag;
+				  strlen(flag_in))) {
+			*flags_ptr |= slurmdb_acct_flags_map[i].flag;
+			return SLURM_SUCCESS;
+		}
+	}
 
 	debug("%s: Unable to match %s to a slurmdbd_acct_flags_t flag",
 	      __func__, flag_in);
-	return SLURMDB_ACCT_FLAG_INVALID;
+	return EINVAL;
 }
 
-extern slurmdb_acct_flags_t str_2_slurmdb_acct_flags(char *flags_in)
+extern int str_2_slurmdb_acct_flags(const char *str,
+				    slurmdb_acct_flags_t *flags_ptr)
 {
-	slurmdb_acct_flags_t acct_flags = 0;
 	char *token, *my_flags, *last = NULL;
+	int rc = SLURM_SUCCESS;
 
-	my_flags = xstrdup(flags_in);
+	/* Always reset flags */
+	*flags_ptr = SLURMDB_ACCT_FLAG_NONE;
+
+	my_flags = xstrdup(str);
 	token = strtok_r(my_flags, ",", &last);
-	while (token) {
-		slurmdb_acct_flags_t f = _str_2_acct_flag(token);
-
-		if (f == SLURMDB_ACCT_FLAG_INVALID) {
-			acct_flags = SLURMDB_ACCT_FLAG_INVALID;
-			break;
-		}
-
-		acct_flags |= f;
+	while (token && !(rc = _str_2_acct_flag(token, flags_ptr)))
 		token = strtok_r(NULL, ",", &last);
-	}
-	xfree(my_flags);
 
-	return acct_flags;
+	xfree(my_flags);
+	return rc;
 }
 
 extern char *slurmdb_acct_flags_2_str(slurmdb_acct_flags_t flags)
@@ -1890,45 +1902,44 @@ static const struct {
 	T(ASSOC_FLAG_EXACT, "Exact"),
 	T(ASSOC_FLAG_USER_COORD_NO, "NoUsersAreCoords"),
 	T(ASSOC_FLAG_USER_COORD, "UsersAreCoords"),
-	T(ASSOC_FLAG_INVALID, "INVALID"),
 };
 #undef T
 
-static slurmdb_assoc_flags_t _str_2_assoc_flag(char *flag_in)
+static int _str_2_assoc_flag(const char *flag_in,
+			     slurmdb_assoc_flags_t *flags_ptr)
 {
 	if (!flag_in || !flag_in[0])
-		return ASSOC_FLAG_NONE;
+		return SLURM_SUCCESS;
 
-	for (int i = 0; i < ARRAY_SIZE(slurmdb_assoc_flags_map); i++)
+	for (int i = 0; i < ARRAY_SIZE(slurmdb_assoc_flags_map); i++) {
 		if (!xstrncasecmp(flag_in, slurmdb_assoc_flags_map[i].str,
-				  strlen(flag_in)))
+				  strlen(flag_in))) {
+			*flags_ptr |= slurmdb_assoc_flags_map[i].flag;
 			return slurmdb_assoc_flags_map[i].flag;
+		}
+	}
 
 	debug("%s: Unable to match %s to a slurmdbd_assoc_flags_t flag",
 	      __func__, flag_in);
-	return ASSOC_FLAG_INVALID;
+	return EINVAL;
 }
 
-extern slurmdb_assoc_flags_t str_2_slurmdb_assoc_flags(char *flags_in)
+extern int str_2_slurmdb_assoc_flags(const char *str,
+				     slurmdb_assoc_flags_t *flags_ptr)
 {
-	slurmdb_assoc_flags_t assoc_flags = 0;
 	char *token, *my_flags, *last = NULL;
+	int rc = SLURM_SUCCESS;
 
-	my_flags = xstrdup(flags_in);
+	/* Always reset flags */
+	*flags_ptr = ASSOC_FLAG_NONE;
+
+	my_flags = xstrdup(str);
 	token = strtok_r(my_flags, ",", &last);
-	while (token) {
-		slurmdb_assoc_flags_t f = _str_2_assoc_flag(token);
-
-		if (f == ASSOC_FLAG_INVALID) {
-			assoc_flags = ASSOC_FLAG_INVALID;
-			break;
-		}
-		assoc_flags |= f;
+	while (token && !(rc = _str_2_assoc_flag(token, flags_ptr)))
 		token = strtok_r(NULL, ",", &last);
-	}
-	xfree(my_flags);
 
-	return assoc_flags;
+	xfree(my_flags);
+	return rc;
 }
 
 extern char *slurmdb_assoc_flags_2_str(slurmdb_assoc_flags_t flags)
@@ -2109,6 +2120,7 @@ extern slurmdb_qos_flags_t str_2_qos_flags(char *flags, int option)
 {
 	slurmdb_qos_flags_t qos_flags = 0;
 	char *token, *my_flags, *last = NULL;
+	int rc = SLURM_SUCCESS;
 
 	if (!flags) {
 		error("We need a qos flags string to translate");
@@ -2123,13 +2135,11 @@ extern slurmdb_qos_flags_t str_2_qos_flags(char *flags, int option)
 
 	my_flags = xstrdup(flags);
 	token = strtok_r(my_flags, ",", &last);
-	while (token) {
-		qos_flags |= _str_2_qos_flags(token);
+	while (token && !(rc = _str_2_qos_flags(token, &qos_flags)))
 		token = strtok_r(NULL, ",", &last);
-	}
 	xfree(my_flags);
 
-	if (!qos_flags)
+	if (rc || !qos_flags)
 		qos_flags = QOS_FLAG_NOTSET;
 	else if (option == '+')
 		qos_flags |= QOS_FLAG_ADD;
@@ -3123,12 +3133,14 @@ extern int slurmdb_send_accounting_update_persist(list_t *update_list,
 
 	xassert(persist_conn);
 
-	if (!persist_conn->tls_conn) {
+	if (!persist_conn->conn) {
 		if (slurm_persist_conn_open(persist_conn) !=
 		    SLURM_SUCCESS) {
 			error("slurmdb_send_accounting_update_persist: Unable to open connection to registered cluster %s.",
 			      persist_conn->cluster_name);
-			persist_conn->tls_conn = NULL;
+			persist_conn->conn = NULL;
+			rc = SLURM_ERROR;
+			goto end;
 		}
 	}
 
@@ -3136,12 +3148,13 @@ extern int slurmdb_send_accounting_update_persist(list_t *update_list,
 	msg.rpc_version = req.protocol_version = persist_conn->version;
 	slurm_msg_t_init(&req);
 	req.msg_type = ACCOUNTING_UPDATE_MSG;
-	req.conn = persist_conn;
+	req.pcon = persist_conn;
 	req.data = &msg;
 
 	/* resp is inited in slurm_send_recv_msg */
-	rc = slurm_send_recv_msg(persist_conn->tls_conn, &req, &resp, 0);
+	rc = slurm_send_recv_msg(persist_conn->conn, &req, &resp, 0);
 
+end:
 	if (rc != SLURM_SUCCESS) {
 		error("update cluster: %s at %s(%hu): %m",
 		      persist_conn->cluster_name,
@@ -3357,10 +3370,10 @@ static will_run_response_msg_t *_het_job_will_run(list_t *job_req_list)
 		}
 		if (!ret_resp) {
 			ret_resp = tmp_resp;
-			ret_resp = NULL;
+			tmp_resp = NULL;
 		} else if (ret_resp->start_time < tmp_resp->start_time)
 			ret_resp->start_time = tmp_resp->start_time;
-		xfree(ret_resp);
+		slurm_free_will_run_response_msg(tmp_resp);
 	}
 	list_iterator_destroy(iter);
 
@@ -3725,6 +3738,7 @@ extern char *slurmdb_make_tres_string(list_t *tres, uint32_t flags)
 	char *tres_str = NULL;
 	list_itr_t *itr;
 	slurmdb_tres_rec_t *tres_rec;
+	bool allow_amend = flags & TRES_STR_FLAG_ALLOW_AMEND;
 
 	if (!tres)
 		return tres_str;
@@ -3736,19 +3750,23 @@ extern char *slurmdb_make_tres_string(list_t *tres, uint32_t flags)
 			continue;
 
 		if ((flags & TRES_STR_FLAG_SIMPLE) || !tres_rec->type)
-			xstrfmtcat(tres_str, "%s%u=%"PRIu64,
+			xstrfmtcat(tres_str, "%s%u=",
 				   (tres_str ||
 				    (flags & TRES_STR_FLAG_COMMA1)) ? "," : "",
-				   tres_rec->id, tres_rec->count);
+				   tres_rec->id);
 
 		else
-			xstrfmtcat(tres_str, "%s%s%s%s=%"PRIu64,
+			xstrfmtcat(tres_str, "%s%s%s%s=",
 				   (tres_str ||
 				    (flags & TRES_STR_FLAG_COMMA1)) ? "," : "",
 				   tres_rec->type,
 				   tres_rec->name ? "/" : "",
-				   tres_rec->name ? tres_rec->name : "",
-				   tres_rec->count);
+				   tres_rec->name ? tres_rec->name : "");
+
+		if (allow_amend && tres_rec->modifier)
+			xstrcatchar(tres_str, tres_rec->modifier);
+
+		xstrfmtcat(tres_str, "%"PRIu64, tres_rec->count);
 	}
 	list_iterator_destroy(itr);
 
@@ -3784,9 +3802,11 @@ extern char *slurmdb_make_tres_string_from_simple(
 	char *tres_str = NULL;
 	char *tmp_str = tres_in;
 	int id;
+	bool allow_amend = tres_str_flags & TRES_STR_FLAG_ALLOW_AMEND;
 	uint64_t count;
 	slurmdb_tres_rec_t *tres_rec;
 	char *node_name = NULL;
+	char sign;
 	list_t *char_list = NULL;
 
 	if (!full_tres_list || !tmp_str || !tmp_str[0]
@@ -3813,7 +3833,14 @@ extern char *slurmdb_make_tres_string_from_simple(
 			      "no value found");
 			break;
 		}
-		count = slurm_atoull(++tmp_str);
+
+		sign = *(++tmp_str);
+
+		if ((sign != '+') && (sign != '-'))
+			sign = '\0';
+		else
+			tmp_str++;
+		count = slurm_atoull(tmp_str);
 
 		if (count == NO_VAL64)
 			goto get_next;
@@ -3828,6 +3855,10 @@ extern char *slurmdb_make_tres_string_from_simple(
 				   tres_rec->type,
 				   tres_rec->name ? "/" : "",
 				   tres_rec->name ? tres_rec->name : "");
+
+		if (allow_amend && sign)
+			xstrcatchar(tres_str, sign);
+
 		if (count != INFINITE64) {
 			if (nodes) {
 				node_name = find_hostname(count, nodes);
@@ -3891,6 +3922,7 @@ extern char *slurmdb_format_tres_str(
 	char *tres_str = NULL;
 	char *val_unit = NULL;
 	char *tmp_str = tres_in;
+	char *sign;
 	uint64_t count;
 	slurmdb_tres_rec_t *tres_rec;
 
@@ -3921,7 +3953,9 @@ extern char *slurmdb_format_tres_str(
 			char *tres_name;
 
 			while (tmp_str[end]) {
-				if (tmp_str[end] == '=')
+				if ((tmp_str[end] == '=') ||
+				    (tmp_str[end] == '+') ||
+				    (tmp_str[end] == '-'))
 					break;
 				end++;
 			}
@@ -3947,6 +3981,11 @@ extern char *slurmdb_format_tres_str(
 			error("%s: no value given as TRES type/id.", __func__);
 			return NULL;
 		}
+
+		sign = tmp_str - 1;
+		if ((*sign != '+') && (*sign != '-'))
+			sign = "";
+
 		count = strtoull(++tmp_str, &val_unit, 10);
 		if (val_unit && *val_unit != ',' && *val_unit != '\0' &&
 		    tres_rec->type) {
@@ -3961,14 +4000,14 @@ extern char *slurmdb_format_tres_str(
 		if (tres_str)
 			xstrcat(tres_str, ",");
 		if (simple || !tres_rec->type)
-			xstrfmtcat(tres_str, "%u=%"PRIu64"",
-				   tres_rec->id, count);
+			xstrfmtcat(tres_str, "%u=%.1s%"PRIu64"",
+				   tres_rec->id, sign, count);
 
 		else
-			xstrfmtcat(tres_str, "%s%s%s=%"PRIu64"",
+			xstrfmtcat(tres_str, "%s%s%s=%.1s%"PRIu64"",
 				   tres_rec->type,
 				   tres_rec->name ? "/" : "",
-				   tres_rec->name ? tres_rec->name : "",
+				   tres_rec->name ? tres_rec->name : "", sign,
 				   count);
 		if (!(tmp_str = strchr(tmp_str, ',')))
 			break;
@@ -4018,12 +4057,14 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 					  uint32_t flags, list_t *sub_tres_list)
 {
 	const char *tmp_str = tres;
+	char sign;
 	int id;
 	uint64_t count;
 	slurmdb_tres_rec_t *tres_rec;
 	int remove_found = 0;
 	list_t *mgr_tres_list =
 		sub_tres_list ? sub_tres_list : assoc_mgr_tres_list;
+	bool allow_amend = flags & TRES_STR_FLAG_ALLOW_AMEND;
 	xassert(tres_list);
 
 	if (!tres || !tres[0])
@@ -4083,7 +4124,15 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 			      "no value found %s", tres);
 			break;
 		}
-		count = slurm_atoull(++tmp_str);
+
+		sign = *(++tmp_str);
+
+		if ((sign != '+') && (sign != '-'))
+			sign = '\0';
+		else
+			tmp_str++;
+
+		count = slurm_atoull(tmp_str);
 
 		if (!*tres_list)
 			*tres_list = list_create(slurmdb_destroy_tres_rec);
@@ -4093,6 +4142,8 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 			tres_rec = xmalloc(sizeof(slurmdb_tres_rec_t));
 			tres_rec->id = id;
 			tres_rec->count = count;
+			if (allow_amend && sign)
+				tres_rec->modifier = sign;
 			list_append(*tres_list, tres_rec);
 			if (count == INFINITE64)
 				remove_found++;
@@ -4101,6 +4152,10 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 			       "replacing with %"PRIu64,
 			      tres_rec->id, tres_rec->count, count);
 			tres_rec->count = count;
+			if (allow_amend && sign)
+				tres_rec->modifier = sign;
+			else
+				tres_rec->modifier = '\0';
 		} else if (flags & TRES_STR_FLAG_SUM) {
 			if (count != INFINITE64) {
 				if (tres_rec->count == INFINITE64)
@@ -4124,6 +4179,30 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 					tres_rec->count =
 						MIN(tres_rec->count, count);
 			}
+		} else if (allow_amend && (flags & TRES_STR_FLAG_COMB_AMEND) &&
+			   tres_rec->modifier) {
+			/*
+			 * We will calculate the resulting value for tres_rec
+			 * but we will avoid negative values and overflows.
+			 * This operation REQUIRES that only up to two TRES of
+			 * the same type can appear in the same string. This
+			 * operation is only called from mod_tres_str(), which
+			 * ensures amending TRES (if present) will appear in
+			 * the string before the currently stored absolute
+			 * values.
+			 */
+
+			if (tres_rec->modifier == '+') {
+				tres_rec->count += count;
+				if ((tres_rec->count < count) ||
+				    (tres_rec->count > MAX_VAL64))
+					tres_rec->count = MAX_VAL64;
+			} else {
+				tres_rec->count = count - tres_rec->count;
+				if (tres_rec->count > count)
+					tres_rec->count = 0;
+			}
+			tres_rec->modifier = '\0';
 		}
 
 		if (!(tmp_str = strchr(tmp_str, ',')))
@@ -4145,6 +4224,13 @@ extern void slurmdb_tres_list_from_string(list_t **tres_list, const char *tres,
 			      "was expecting to remove %d, but removed %d",
 			      remove_found, removed);
 	}
+
+	/*
+	 * If we are combining relative values, the resulting TRES list
+	 * needs to be cleaned up and only hold absolute values
+	 */
+	if (*tres_list && (flags & TRES_STR_FLAG_COMB_AMEND))
+		list_for_each(*tres_list, _unset_amending_tres, NULL);
 
 	if (*tres_list && (flags & TRES_STR_FLAG_SORT_ID))
 		list_sort(*tres_list, (ListCmpF)slurmdb_sort_tres_by_id_asc);

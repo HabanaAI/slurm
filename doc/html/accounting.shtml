@@ -128,7 +128,7 @@ will utilize an internal cache until SlurmDBD is returned to service.
 The cached data is written by <i>slurmctld</i> to local storage upon shutdown
 and recovered at startup.
 If SlurmDBD is not available when <i>slurmctld</i> starts, a cache of
-valid bank accounts, user limits, etc. based upon their state when the
+valid accounts, user limits, etc. based upon their state when the
 daemons were last communicating will be used.
 Note that SlurmDBD must be responding when <i>slurmctld</i> is first started
 since no cache of this critical data will be available.
@@ -370,6 +370,23 @@ where <i>db_name</i> is the name of your Slurm database (StorageLoc) set in
 your slurmdbd.conf:</p>
 <pre>
 mysql> SHOW TABLE STATUS IN db_name;
+</pre>
+
+<p>Slurm assumes that the default collation for the database and table columns
+is a case-insensitive one (also the default for MySQL databases). Using or
+changing the collation to a case-sensitive one is not supported and will
+cause slurmdbd to log an error message at start up if these are found.</p>
+
+<p>You can check the default collation for the database this way (a <i>_ci</i>
+suffix indicates a case-insensitive collation):</p>
+<pre>
+mysql> SELECT default_collation_name FROM information_schema.schemata WHERE schema_name='db_name';
+</pre>
+
+<p>You can identify the database tables and columns that do not have a
+case-insensitive collation this way:</p>
+<pre>
+mysql> SELECT table_name,column_name,collation_name FROM information_schema.columns WHERE table_schema='db_name' AND collation_name NOT LIKE '%_ci';
 </pre>
 
 <h2 id="slurm-accounting-configuration-after-build">
@@ -861,7 +878,7 @@ The account is added to all defined clusters by default.</li>
   account name)</li>
 
 <li><b>Name=</b> Name of account. Note the name must be unique and can not
-represent different bank accounts at different points in the account
+represent different accounts at different points in the account
 hierarchy</li>
 
 <li><b>Organization=</b>Organization of the account. (Default is
@@ -1035,7 +1052,5 @@ Profiling works similarly, and we provide
 <a href="slurm.conf.html#OPT_AcctGatherProfileType">plugins</a> like HDF5
 and InfluxDB that can help to visualize accounting data in other ways.
 </p>
-
-<p style="text-align:center;">Last modified 11 June 2025</p>
 
 <!--#include virtual="footer.txt"-->

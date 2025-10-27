@@ -748,6 +748,35 @@ static slurm_cli_opt_t slurm_opt_bb = {
 	.reset_each_pass = true,
 };
 
+static int arg_set_consolidate_segments(slurm_opt_t *opt, const char *arg)
+{
+	opt->job_flags |= CONSOLIDATE_SEGMENTS;
+
+	return SLURM_SUCCESS;
+}
+
+static char *arg_get_consolidate_segments(slurm_opt_t *opt)
+{
+	if (opt->job_flags & CONSOLIDATE_SEGMENTS)
+		return xstrdup("set");
+	return xstrdup("unset");
+}
+
+static void arg_reset_consolidate_segments(slurm_opt_t *opt)
+{
+	opt->job_flags &= ~CONSOLIDATE_SEGMENTS;
+}
+
+static slurm_cli_opt_t slurm_opt_consolidate_segments = {
+	.name = "consolidate-segments",
+	.has_arg = no_argument,
+	.val = LONG_OPT_CONSOLIDATE_SEGMENTS,
+	.set_func = arg_set_consolidate_segments,
+	.get_func = arg_get_consolidate_segments,
+	.reset_func = arg_reset_consolidate_segments,
+	.reset_each_pass = true,
+};
+
 COMMON_STRING_OPTION(c_constraint);
 static slurm_cli_opt_t slurm_opt_c_constraint = {
 	.name = "cluster-constraint",
@@ -2307,11 +2336,6 @@ static void arg_reset_mem_bind(slurm_opt_t *opt)
 {
 	xfree(opt->mem_bind);
 	opt->mem_bind_type = 0;
-
-	if (opt->srun_opt) {
-		if (xstrstr(slurm_conf.launch_params, "mem_sort"))
-			opt->mem_bind_type |= MEM_BIND_SORT;
-	}
 }
 static slurm_cli_opt_t slurm_opt_mem_bind = {
 	.name = "mem-bind",
@@ -2525,6 +2549,8 @@ static char *arg_get_requeue(slurm_opt_t *opt)
 		return xstrdup("unset");
 	else if (opt->sbatch_opt->requeue == 0)
 		return xstrdup("no-requeue");
+	else if (opt->job_flags & EXPEDITED_REQUEUE)
+		return xstrdup("expedite");
 	return xstrdup("requeue");
 }
 static void arg_reset_requeue(slurm_opt_t *opt)
@@ -3186,12 +3212,15 @@ static int arg_set_requeue(slurm_opt_t *opt, const char *arg)
 
 	opt->sbatch_opt->requeue = 1;
 
+	if (!xstrcasecmp(arg, "expedite"))
+		opt->job_flags |= EXPEDITED_REQUEUE;
+
 	return SLURM_SUCCESS;
 }
 /* arg_get_requeue and arg_reset_requeue defined before with --no-requeue */
 static slurm_cli_opt_t slurm_opt_requeue = {
 	.name = "requeue",
-	.has_arg = no_argument,
+	.has_arg = optional_argument,
 	.val = LONG_OPT_REQUEUE,
 	.set_func_sbatch = arg_set_requeue,
 	.get_func = arg_get_requeue,
@@ -3206,6 +3235,17 @@ static slurm_cli_opt_t slurm_opt_reservation = {
 	.set_func = arg_set_reservation,
 	.get_func = arg_get_reservation,
 	.reset_func = arg_reset_reservation,
+};
+
+COMMON_STRING_OPTION(resources);
+static slurm_cli_opt_t slurm_opt_resources = {
+	.name = "resources",
+	.has_arg = required_argument,
+	.val = LONG_OPT_RESOURCES,
+	.set_func = arg_set_resources,
+	.get_func = arg_get_resources,
+	.reset_func = arg_reset_resources,
+	.reset_each_pass = true,
 };
 
 static int arg_set_resv_port_cnt(slurm_opt_t *opt, const char *arg)
@@ -3416,6 +3456,35 @@ static slurm_cli_opt_t slurm_opt_spread_job = {
 	.set_func = arg_set_spread_job,
 	.get_func = arg_get_spread_job,
 	.reset_func = arg_reset_spread_job,
+	.reset_each_pass = true,
+};
+
+static int arg_set_spread_segments(slurm_opt_t *opt, const char *arg)
+{
+	opt->job_flags |= SPREAD_SEGMENTS;
+
+	return SLURM_SUCCESS;
+}
+
+static char *arg_get_spread_segments(slurm_opt_t *opt)
+{
+	if (opt->job_flags & SPREAD_SEGMENTS)
+		return xstrdup("set");
+	return xstrdup("unset");
+}
+
+static void arg_reset_spread_segments(slurm_opt_t *opt)
+{
+	opt->job_flags &= ~SPREAD_SEGMENTS;
+}
+
+static slurm_cli_opt_t slurm_opt_spread_segments = {
+	.name = "spread-segments",
+	.has_arg = no_argument,
+	.val = LONG_OPT_SPREAD_SEGMENTS,
+	.set_func = arg_set_spread_segments,
+	.get_func = arg_get_spread_segments,
+	.reset_func = arg_reset_spread_segments,
 	.reset_each_pass = true,
 };
 
@@ -4153,6 +4222,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_clusters,
 	&slurm_opt_comment,
 	&slurm_opt_compress,
+	&slurm_opt_consolidate_segments,
 	&slurm_opt_container,
 	&slurm_opt_container_id,
 	&slurm_opt_context,
@@ -4258,6 +4328,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_reboot,
 	&slurm_opt_relative,
 	&slurm_opt_requeue,
+	&slurm_opt_resources,
 	&slurm_opt_reservation,
 	&slurm_opt_resv_ports,
 	&slurm_opt_segment_size,
@@ -4266,6 +4337,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_slurmd_debug,
 	&slurm_opt_sockets_per_node,
 	&slurm_opt_spread_job,
+	&slurm_opt_spread_segments,
 	&slurm_opt_stepmgr,
 	&slurm_opt_switch_req,
 	&slurm_opt_switch_wait,
@@ -4281,7 +4353,7 @@ static const slurm_cli_opt_t *common_options[] = {
 	&slurm_opt_tmp,
 	&slurm_opt_tree_width,
 	&slurm_opt_tres_bind,
- 	&slurm_opt_tres_per_task,
+	&slurm_opt_tres_per_task,
 	&slurm_opt_uid,
 	&slurm_opt_unbuffered,
 	&slurm_opt_use_min_nodes,
@@ -4841,17 +4913,21 @@ extern int validate_hint_option(slurm_opt_t *opt)
 
 	if (slurm_option_set_by_cli(opt, LONG_OPT_HINT) &&
 	    ((slurm_option_set_by_cli(opt, LONG_OPT_NTASKSPERCORE) ||
+	      slurm_option_set_by_cli(opt, LONG_OPT_CORESPERSOCKET) ||
+	      slurm_option_set_by_cli(opt, LONG_OPT_SOCKETSPERNODE) ||
 	      slurm_option_set_by_cli(opt, LONG_OPT_THREADSPERCORE) ||
 	      slurm_option_set_by_cli(opt, 'B') ||
 	      (slurm_option_set_by_cli(opt, LONG_OPT_CPU_BIND) &&
 	       (cpu_bind_type & ~CPU_BIND_VERBOSE))))) {
 		if (opt->verbose)
-			info("Following options are mutually exclusive with --hint: --ntasks-per-core, --threads-per-core, -B and --cpu-bind (other than --cpu-bind=verbose). Ignoring --hint.");
+			info("Following options are mutually exclusive with --hint: --ntasks-per-core, --cores-per-socket, --threads-per-core, --sockets-per-node, -B and --cpu-bind (other than --cpu-bind=verbose). Ignoring --hint.");
 		slurm_option_reset(opt, "hint");
 		return SLURM_ERROR;
 	} else if (slurm_option_set_by_cli(opt, LONG_OPT_HINT)) {
 		slurm_option_reset(opt, "ntasks-per-core");
 		slurm_option_reset(opt, "threads-per-core");
+		slurm_option_reset(opt, "cores-per-socket");
+		slurm_option_reset(opt, "sockets-per-node");
 		slurm_option_reset(opt, "extra-node-info");
 		if (cpu_bind_type & ~CPU_BIND_VERBOSE) {
 			bool has_verbose;
@@ -4866,6 +4942,8 @@ extern int validate_hint_option(slurm_opt_t *opt)
 			}
 		}
 	} else if (slurm_option_set_by_cli(opt, LONG_OPT_NTASKSPERCORE) ||
+		   slurm_option_set_by_cli(opt, LONG_OPT_CORESPERSOCKET) ||
+		   slurm_option_set_by_cli(opt, LONG_OPT_SOCKETSPERNODE) ||
 		   slurm_option_set_by_cli(opt, LONG_OPT_THREADSPERCORE) ||
 		   slurm_option_set_by_cli(opt, 'B') ||
 		   (slurm_option_set_by_cli(opt, LONG_OPT_CPU_BIND) &&
@@ -4874,12 +4952,14 @@ extern int validate_hint_option(slurm_opt_t *opt)
 		return SLURM_ERROR;
 	} else if (slurm_option_set_by_env(opt, LONG_OPT_HINT) &&
 		   (slurm_option_set_by_env(opt, LONG_OPT_NTASKSPERCORE) ||
+		    slurm_option_set_by_cli(opt, LONG_OPT_CORESPERSOCKET) ||
+		    slurm_option_set_by_cli(opt, LONG_OPT_SOCKETSPERNODE) ||
 		    slurm_option_set_by_env(opt, LONG_OPT_THREADSPERCORE) ||
 		    slurm_option_set_by_env(opt, 'B') ||
 		    (slurm_option_set_by_env(opt, LONG_OPT_CPU_BIND) &&
 		     (cpu_bind_type & ~CPU_BIND_VERBOSE)))) {
 		if (opt->verbose)
-			info("Following options are mutually exclusive with --hint: --ntasks-per-core, --threads-per-core, -B and --cpu-bind, but more than one set by environment variables. Ignoring SLURM_HINT.");
+			info("Following options are mutually exclusive with --hint: --ntasks-per-core, --cores-per-socket, --threads-per-core, --sockets-per-node, -B and --cpu-bind, but more than one set by environment variables. Ignoring SLURM_HINT.");
 		slurm_option_reset(opt, "hint");
 		return SLURM_ERROR;
 	}
@@ -5668,6 +5748,12 @@ extern job_desc_msg_t *slurm_opt_create_job_desc(slurm_opt_t *opt_local,
 		job_desc->kill_on_node_fail = 0;
 
 	job_desc->licenses = xstrdup(opt_local->licenses);
+	if (opt_local->resources) {
+		char *sep = job_desc->licenses ? "," : "";
+
+		xstrfmtcat(job_desc->licenses, "%s%s", sep,
+			   opt_local->resources);
+	}
 
 	if (set_defaults || slurm_option_isset(opt_local, "mail_type"))
 		job_desc->mail_type = opt_local->mail_type;

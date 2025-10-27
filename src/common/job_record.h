@@ -35,6 +35,7 @@
 #define _SLURM_JOB_RECORD_H
 
 #include "src/common/cron.h"
+#include "src/common/dynamic_plugin_data.h"
 #include "src/common/extra_constraints.h"
 #include "src/common/part_record.h"
 #include "src/common/slurm_protocol_defs.h"
@@ -46,6 +47,13 @@ typedef struct slurmctld_resv slurmctld_resv_t;
 
 extern time_t last_job_update;	/* time of last update to job records */
 extern list_t *purge_files_list; /* list of job ids to purge files of */
+
+#define STEP_ID_FROM_JOB_RECORD(job_ptr) \
+	(slurm_step_id_t) \
+	{ \
+		.job_id = job_ptr->job_id, .sluid = job_ptr->db_index, \
+		.step_id = NO_VAL, .step_het_comp = NO_VAL, \
+	}
 
 #define DETAILS_MAGIC	0xdea84e7
 #define JOB_MAGIC	0xf0b7392c
@@ -296,6 +304,7 @@ struct job_record {
 					 * state, this is time suspend began */
 	time_t end_time_exp;		/* when we believe the job is
 					   going to end. */
+	uint16_t epilog_failed;		/* true if any Epilog failed */
 	bool epilog_running;		/* true of EpilogSlurmctld is running */
 	uint32_t exit_code;		/* exit code for job (status from
 					 * wait call) */
@@ -328,11 +337,13 @@ struct job_record {
 	uint32_t het_job_offset;	/* HetJob component index */
 	list_t *het_job_list;		/* List of job pointers to all
 					 * components */
+	void *hres_select; /* DON'T PACK. */
 	uint32_t job_id;		/* job ID */
 	identity_t *id;			/* job identity */
 	job_record_t *job_next;		/* next entry with same hash index */
 	job_record_t *job_array_next_j;	/* job array linked list by job_id */
 	job_record_t *job_array_next_t;	/* job array linked list by task_id */
+	job_record_t *job_next_sluid; /* next entry with same sluid hash */
 	job_record_t *job_preempt_comp; /* het job preempt component */
 	job_resources_t *job_resrcs;	/* details of allocated cores */
 	uint32_t job_state;		/* state of the job */
@@ -466,6 +477,10 @@ struct job_record {
 	uint32_t time_min;		/* minimum time_limit minutes or
 					 * INFINITE,
 					 * zero implies same as time_limit */
+	dynamic_plugin_data_t *topo_jobinfo; /* topology plugin job info
+					      * available after eval_nodes is
+					      * successfully run on this job.
+					      */
 	time_t tot_sus_time;		/* total time in suspend state */
 	uint32_t total_cpus;		/* number of allocated cpus,
 					 * for accounting */
@@ -539,6 +554,7 @@ typedef struct depend_spec {
 	uint32_t        depend_time;    /* time to wait (mins) */
 	uint32_t	job_id;		/* Slurm job_id */
 	job_record_t   *job_ptr;	/* pointer to this job */
+	uint32_t parsed_array_task_id; /* Unmodified array task id */
 	uint64_t 	singleton_bits; /* which clusters have satisfied the
 					   singleton dependency */
 } depend_spec_t;
@@ -705,7 +721,8 @@ extern int dump_job_step_state(void *x, void *arg);
 extern int load_step_state(job_record_t *job_ptr, buf_t *buffer,
 			   uint16_t protocol_version);
 
-extern int job_record_calc_arbitrary_tpn(job_record_t *job_ptr);
+extern int job_record_calc_arbitrary_tpn(job_record_t *job_ptr,
+					 uint16_t protocol_version);
 
 extern void job_record_pack_details_common(
 	job_details_t *detail_ptr, buf_t *buffer, uint16_t protocol_version);
@@ -775,5 +792,10 @@ extern void update_job_limit_set_tres(uint16_t **tres_limits, int tres_cnt);
  * Set a new sluid on the job_ptr
  */
 extern void job_record_set_sluid(job_record_t *job_ptr);
+
+/*
+ * Allocate and initialize multicore data block
+ */
+extern multi_core_data_t *job_record_create_mc(void);
 
 #endif /* _SLURM_JOB_RECORD_H */

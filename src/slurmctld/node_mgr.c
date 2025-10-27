@@ -146,7 +146,7 @@ static char *_get_msg_hostname(slurm_msg_t *msg)
 	char *name = NULL;
 
 	if (addr->ss_family == AF_UNSPEC) {
-		int fd = conn_g_get_fd(msg->tls_conn);
+		int fd = conn_g_get_fd(msg->conn);
 		(void) slurm_get_peer_addr(fd, addr);
 	}
 	if (addr->ss_family != AF_UNSPEC) {
@@ -493,6 +493,19 @@ extern int load_all_node_state ( bool state_only )
 				node_ptr->node_state =
 					node_state | NODE_STATE_CLOUD;
 
+				/* Preserve dynamic topology for cloud nodes */
+				if (node_state_rec->topology_str) {
+					xfree(node_ptr->topology_str);
+					node_ptr->topology_str =
+						node_state_rec->topology_str;
+					node_state_rec->topology_str = NULL;
+
+					xfree(node_ptr->topology_orig_str);
+					node_ptr->topology_orig_str =
+						node_state_rec->topology_orig_str;
+					node_state_rec->topology_orig_str = NULL;
+				}
+
 			} else if (IS_NODE_UNKNOWN(node_ptr)) {
 				if (base_state == NODE_STATE_DOWN) {
 					orig_flags = node_ptr->node_state &
@@ -660,6 +673,9 @@ extern int load_all_node_state ( bool state_only )
 			xfree(node_ptr->instance_type);
 			node_ptr->instance_type = node_state_rec->instance_type;
 			node_state_rec->instance_type = NULL;
+			xfree(node_ptr->parameters);
+			node_ptr->parameters = node_state_rec->parameters;
+			node_state_rec->parameters = NULL;
 			xfree(node_ptr->reason);
 			node_ptr->reason = node_state_rec->reason;
 			node_state_rec->reason = NULL;
@@ -698,6 +714,10 @@ extern int load_all_node_state ( bool state_only )
 			xfree(node_ptr->topology_str);
 			node_ptr->topology_str = node_state_rec->topology_str;
 			node_state_rec->topology_str = NULL;
+			xfree(node_ptr->topology_orig_str);
+			node_ptr->topology_orig_str =
+				node_state_rec->topology_orig_str;
+			node_state_rec->topology_orig_str = NULL;
 		}
 
 		if (node_ptr) {
@@ -1137,7 +1157,93 @@ static void _pack_node(node_record_t *dump_node_ptr, buf_t *buffer,
 
 	xassert(verify_lock(CONF_LOCK, READ_LOCK));
 
-	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		packstr(dump_node_ptr->name, buffer);
+		packstr(dump_node_ptr->node_hostname, buffer);
+		packstr(dump_node_ptr->comm_name, buffer);
+		packstr(dump_node_ptr->bcast_address, buffer);
+
+		/* turns into cert_flags field on remote */
+		if (dump_node_ptr->cert_token) {
+			pack16(NODE_CERT_TOKEN_SET, buffer);
+		} else {
+			pack16(0, buffer);
+		}
+
+		pack16(dump_node_ptr->port, buffer);
+		pack32(dump_node_ptr->next_state, buffer);
+		pack32(dump_node_ptr->node_state, buffer);
+		packstr(dump_node_ptr->version, buffer);
+
+		/* Only data from config_record used for scheduling */
+		pack16(dump_node_ptr->config_ptr->cpus, buffer);
+		pack16(dump_node_ptr->config_ptr->boards, buffer);
+		pack16(dump_node_ptr->config_ptr->tot_sockets, buffer);
+		pack16(dump_node_ptr->config_ptr->cores, buffer);
+		pack16(dump_node_ptr->config_ptr->threads, buffer);
+		pack64(dump_node_ptr->config_ptr->real_memory, buffer);
+		pack32(dump_node_ptr->config_ptr->tmp_disk, buffer);
+
+		packstr(dump_node_ptr->gpu_spec, buffer);
+		packstr(dump_node_ptr->mcs_label, buffer);
+		pack32(dump_node_ptr->owner, buffer);
+		pack16(dump_node_ptr->core_spec_cnt, buffer);
+		pack32(dump_node_ptr->cpu_bind, buffer);
+		pack64(dump_node_ptr->mem_spec_limit, buffer);
+		packstr(dump_node_ptr->cpu_spec_list, buffer);
+		pack16(dump_node_ptr->cpus_efctv, buffer);
+
+		pack32(dump_node_ptr->cpu_load, buffer);
+		pack64(dump_node_ptr->free_mem, buffer);
+		pack32(dump_node_ptr->config_ptr->weight, buffer);
+		pack16(dump_node_ptr->res_cores_per_gpu, buffer);
+		pack32(dump_node_ptr->reason_uid, buffer);
+
+		pack_time(dump_node_ptr->boot_time, buffer);
+		pack_time(dump_node_ptr->last_busy, buffer);
+		pack_time(dump_node_ptr->reason_time, buffer);
+		pack_time(dump_node_ptr->resume_after, buffer);
+		pack_time(dump_node_ptr->slurmd_start_time, buffer);
+		pack_time(dump_node_ptr->cert_last_renewal, buffer);
+
+		pack16(dump_node_ptr->alloc_cpus, buffer);
+		pack64(dump_node_ptr->alloc_memory, buffer);
+		packstr(dump_node_ptr->alloc_tres_fmt_str, buffer);
+
+		packstr(dump_node_ptr->arch, buffer);
+		packstr(dump_node_ptr->features, buffer);
+		packstr(dump_node_ptr->features_act, buffer);
+		if (dump_node_ptr->gres)
+			packstr(dump_node_ptr->gres, buffer);
+		else
+			packstr(dump_node_ptr->config_ptr->gres, buffer);
+
+		/* Gathering GRES details is slow, so don't by default */
+		if (show_flags & SHOW_DETAIL) {
+			gres_drain =
+				gres_get_node_drain(dump_node_ptr->gres_list);
+			gres_used =
+				gres_get_node_used(dump_node_ptr->gres_list);
+		}
+		packstr(gres_drain, buffer);
+		packstr(gres_used, buffer);
+		xfree(gres_drain);
+		xfree(gres_used);
+
+		packstr(dump_node_ptr->os, buffer);
+		packstr(dump_node_ptr->comment, buffer);
+		packstr(dump_node_ptr->extra, buffer);
+		packstr(dump_node_ptr->instance_id, buffer);
+		packstr(dump_node_ptr->instance_type, buffer);
+		packstr(dump_node_ptr->parameters, buffer);
+		packstr(dump_node_ptr->reason, buffer);
+		acct_gather_energy_pack(dump_node_ptr->energy, buffer,
+					protocol_version);
+
+		packstr(dump_node_ptr->tres_fmt_str, buffer);
+		packstr(dump_node_ptr->resv_name, buffer);
+		packstr(dump_node_ptr->topology_str, buffer);
+	} else if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
 		packstr(dump_node_ptr->name, buffer);
 		packstr(dump_node_ptr->node_hostname, buffer);
 		packstr(dump_node_ptr->comm_name, buffer);
@@ -1599,12 +1705,7 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 
 		if (update_node_msg->features || update_node_msg->features_act) {
 			char *features_act = NULL, *features_avail = NULL;
-			if (!node_features_g_node_update_valid(node_ptr,
-							 update_node_msg)) {
-				error_code = ESLURM_INVALID_FEATURE;
-				xfree(update_node_msg->features);
-				xfree(update_node_msg->features_act);
-			}
+
 			if (update_node_msg->features_act)
 				features_act = update_node_msg->features_act;
 			else
@@ -1742,25 +1843,10 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 		}
 
 		if (update_node_msg->topology_str) {
-			char *topology_str_old = node_ptr->topology_str;
-
-			node_ptr->topology_str = NULL;
-			if (*update_node_msg->topology_str) {
-				node_ptr->topology_str =
-					xstrdup(update_node_msg->topology_str);
-			}
-
-			if (topology_g_add_rm_node(node_ptr)) {
-				info("Invalid node topology specified %s",
-				     node_ptr->topology_str);
-				xfree(node_ptr->topology_str);
-				node_ptr->topology_str = topology_str_old;
-				topology_g_add_rm_node(node_ptr);
-				error_code =
-					ESLURM_REQUESTED_TOPO_CONFIG_UNAVAILABLE;
-			} else {
-				xfree(topology_str_old);
-			}
+			int rc = SLURM_SUCCESS;
+			if ((rc = node_mgr_set_node_topology(
+				     node_ptr, update_node_msg->topology_str)))
+				error_code = rc;
 		}
 
 		state_val = update_node_msg->node_state;
@@ -1815,7 +1901,8 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 				     node_state_string(base_state),
 				     node_state_string(state_val));
 				state_val = NO_VAL;
-				error_code = ESLURM_INVALID_NODE_STATE;
+				error_code =
+					ESLURM_INVALID_NODE_STATE_TRANSITION;
 			}
 			base_state &= NODE_STATE_BASE;
 		}
@@ -1857,6 +1944,7 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 
 					reset_node_active_features(node_ptr);
 					reset_node_instance(node_ptr);
+					reset_node_topology(node_ptr);
 
 					clusteracct_storage_g_node_down(
 						acct_db_conn,
@@ -1979,14 +2067,19 @@ int update_node(update_node_msg_t *update_node_msg, uid_t auth_uid)
 					     __func__, this_node_name);
 					kill_running_job_by_node_ptr(node_ptr);
 				}
-				trigger_node_draining(node_ptr);
+				/* Notify of strigger event */
+				if (state_val == NODE_STATE_DRAIN)
+					trigger_node_draining(node_ptr);
+				else
+					trigger_node_failing(node_ptr);
 				bit_clear (avail_node_bitmap, node_ptr->index);
 				node_ptr->node_state &= (~NODE_STATE_DRAIN);
 				node_ptr->node_state &= (~NODE_STATE_FAIL);
 				state_val = node_ptr->node_state |= state_val;
 				if ((node_ptr->run_job_cnt  == 0) &&
 				    (node_ptr->comp_job_cnt == 0)) {
-					trigger_node_drained(node_ptr);
+					if (state_val & NODE_STATE_DRAIN)
+						trigger_node_drained(node_ptr);
 					clusteracct_storage_g_node_down(
 						acct_db_conn,
 						node_ptr, now, NULL,
@@ -2429,8 +2522,6 @@ extern int update_node_active_features(char *node_names, char *active_features,
 		}
 		node_features_update_list(active_feature_list, active_features,
 					  node_bitmap);
-		(void) node_features_g_node_update(active_features,
-						   node_bitmap);
 	}
 
 	_update_node_features_post(node_names,
@@ -2559,6 +2650,25 @@ extern void reset_node_instance(node_record_t *node_ptr)
 
 	xfree(node_ptr->instance_id);
 	xfree(node_ptr->instance_type);
+}
+
+extern void reset_node_topology(node_record_t *node_ptr)
+{
+	xassert(node_ptr);
+
+	char *old_topo = NULL;
+
+	if (node_ptr->config_ptr->topology_str)
+		old_topo = node_ptr->config_ptr->topology_str;
+	else
+		old_topo = node_ptr->topology_orig_str;
+
+	node_mgr_set_node_topology(node_ptr, old_topo ? old_topo : "");
+
+	if (old_topo == node_ptr->topology_orig_str) {
+		xfree(node_ptr->topology_str);
+	}
+	xfree(node_ptr->topology_orig_str);
 }
 
 /*
@@ -2834,6 +2944,7 @@ static bool _valid_node_state_change(uint32_t old, uint32_t new)
 
 		case NODE_STATE_IDLE:
 			if (!(node_flags & NODE_STATE_INVALID_REG) &&
+			    !(node_flags & NODE_STATE_REBOOT_ISSUED) &&
 			    ((base_state == NODE_STATE_DOWN) ||
 			     (base_state == NODE_STATE_IDLE)))
 				return true;
@@ -2900,6 +3011,26 @@ static void _split_node_config(node_record_t *node_ptr,
 	}
 	config_ptr->cores = reg_msg->cores;
 	config_ptr->tot_sockets = reg_msg->sockets;
+}
+
+static void _set_shared_gres_res_cores(gres_node_state_t *gres_ns)
+{
+	gres_node_state_t *alt_gres_ns;
+
+	alt_gres_ns = gres_ns->alt_gres->gres_data;
+	for (int i = 0; i < gres_ns->topo_cnt; i++) {
+		if (!gres_ns->topo_res_core_bitmap[i])
+			continue;
+		for (int j = 0; j < alt_gres_ns->topo_cnt; j++) {
+			if (!bit_overlap_any(gres_ns->topo_gres_bitmap[i],
+					     alt_gres_ns->topo_gres_bitmap[j]))
+				continue;
+			FREE_NULL_BITMAP(alt_gres_ns->topo_res_core_bitmap[j]);
+			alt_gres_ns->topo_res_core_bitmap[j] =
+				bit_copy(gres_ns->topo_res_core_bitmap[i]);
+			break;
+		}
+	}
 }
 
 static int _set_gpu_spec(node_record_t *node_ptr, char **reason_down)
@@ -2979,6 +3110,9 @@ static int _set_gpu_spec(node_record_t *node_ptr, char **reason_down)
 		}
 	}
 
+	if (gres_ns->alt_gres)
+		_set_shared_gres_res_cores(gres_ns);
+
 	/*
 	 * We want the opposite of the possible cores so
 	 * we can do a simple & on it when selecting.
@@ -3031,13 +3165,14 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 
 	if (sched_update != slurm_conf.last_update) {
 		char *tmp_ptr;
-		if ((tmp_ptr = xstrcasestr(slurm_conf.slurmctld_params,
-					   "node_reg_mem_percent="))) {
+		if ((tmp_ptr = conf_get_opt_str(slurm_conf.slurmctld_params,
+						"node_reg_mem_percent="))) {
 			if (s_p_handle_double(&conf_node_reg_mem_percent,
 					      "node_reg_mem_percent",
-					      tmp_ptr + 21))
+					      tmp_ptr))
 				conf_node_reg_mem_percent = -1;
 			sched_update = slurm_conf.last_update;
+			xfree(tmp_ptr);
 		}
 	}
 
@@ -3138,7 +3273,9 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 		 * We need to make gpu_spec_bitmap now that we know the cores
 		 * used per gres.
 		 */
-		error_code = _set_gpu_spec(node_ptr, &reason_down);
+		if (_set_gpu_spec(node_ptr, &reason_down))
+			error_code = EINVAL;
+		/* reason_down set in function above */
 	} else {
 		FREE_NULL_BITMAP(node_ptr->gpu_spec_bitmap);
 	}
@@ -3277,6 +3414,10 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 	node_ptr->os = reg_msg->os;
 	reg_msg->os = NULL;	/* Nothing left to free */
 
+	xfree(node_ptr->parameters);
+	node_ptr->parameters = reg_msg->parameters;
+	reg_msg->parameters = NULL;
+
 	if (node_ptr->cpu_load != reg_msg->cpu_load) {
 		node_ptr->cpu_load = reg_msg->cpu_load;
 		node_ptr->cpu_load_time = now;
@@ -3286,12 +3427,6 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 		node_ptr->free_mem = reg_msg->free_mem;
 		node_ptr->free_mem_time = now;
 		last_node_update = now;
-	}
-
-	if (node_ptr->last_response &&
-	    (node_ptr->boot_time > node_ptr->last_response) &&
-	    !IS_NODE_UNKNOWN(node_ptr)) {	/* Node just rebooted */
-		(void) node_features_g_get_node(node_ptr->name);
 	}
 
 	if (IS_NODE_NO_RESPOND(node_ptr) ||
@@ -3387,6 +3522,29 @@ extern int validate_node_specs(slurm_msg_t *slurm_msg, bool *newly_up)
 
 	if (update_db)
 		clusteracct_storage_g_node_update(acct_db_conn, node_ptr);
+
+	if (IS_NODE_CLOUD(node_ptr) && (was_powering_up || was_powered_down) &&
+	    xstrstr(reg_msg->dynamic_conf, "topology=")) {
+		int rc = SLURM_SUCCESS;
+		char *tmp_conf = NULL;
+		slurm_conf_node_t *conf_node = NULL;
+		s_p_hashtbl_t *node_hashtbl = NULL;
+
+		tmp_conf = xstrdup_printf("NodeName=%s %s", node_ptr->name,
+					  reg_msg->dynamic_conf);
+		if (!(conf_node = slurm_conf_parse_nodeline(tmp_conf,
+							    &node_hashtbl))) {
+			error("Failed to parse dynamic nodeline '%s'",
+			      reg_msg->dynamic_conf);
+			error_code = EINVAL;
+		} else if (conf_node->topology_str &&
+			   ((rc = node_mgr_set_node_topology(
+				     node_ptr, conf_node->topology_str)))) {
+			error_code = rc;
+		}
+		s_p_hashtbl_destroy(node_hashtbl);
+		xfree(tmp_conf);
+	}
 
 	was_invalid_reg = IS_NODE_INVALID_REG(node_ptr);
 	node_ptr->node_state &= ~NODE_STATE_INVALID_REG;
@@ -3905,6 +4063,8 @@ void msg_to_slurmd (slurm_msg_type_t msg_type)
 	kill_agent_args->protocol_version = SLURM_PROTOCOL_VERSION;
 
 	for (i = 0; (node_ptr = next_node(&i)); i++) {
+		if (IS_NODE_EXTERNAL(node_ptr))
+			continue;
 		if (IS_NODE_FUTURE(node_ptr))
 			continue;
 		if (IS_NODE_CLOUD(node_ptr) &&
@@ -4279,7 +4439,10 @@ void make_node_idle(node_record_t *node_ptr, job_record_t *job_ptr)
 				error("%s: %pJ node %s run_job_cnt underflow",
 				      __func__, job_ptr, node_ptr->name);
 		} else {
-			if (node_ptr->comp_job_cnt) {
+			if (job_ptr->job_state & JOB_EXPEDITING) {
+				debug("%s: deferring decrement of comp_job_cnt on %s",
+				      __func__, node_ptr->name);
+			} else if (node_ptr->comp_job_cnt) {
 				(node_ptr->comp_job_cnt)--;
 			} else if (IS_NODE_DOWN(node_ptr)) {
 				/* We were not expecting this response,
@@ -4641,11 +4804,16 @@ static int _build_node_callback(char *alias, char *hostname, char *address,
 			bit_set(external_node_bitmap, node_ptr->index);
 		}
 
-		if ((rc = gres_g_node_config_load(node_ptr->config_ptr->cpus,
-						  node_ptr->name,
-						  node_ptr->gres_list, NULL,
-						  NULL)))
+		if (conf_node->gres_conf) {
+			gres_add_dynamic_gres(conf_node->gres_conf,
+					      node_ptr->name);
+		} else if ((rc = gres_g_node_config_load(node_ptr->config_ptr
+								 ->cpus,
+							 node_ptr->name,
+							 node_ptr->gres_list,
+							 NULL, NULL))) {
 			goto fini;
+		}
 
 		rc = gres_node_config_validate(node_ptr,
 					       node_ptr->config_ptr->threads,
@@ -4956,6 +5124,7 @@ static int _delete_node_ptr(node_record_t *node_ptr)
 		return ESLURM_NODES_BUSY;
 	}
 
+	xfree(node_ptr->topology_orig_str);
 	xfree(node_ptr->topology_str);
 	topology_g_add_rm_node(node_ptr);
 
@@ -5082,4 +5251,52 @@ extern void set_node_reason(node_record_t *node_ptr,
 		node_ptr->reason_time = 0;
 		node_ptr->reason_uid = NO_VAL;
 	}
+}
+
+extern int node_mgr_set_node_topology(node_record_t *node_ptr,
+				      char *new_topology_str)
+{
+	int rc = SLURM_SUCCESS;
+	char *topology_str_old;
+	bool from_config = false;
+	bool stored_orig = false;
+
+	if (!node_ptr->topology_str && !node_ptr->topology_orig_str) {
+		node_ptr->topology_orig_str =
+			topology_g_get_topology_str(node_ptr);
+		stored_orig = true;
+	}
+
+	if (node_ptr->topology_str) {
+		topology_str_old = node_ptr->topology_str;
+		node_ptr->topology_str = NULL;
+	} else {
+		if (stored_orig)
+			topology_str_old = xstrdup(node_ptr->topology_orig_str);
+		else
+			topology_str_old =
+				topology_g_get_topology_str(node_ptr);
+		from_config = true;
+	}
+
+	if (*new_topology_str) {
+		node_ptr->topology_str = xstrdup(new_topology_str);
+	}
+
+	if (topology_g_add_rm_node(node_ptr)) {
+		info("Invalid node topology specified %s",
+		     node_ptr->topology_str);
+		xfree(node_ptr->topology_str);
+		node_ptr->topology_str = topology_str_old;
+		topology_g_add_rm_node(node_ptr);
+		rc = ESLURM_REQUESTED_TOPO_CONFIG_UNAVAILABLE;
+		if (from_config)
+			xfree(node_ptr->topology_str);
+		if (stored_orig)
+			xfree(node_ptr->topology_orig_str);
+	} else {
+		xfree(topology_str_old);
+	}
+
+	return rc;
 }

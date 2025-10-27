@@ -73,6 +73,7 @@
 #include "src/common/fd.h"
 #include "src/common/log.h"
 #include "src/common/macros.h"
+#include "src/common/sluid.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_time.h"
 #include "src/common/xmalloc.h"
@@ -308,6 +309,11 @@ _log_init(char *prog, log_options_t opt, log_facility_t fac, char *logfile )
 		atfork_install_handlers();
 	}
 
+	if (syslog_open) {
+		closelog();
+		syslog_open = false;
+	}
+
 	if (prog) {
 		if (log->argv0)
 			xfree(log->argv0);
@@ -338,11 +344,6 @@ _log_init(char *prog, log_options_t opt, log_facility_t fac, char *logfile )
 	if (log->opt.buffered) {
 		log->buf  = cbuf_create(128, 8192);
 		log->fbuf = cbuf_create(128, 8192);
-	}
-
-	if (syslog_open) {
-		closelog();
-		syslog_open = false;
 	}
 
 	if (log->opt.syslog_level > LOG_LEVEL_QUIET) {
@@ -522,6 +523,10 @@ void log_fini(void)
 
 	slurm_mutex_lock(&log_lock);
 	_log_flush(log);
+	if (syslog_open) {
+		closelog();
+		syslog_open = false;
+	}
 	xfree(log->argv0);
 	xfree(log->prefix);
 	if (log->buf)
@@ -530,10 +535,6 @@ void log_fini(void)
 		cbuf_destroy(log->fbuf);
 	if (log->logfp)
 		fclose(log->logfp);
-	if (syslog_open) {
-		closelog();
-		syslog_open = false;
-	}
 	xfree(log);
 	slurm_mutex_unlock(&log_lock);
 }
@@ -578,6 +579,10 @@ void log_set_prefix(char **prefix)
 void log_set_argv0(char *argv0)
 {
 	slurm_mutex_lock(&log_lock);
+	if (syslog_open) {
+		closelog();
+		syslog_open = false;
+	}
 	if (log->argv0)
 		xfree(log->argv0);
 	if (!argv0)
@@ -877,6 +882,7 @@ extern char *vxstrfmt(const char *fmt, va_list ap)
 				case 'A':
 				case 'd':
 				case 'D':
+				case 'I':
 				case 'J':
 				case 's':
 				case 'S':
@@ -974,6 +980,30 @@ extern char *vxstrfmt(const char *fmt, va_list ap)
 						&intermediate_pos,
 						_print_data_t(
 							d,
+							substitute_on_stack,
+							sizeof(substitute_on_stack)));
+					va_end(ap_copy);
+					break;
+				}
+				/*
+				 * "%pI" => "JobID=... SLUID=..." on a
+				 * slurm_step_id_t
+				 */
+				case 'I':
+				{
+					void *ptr = NULL;
+					slurm_step_id_t *step_id = NULL;
+					va_list ap_copy;
+
+					va_copy(ap_copy, ap);
+					for (int i = 0; i < cnt; i++)
+						ptr = va_arg(ap_copy, void *);
+					step_id = ptr;
+					xstrcatat(
+						intermediate_fmt,
+						&intermediate_pos,
+						log_build_job_id_str(
+							step_id,
 							substitute_on_stack,
 							sizeof(substitute_on_stack)));
 					va_end(ap_copy);
@@ -1628,6 +1658,34 @@ extern int get_sched_log_level(void)
 	return MAX(highest_log_level, highest_sched_log_level);
 }
 
+extern char *log_build_job_id_str(slurm_step_id_t *step_id, char *buf,
+				  int buf_size)
+{
+	int pos = 0;
+
+	xassert(buf);
+	xassert(buf_size > 1);
+
+	buf[pos] = '\0';
+
+	if (!step_id || !step_id->job_id)
+		pos += snprintf(buf + pos, buf_size - pos,
+				"%%.0sJobId=Invalid SLUID=");
+	else
+		pos += snprintf(buf + pos, buf_size - pos,
+				"%%.0sJobId=%u SLUID=", step_id->job_id);
+
+	if (pos >= buf_size)
+		return buf;
+
+	if (!step_id || !step_id->sluid)
+		snprintf(buf + pos, buf_size - pos, "Invalid");
+	else
+		print_sluid(step_id->sluid, buf + pos, buf_size - pos);
+
+	return buf;
+}
+
 /*
  * log_build_step_id_str() - print a slurm_step_id_t as " StepId=...", with
  * Batch and Extern used as appropriate.
@@ -1729,4 +1787,45 @@ extern void _log_flag_hex(const void *data, size_t len, ssize_t start,
 	}
 
 	xfree(prepend);
+}
+
+log_closeall_skip_t log_closeall_pre(void)
+{
+	log_closeall_skip_t skip = {
+		.log_fd = -1,
+		.sched_log_fd = -1,
+	};
+
+	slurm_mutex_lock(&log_lock);
+
+	if (log && log->logfp)
+		skip.log_fd = fileno(log->logfp);
+	else
+		skip.log_fd = fileno(stderr);
+
+	if (sched_log && sched_log->logfp)
+		skip.sched_log_fd = fileno(sched_log->logfp);
+
+	closelog();
+	syslog_open = false;
+
+	slurm_mutex_unlock(&log_lock);
+
+	return skip;
+}
+
+void log_closeall_post(void)
+{
+	slurm_mutex_lock(&log_lock);
+
+	/*
+	 * Re-open syslog file descriptor after closeall() with same settings
+	 * if logging had already been initialized.
+	 */
+	if (log && log->initialized) {
+		openlog(log->argv0, LOG_PID, log->facility);
+		syslog_open = true;
+	}
+
+	slurm_mutex_unlock(&log_lock);
 }

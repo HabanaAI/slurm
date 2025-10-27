@@ -41,6 +41,7 @@
 #include "slurm/slurm_errno.h"
 #include "src/common/slurm_xlator.h"
 
+#include "src/common/fd.h"
 #include "src/common/log.h"
 #include "src/common/read_config.h"
 #include "src/common/xmalloc.h"
@@ -64,9 +65,9 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
-extern int fini(void)
+extern void fini(void)
 {
-	return SLURM_SUCCESS;
+	return;
 }
 
 extern int tls_p_load_ca_cert(char *cert_file)
@@ -140,7 +141,15 @@ extern ssize_t tls_p_sendv(tls_conn_t *conn, const struct iovec *bufs,
 
 extern uint32_t tls_p_peek(tls_conn_t *conn)
 {
-	return 0;
+	int readable = 0;
+
+	if (!conn)
+		return 0;
+
+	if (fd_get_readable_bytes(conn->input_fd, &readable, NULL) || !readable)
+		return 0;
+
+	return readable;
 }
 
 extern ssize_t tls_p_recv(tls_conn_t *conn, void *buf, size_t n, int flags)
@@ -172,7 +181,8 @@ extern bool tls_p_is_client_authenticated(void *conn)
 
 extern int tls_p_get_conn_fd(tls_conn_t *conn)
 {
-	xassert(conn);
+	if (!conn)
+		return -1;
 
 	if (conn->input_fd != conn->output_fd)
 		debug("%s: asymmetric connection %d->%d",

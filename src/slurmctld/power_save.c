@@ -663,6 +663,7 @@ static void _do_power_work(time_t now)
 
 			reset_node_active_features(node_ptr);
 			reset_node_instance(node_ptr);
+			reset_node_topology(node_ptr);
 
 			clusteracct_storage_g_node_down(
 				acct_db_conn, node_ptr, now,
@@ -690,6 +691,7 @@ static void _do_power_work(time_t now)
 
 			reset_node_active_features(node_ptr);
 			reset_node_instance(node_ptr);
+			reset_node_topology(node_ptr);
 
 			/*
 			 * set_node_down_ptr() will remove the node from the
@@ -1127,9 +1129,6 @@ extern void config_power_mgr(void)
 			info("power_save mode has been disabled due to configuration changes");
 		}
 		power_save_enabled = false;
-		if (node_features_g_node_power()) {
-			fatal("PowerSave required with NodeFeatures plugin, but not fully configured (SuspendProgram, ResumeProgram and SuspendTime all required)");
-		}
 	} else {
 		power_save_enabled = true;
 	}

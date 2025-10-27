@@ -56,7 +56,7 @@
  * The cluster field is established by slurmdbd for each slurmctld.
  * This does limit a slurmdbd installation to 4093 distinct clusters.
  * - 0x000 is reserved to avoid collisions with db_index values.
- * - 0x001 is reserved for slurmdbd.
+ * - 0x001 is reserved for slurmdbd. Also used for --no-allocate.
  * - 0xfff is reserved for future use.
  *
  * The timestamp is milliseconds since the unix epoch. It is stored in the job
@@ -75,6 +75,9 @@
  * - https://www.crockford.com/base32.html
  * - https://www.rfc-editor.org/rfc/rfc9562.html
  */
+
+/* Bytes required to hold a stringified sluid_t including NUL termination. */
+#define SLUID_STR_BYTES 15
 
 /*
  * Initialize generator.
@@ -100,6 +103,12 @@ extern sluid_t generate_sluid(void);
  * Returns an xmalloc()'d string.
  */
 extern char *sluid2str(const sluid_t sluid);
+
+/*
+ * Directly print into an existing buffer.
+ * Must have at least 15 bytes free or nothing will be printed.
+ */
+extern void print_sluid(const sluid_t sluid, char *buffer, size_t size);
 
 /*
  * Parse the string representation.

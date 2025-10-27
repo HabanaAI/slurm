@@ -131,8 +131,8 @@ int slurm_ctl_conf_to_hv(slurm_conf_t *conf, HV *hv)
 	if (conf->job_comp_user)
 		STORE_FIELD(hv, conf, job_comp_user, charp);
 
-	if (conf->job_container_plugin)
-		STORE_FIELD(hv, conf, job_container_plugin, charp);
+	if (conf->namespace_plugin)
+		STORE_FIELD(hv, conf, namespace_plugin, charp);
 
 	STORE_FIELD(hv, conf, job_file_append, uint16_t);
 
@@ -442,7 +442,7 @@ int hv_to_slurm_ctl_conf(HV *hv, slurm_conf_t *conf)
 	FETCH_FIELD(hv, conf, job_comp_port, uint32_t, TRUE);
 	FETCH_FIELD(hv, conf, job_comp_type, charp, FALSE);
 	FETCH_FIELD(hv, conf, job_comp_user, charp, FALSE);
-	FETCH_FIELD(hv, conf, job_container_plugin, charp, FALSE);
+	FETCH_FIELD(hv, conf, namespace_plugin, charp, FALSE);
 	FETCH_FIELD(hv, conf, job_file_append, uint16_t, TRUE);
 	FETCH_FIELD(hv, conf, job_requeue, uint16_t, TRUE);
 	FETCH_FIELD(hv, conf, job_submit_plugins, charp, FALSE);
@@ -612,21 +612,6 @@ hv_to_slurmd_status(HV *hv, slurmd_status_t *status)
 	FETCH_FIELD(hv, status, slurmd_logfile, charp, FALSE);
 	FETCH_FIELD(hv, status, step_list, charp, FALSE);
 	FETCH_FIELD(hv, status, version, charp, FALSE);
-
-	return 0;
-}
-
-/*
- * convert perl HV to step_update_request_msg_t
- */
-int
-hv_to_step_update_request_msg(HV *hv, step_update_request_msg_t *update_msg)
-{
-	slurm_init_update_step_msg(update_msg);
-
-	FETCH_FIELD(hv, update_msg, job_id, uint32_t, TRUE);
-	FETCH_FIELD(hv, update_msg, step_id, uint32_t, TRUE);
-	FETCH_FIELD(hv, update_msg, time_limit, uint32_t, TRUE);
 
 	return 0;
 }

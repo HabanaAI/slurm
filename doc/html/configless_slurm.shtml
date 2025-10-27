@@ -102,12 +102,23 @@ Any additional config files will need to be shared a different way or added to
 the parent config.
 </p>
 
-<p>If <b>Prolog</b> and <b>Epilog</b> scripts are specified in slurm.conf,
-the scripts will <b>ONLY</b> be shipped if the filenames referenced have no path
-separators and the file is located adjacent to slurm.conf.
+<p>If <b>Prolog</b>, <b>Epilog</b>, <b>TaskProlog</b>, and <b>TaskEpilog</b>
+scripts are specified in slurm.conf, the scripts will <b>ONLY</b> be shipped if
+the filenames referenced have no path separators and the file is located
+adjacent to slurm.conf.
 </p>
 
 <h2 id="NOTES">Notes<a class="slurm_link" href="#NOTES"></a></h2>
+
+<p>Starting from Slurm 25.11, there's a new
+<b>SlurmctldParameters=reconfig_on_restart</b> option that will make every
+restart of slurmctld (process restart not triggered by "scontrol reconfigure")
+to trigger a reconfiguration request to all slurmd and sackd daemons. For
+"configless" systems this will ensure all processes are running the current
+configuration. Some caution should be taken if you intend to perform rolling
+upgrades on the cluster as this could lead to the daemons being upgraded sooner
+than expected.
+</p>
 
 <p>The order of precedence for determining what configuration source to use
 is as follows:</p>
@@ -146,8 +157,7 @@ is as follows:</p>
 <li>plugstack.conf</li>
 <li>scrun.lua</li>
 <li>topology.conf</li>
+<li>topology.yaml</li>
 </ul>
-
-<p style="text-align:center;">Last modified 18 April 2025</p>
 
 <!--#include virtual="footer.txt"-->

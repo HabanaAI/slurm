@@ -86,6 +86,7 @@ enum {
 	LONG_OPT_COMPLETE_FLAG,
 	LONG_OPT_COMMENT,
 	LONG_OPT_COMPRESS,
+	LONG_OPT_CONSOLIDATE_SEGMENTS,
 	LONG_OPT_CONTAINER,
 	LONG_OPT_CONTAINER_ID,
 	LONG_OPT_CONTEXT,
@@ -167,6 +168,7 @@ enum {
 	LONG_OPT_REBOOT,
 	LONG_OPT_REQUEUE,
 	LONG_OPT_RESERVATION,
+	LONG_OPT_RESOURCES,
 	LONG_OPT_RESV_PORTS,
 	LONG_OPT_SEGMENT_SIZE,
 	LONG_OPT_SEND_LIBS,
@@ -174,6 +176,7 @@ enum {
 	LONG_OPT_SLURMD_DEBUG,
 	LONG_OPT_SOCKETSPERNODE,
 	LONG_OPT_SPREAD_JOB,
+	LONG_OPT_SPREAD_SEGMENTS,
 	LONG_OPT_STEPMGR,
 	LONG_OPT_SWITCH_REQ,
 	LONG_OPT_SWITCH_WAIT,
@@ -407,6 +410,7 @@ typedef struct {
 	bool get_user_env;		/* --get-user-env		*/
 	char *wckey;			/* workload characterization key */
 	char *reservation;		/* --reservation		*/
+	char *resources; /* --resources	*/
 	int resv_port_cnt;		/* --resv_ports			*/
 	int req_switch;			/* min number of switches	*/
 	int wait4switch;		/* max time to wait for min switches */

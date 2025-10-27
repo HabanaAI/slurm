@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #include "slurm/slurm.h"
+#include "slurm/slurm_errno.h"
 
 #include "src/common/cpu_frequency.h"
 #include "src/common/data.h"
@@ -52,6 +53,7 @@
 #include "src/common/print_fields.h"
 #include "src/common/read_config.h"
 #include "src/common/ref.h"
+#include "src/common/sluid.h"
 #include "src/common/slurm_protocol_api.h"
 #include "src/common/slurm_protocol_defs.h"
 #include "src/common/slurmdbd_defs.h"
@@ -74,6 +76,8 @@
 
 #include "src/sinfo/sinfo.h" /* provides sinfo_data_t */
 #include "src/slurmctld/licenses.h" /* provides licenses_t - don't use funcs */
+
+extern void __attribute__((weak)) hres_variable_free(void *x);
 
 #define IS_INFINITE(x) is_overloaded_INFINITE(&(x), sizeof(x))
 #define IS_NO_VAL(x) is_overloaded_NO_VAL(&(x), sizeof(x), false)
@@ -477,6 +481,7 @@ typedef struct {
 } foreach_topo_array_args_t;
 
 typedef struct {
+	list_t *base; /* list of hres_variable_t */
 	uint32_t count;
 	char *nodes;
 } hierarchy_layer_t;
@@ -485,11 +490,14 @@ typedef struct {
 	list_t *layers; /* list of hierarchy_layer_t */
 	uint8_t mode;
 	char *name;
+	char *topology_name;
+	list_t *variables; /* list of hres_variable_t */
 } hierarchical_resource_t;
 
 typedef struct {
 	list_t *licenses;
 	hierarchical_resource_t *resource;
+	bool first_layer;
 } resource_as_licenses_args_t;
 
 static int PARSE_FUNC(UINT64_NO_VAL)(const parser_t *const parser, void *obj,
@@ -4473,15 +4481,15 @@ static data_for_each_cmd_t _foreach_hostlist_parse(data_t *data, void *arg)
 
 	if (data_convert_type(data, DATA_TYPE_STRING) != DATA_TYPE_STRING) {
 		parse_error(args->parser, args->args, args->parent_path,
-			    ESLURM_DATA_CONV_FAILED,
+			    ESLURM_DATA_PARSE_BAD_INPUT,
 			    "string expected but got %pd", data);
 		return DATA_FOR_EACH_FAIL;
 	}
 
 	if (!hostlist_push(args->host_list, data_get_string(data))) {
 		parse_error(args->parser, args->args, args->parent_path,
-			    ESLURM_DATA_CONV_FAILED, "Invalid host string: %s",
-			    data_get_string(data));
+			    ESLURM_DATA_PARSE_BAD_INPUT,
+			    "Invalid host string: %s", data_get_string(data));
 		return DATA_FOR_EACH_FAIL;
 	}
 
@@ -4508,7 +4516,7 @@ static int PARSE_FUNC(HOSTLIST)(const parser_t *const parser, void *obj,
 
 		if (!(host_list = hostlist_create(host_list_str))) {
 			rc = parse_error(parser, args, parent_path,
-					 ESLURM_DATA_CONV_FAILED,
+					 ESLURM_DATA_PARSE_BAD_INPUT,
 					 "Invalid hostlist string: %s",
 					 host_list_str);
 			goto cleanup;
@@ -4525,10 +4533,10 @@ static int PARSE_FUNC(HOSTLIST)(const parser_t *const parser, void *obj,
 
 		if (data_list_for_each(src, _foreach_hostlist_parse, &fargs) <
 		    0)
-			rc = ESLURM_DATA_CONV_FAILED;
+			rc = ESLURM_DATA_PARSE_BAD_INPUT;
 	} else {
 		rc = parse_error(parser, args, parent_path,
-				 ESLURM_DATA_CONV_FAILED,
+				 ESLURM_DATA_PARSE_BAD_INPUT,
 				 "string expected but got %pd", src);
 		goto cleanup;
 	}
@@ -4601,6 +4609,8 @@ static int DUMP_FUNC(HOSTLIST_STRING)(const parser_t *const parser, void *obj,
 	}
 
 	if (!(host_list = hostlist_create(host_list_str))) {
+		if (!is_complex_mode(args))
+			data_set_list(dst);
 		return on_error(DUMPING, parser->type, args,
 				ESLURM_DATA_CONV_FAILED, "hostlist_create()",
 				__func__, "Invalid hostlist string: %s",
@@ -4611,6 +4621,34 @@ static int DUMP_FUNC(HOSTLIST_STRING)(const parser_t *const parser, void *obj,
 
 	hostlist_destroy(host_list);
 	return rc;
+}
+
+/* Meant to takes in data type string and validates the string is a hostlist */
+static int PARSE_FUNC(HOSTLIST_STRING_TO_STRING)(const parser_t *const parser,
+						 void *obj, data_t *src,
+						 args_t *args,
+						 data_t *parent_path)
+{
+	int rc;
+	char **host_list_str = obj;
+	hostlist_t *host_list = NULL;
+
+	if ((rc = PARSE_FUNC(HOSTLIST)(parser, &host_list, src, args,
+				       parent_path)))
+		return rc;
+
+	if (host_list)
+		*host_list_str = hostlist_ranged_string_xmalloc(host_list);
+
+	hostlist_destroy(host_list);
+	return rc;
+}
+
+static int DUMP_FUNC(HOSTLIST_STRING_TO_STRING)(const parser_t *const parser,
+						void *obj, data_t *dst,
+						args_t *args)
+{
+	return DUMP(STRING, *(char **) obj, dst, args);
 }
 
 PARSE_DISABLED(CPU_FREQ_FLAGS)
@@ -6968,6 +7006,7 @@ static void FREE_FUNC(H_LAYER)(void *ptr)
 	if (!layer)
 		return;
 
+	FREE_NULL_LIST(layer->base);
 	xfree(layer->nodes);
 	xfree(layer);
 }
@@ -6981,7 +7020,35 @@ static void FREE_FUNC(H_RESOURCE)(void *ptr)
 
 	xfree(resource->name);
 	FREE_NULL_LIST(resource->layers);
+	xfree(resource->topology_name);
+	FREE_NULL_LIST(resource->variables);
 	xfree(resource);
+}
+
+static void FREE_FUNC(OPENAPI_JOB_MODIFY_REQ)(void *ptr)
+{
+	openapi_job_modify_req_t *req = ptr;
+
+	if (!req)
+		return;
+
+	FREE_NULL_LIST(req->job_id_list);
+	slurmdb_destroy_job_rec(req->job_rec);
+	xfree(req);
+}
+
+static int _foreach_variable(void *x, void *arg)
+{
+	hres_variable_t *var = x, *var_cpy;
+	list_t *variables = arg;
+
+	var_cpy = xmalloc(sizeof(*var_cpy));
+	var_cpy->value = var->value;
+	var_cpy->name = xstrdup(var->name);
+
+	list_append(variables, var_cpy);
+
+	return SLURM_SUCCESS;
 }
 
 static int _foreach_layer(void *x, void *arg)
@@ -6997,7 +7064,24 @@ static int _foreach_layer(void *x, void *arg)
 	license->name = xstrdup(args->resource->name);
 	license->mode = args->resource->mode;
 	license->nodes = xstrdup(layer->nodes);
-	license->total = layer->count;
+	license->hres_rec.total = layer->count;
+
+	if ((hres_variable_free != NULL) && list_count(layer->base)) {
+		license->hres_rec.base = list_create(hres_variable_free);
+		list_for_each(layer->base, _foreach_variable,
+			      license->hres_rec.base);
+	}
+
+	if (hres_variable_free && args->first_layer &&
+	    list_count(args->resource->variables)) {
+		license->hres_rec.variables = list_create(hres_variable_free);
+		list_for_each(args->resource->variables, _foreach_variable,
+			      license->hres_rec.variables);
+		license->hres_rec.topology_name =
+			xstrdup(args->resource->topology_name);
+		args->first_layer = false;
+	}
+
 	list_append(args->licenses, license);
 
 	return SLURM_SUCCESS;
@@ -7008,6 +7092,7 @@ static int _foreach_resource(void *x, void *arg)
 	resource_as_licenses_args_t *args = arg;
 
 	args->resource = x;
+	args->first_layer = true;
 	xassert(args->resource && args->resource->layers);
 	list_for_each(args->resource->layers, _foreach_layer, args);
 
@@ -7070,12 +7155,26 @@ static int _foreach_license(void *x, void *arg)
 		list_append(*resources, resource);
 	}
 
+	if (!resource->variables && (hres_variable_free != NULL) &&
+	    list_count(license->hres_rec.variables)) {
+		resource->variables = list_create(hres_variable_free);
+		list_for_each(license->hres_rec.variables, _foreach_variable,
+			      resource->variables);
+	}
+
 	if (!resource->layers)
 		resource->layers = list_create(FREE_FUNC(H_LAYER));
 	layer = xmalloc(sizeof(*layer));
 	layer->nodes = xstrdup(license->nodes);
-	layer->count = license->total;
-
+	layer->count = license->hres_rec.total;
+	if (!resource->topology_name)
+		resource->topology_name =
+			xstrdup(license->hres_rec.topology_name);
+	if (hres_variable_free && list_count(license->hres_rec.base)) {
+		layer->base = list_create(hres_variable_free);
+		list_for_each(license->hres_rec.base, _foreach_variable,
+			      layer->base);
+	}
 	list_append(resource->layers, layer);
 
 	return SLURM_SUCCESS;
@@ -7104,6 +7203,91 @@ static int DUMP_FUNC(H_RESOURCES_AS_LICENSE_LIST)(const parser_t *const parser,
 
 	FREE_NULL_LIST(resources);
 	return rc;
+}
+
+static int DUMP_FUNC(SLUID)(const parser_t *const parser, void *obj,
+			    data_t *dst, args_t *args)
+{
+	sluid_t *sluid_ptr = obj;
+	char str[SLUID_STR_BYTES] = { 0 };
+
+	if (!*sluid_ptr) {
+		if (is_complex_mode(args))
+			data_set_null(dst);
+		else
+			data_set_string(dst, "");
+		return SLURM_SUCCESS;
+	}
+
+	print_sluid(*sluid_ptr, str, sizeof(str));
+
+	if (!str[0])
+		return ESLURM_INVALID_SLUID;
+
+	data_set_string(dst, str);
+	return SLURM_SUCCESS;
+}
+
+static int PARSE_FUNC(SLUID)(const parser_t *const parser, void *obj,
+			     data_t *src, args_t *args, data_t *parent_path)
+{
+	sluid_t *sluid_ptr = obj;
+
+	switch (data_get_type(src)) {
+	case DATA_TYPE_NULL:
+		*sluid_ptr = 0;
+		return SLURM_SUCCESS;
+	case DATA_TYPE_BOOL:
+		if (!data_get_type(src)) {
+			*sluid_ptr = 0;
+			return SLURM_SUCCESS;
+		} else {
+			return parse_error(parser, args, parent_path,
+					   ESLURM_INVALID_SLUID,
+					   "Unable to parse true as SLUID");
+		}
+	case DATA_TYPE_FLOAT:
+		/* Treat 0 as valid unset SLUID */
+		if (!data_get_float(src)) {
+			*sluid_ptr = 0;
+			return SLURM_SUCCESS;
+		} else {
+			return parse_error(parser, args, parent_path,
+					   ESLURM_INVALID_SLUID,
+					   "Unable to parse %lf as SLUID",
+					   data_get_float(src));
+		}
+	case DATA_TYPE_INT_64:
+		/* Treat 0 as valid unset SLUID */
+		if (!data_get_int(src)) {
+			*sluid_ptr = 0;
+			return SLURM_SUCCESS;
+		} else {
+			return parse_error(parser, args, parent_path,
+					   ESLURM_INVALID_SLUID,
+					   "Unable to parse %" PRId64
+					   " as SLUID",
+					   data_get_int(src));
+		}
+	case DATA_TYPE_STRING:
+		if ((*sluid_ptr = str2sluid(data_get_string(src))))
+			return SLURM_SUCCESS;
+		else
+			return parse_error(
+				parser, args, parent_path, ESLURM_INVALID_SLUID,
+				"Unable to convert string \"%s\" to SLUID",
+				data_get_string(src));
+	case DATA_TYPE_LIST:
+	case DATA_TYPE_DICT:
+		return parse_error(
+			parser, args, parent_path, ESLURM_DATA_CONV_FAILED,
+			"Unable to convert %pd to string to parse SLUID", src);
+	case DATA_TYPE_NONE:
+	case DATA_TYPE_MAX:
+		fatal_abort("invalid type");
+	}
+
+	fatal_abort("should never run");
 }
 
 /*
@@ -7266,7 +7450,6 @@ static const parser_t PARSER_ARRAY(ASSOC_SHORT)[] = {
 static const flag_bit_t PARSER_FLAG_ARRAY(ASSOC_FLAGS)[] = {
 	add_flag_eq(ASSOC_FLAG_NONE, ASSOC_FLAG_BASE, "NONE", true, "no flags set"),
 	add_flag_eq(ASSOC_FLAG_BASE, ASSOC_FLAG_BASE, "BASE_MASK", true, "mask for flags not stored in database"),
-	add_flag_eq(ASSOC_FLAG_INVALID, INFINITE64, "INVALID", true, "invalid flag detected"),
 	add_flag(ASSOC_FLAG_DELETED, ASSOC_FLAG_BASE, "DELETED", false, "association deleted"),
 	add_flag(ASSOC_FLAG_NO_UPDATE, ASSOC_FLAG_BASE, "NoUpdate", false, "No update requested"),
 	add_flag(ASSOC_FLAG_EXACT, ASSOC_FLAG_BASE, "Exact", false, "only match partition association"),
@@ -7423,6 +7606,7 @@ static const parser_t PARSER_ARRAY(USER_SHORT)[] = {
 	add_parse(ADMIN_LVL, admin_level, "adminlevel", "AdminLevel granted to the user"),
 	add_skip(assoc_list),
 	add_skip(bf_usage),
+	add_parse(UINT32, def_qos_id, "defaultqos", "Default QOS"),
 	add_parse(STRING, default_acct, "defaultaccount", "Default account"),
 	add_parse(STRING, default_wckey, "defaultwckey", "Default WCKey"),
 	add_skip(flags),
@@ -7447,6 +7631,7 @@ static const parser_t PARSER_ARRAY(USER)[] = {
 	add_parse(ADMIN_LVL, admin_level, "administrator_level", "AdminLevel granted to the user"),
 	add_parse(ASSOC_SHORT_LIST, assoc_list, "associations", "Associations created for this user"),
 	add_parse(COORD_LIST, coord_accts, "coordinators", "Accounts this user is a coordinator for"),
+	add_parse(UINT32, def_qos_id, "default/qos", "Default QOS"),
 	add_parse(STRING, default_acct, "default/account", "Default account"),
 	add_parse(STRING, default_wckey, "default/wckey", "Default WCKey"),
 	add_parse(USER_FLAGS, flags, "flags", "Flags associated with this user"),
@@ -7468,6 +7653,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(SLURMDB_JOB_FLAGS)[] = {
 	add_flag_bit(SLURMDB_JOB_FLAG_SCHED, "STARTED_ON_SCHEDULE"),
 	add_flag_bit(SLURMDB_JOB_FLAG_BACKFILL, "STARTED_ON_BACKFILL"),
 	add_flag_bit(SLURMDB_JOB_FLAG_START_R, "START_RECEIVED"),
+	add_flag_bit(SLURMDB_JOB_FLAG_ALTERED, "JOB_ALTERED"),
 };
 
 #define add_skip(field)					\
@@ -7587,6 +7773,98 @@ static const parser_t PARSER_ARRAY(JOB)[] = {
 #undef add_skip
 #undef add_parse_overload
 
+
+#define add_skip(field)					\
+	add_parser_skip(slurmdb_job_rec_t, field)
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(slurmdb_job_rec_t, mtype, false, field, 0, path, desc)
+#define add_parse_overload(mtype, field, overloads, path, desc)		\
+	add_parser(slurmdb_job_rec_t, mtype, false, field, overloads, path, desc)
+#define add_cparse(mtype, path, desc)					\
+	add_complex_parser(slurmdb_job_rec_t, mtype, false, path, desc)
+/*
+ * A subset of supported slurmdb_job_rec_t fields for modifying job in the
+ * database -- mirrors as_mysql_modify_job() and
+ * sacctmgr/job_functions.c:_set_rec().
+ */
+static const parser_t PARSER_ARRAY(JOB_MODIFY)[] = {
+	add_skip(account),
+	add_parse(STRING, admin_comment, "comment/administrator", "Arbitrary comment made by administrator"),
+	add_skip(alloc_nodes),
+	add_skip(array_job_id),
+	add_skip(array_max_tasks),
+	add_skip(array_task_id),
+	add_skip(array_task_str),
+	add_skip(blockid),
+	add_skip(cluster),
+	add_skip(constraints),
+	add_skip(container),
+	add_skip(db_index),
+	add_parse(PROCESS_EXIT_CODE, derived_ec, "derived_exit_code", "Highest exit code of all job steps"),
+	add_parse(STRING, derived_es, "comment/job", "Arbitrary comment made by user"),
+	add_skip(elapsed),
+	add_skip(eligible),
+	add_skip(end),
+	add_skip(env),
+	add_skip(exitcode),
+	add_parse(STRING, extra, "extra", "Arbitrary string used for node filtering if extra constraints are enabled"),
+	add_skip(failed_node),
+	add_skip(flags),
+	add_skip(first_step_ptr),
+	add_skip(gid),
+	add_skip(het_job_id),
+	add_skip(het_job_offset),
+	add_skip(jobid),
+	add_skip(jobname),
+	add_skip(licenses),
+	add_skip(mcs_label),
+	add_skip(nodes),
+	add_skip(partition),
+	add_skip(priority),
+	add_skip(qosid),
+	add_skip(qos_req),
+	add_skip(req_cpus),
+	add_skip(req_mem),
+	add_skip(requid),
+	add_skip(restart_cnt),
+	add_skip(resvid),
+	add_skip(resv_name),
+	add_skip(resv_req),
+	add_skip(script),
+	add_skip(segment_size),
+	add_skip(std_out),
+	add_skip(std_err),
+	add_skip(std_in),
+	add_skip(show_full),
+	add_skip(start),
+	add_skip(state),
+	add_skip(state_reason_prev),
+	add_skip(steps),
+	add_skip(submit),
+	add_skip(submit_line),
+	add_skip(suspended),
+	add_parse(STRING, system_comment, "comment/system", "Arbitrary comment from slurmctld"),
+	add_skip(sys_cpu_sec),
+	add_skip(sys_cpu_usec),
+	add_skip(timelimit),
+	add_skip(tot_cpu_sec),
+	add_skip(tot_cpu_usec),
+	add_parse(TRES_STR, tres_alloc_str, "tres/allocated", "Trackable resources allocated to the job"),
+	add_skip(tres_req_str),
+	add_skip(uid),
+	add_skip(used_gres),
+	add_skip(user),
+	add_skip(user_cpu_sec),
+	add_skip(user_cpu_usec),
+	add_parse(STRING, wckey, "wckey", "Workload characterization key"),
+	add_skip(wckeyid),
+	add_skip(work_dir),
+};
+#undef add_cparse
+#undef add_parse
+#undef add_skip
+#undef add_parse_overload
+
 #define add_flag(flag_value, flag_mask, flag_string, hidden, desc)	\
 	add_flag_bit_entry(FLAG_BIT_TYPE_BIT, XSTRINGIFY(flag_value),	\
 			   flag_value, flag_mask, XSTRINGIFY(flag_mask), \
@@ -7598,7 +7876,6 @@ static const parser_t PARSER_ARRAY(JOB)[] = {
 static const flag_bit_t PARSER_FLAG_ARRAY(ACCOUNT_FLAGS)[] = {
 	add_flag_eq(SLURMDB_ACCT_FLAG_NONE, SLURMDB_ACCT_FLAG_BASE, "NONE", true, "no flags set"),
 	add_flag_eq(SLURMDB_ACCT_FLAG_BASE, SLURMDB_ACCT_FLAG_BASE, "BASE_MASK", true, "mask for flags not stored in database"),
-	add_flag_eq(SLURMDB_ACCT_FLAG_INVALID, INFINITE64, "INVALID", true, "invalid flag detected"),
 	add_flag(SLURMDB_ACCT_FLAG_DELETED, SLURMDB_ACCT_FLAG_BASE, "DELETED", false, "include deleted associations"),
 	add_flag(SLURMDB_ACCT_FLAG_WASSOC, SLURMDB_ACCT_FLAG_BASE, "WithAssociations", false, "query includes associations"),
 	add_flag(SLURMDB_ACCT_FLAG_WCOORD, SLURMDB_ACCT_FLAG_BASE, "WithCoordinators", false,  "query includes coordinators"),
@@ -7704,6 +7981,7 @@ static const parser_t PARSER_ARRAY(WCKEY)[] = {
 static const parser_t PARSER_ARRAY(TRES)[] = {
 	add_skip(alloc_secs), /* sreport func */
 	add_skip(rec_count), /* not packed */
+	add_skip(modifier), /* not packed */
 	add_parse_req(STRING, type, "type", "TRES type (CPU, MEM, etc)"),
 	add_parse(STRING, name, "name", "TRES name (if applicable)"),
 	add_parse(UINT32, id, "id", "ID used in the database"),
@@ -8005,8 +8283,10 @@ static const parser_t PARSER_ARRAY(ASSOC_USAGE)[] = {
 	add_parser(stats_info_response_msg_t, mtype, false, field, 0, path, desc)
 #define add_cparse(mtype, path, desc)					\
 	add_complex_parser(stats_info_response_msg_t, mtype, false, path, desc)
+#define add_removed(mtype, path, desc, deprec) \
+	add_parser_removed(stats_info_response_msg_t, mtype, false, path, desc, deprec)
 static const parser_t PARSER_ARRAY(STATS_MSG)[] = {
-	add_parse(UINT32, parts_packed, "parts_packed", "Zero if only RPC statistic included"),
+	add_removed(UINT32, "parts_packed", "Zero if only RPC statistic included", SLURM_25_11_PROTOCOL_VERSION),
 	add_parse(TIMESTAMP_NO_VAL, req_time, "req_time", "When the request was made (UNIX timestamp)"),
 	add_parse(TIMESTAMP_NO_VAL, req_time_start, "req_time_start", "When the data in the report started (UNIX timestamp)"),
 	add_parse(UINT32, server_thread_count, "server_thread_count", "Number of current active slurmctld threads"),
@@ -8017,7 +8297,7 @@ static const parser_t PARSER_ARRAY(STATS_MSG)[] = {
 	add_parse(UINT32, gettimeofday_latency, "gettimeofday_latency", "Latency of 1000 calls to the gettimeofday() syscall in microseconds, as measured at controller startup"),
 	add_parse(UINT32, schedule_cycle_max, "schedule_cycle_max", "Max time of any scheduling cycle in microseconds since last reset"),
 	add_parse(UINT32, schedule_cycle_last, "schedule_cycle_last", "Time in microseconds for last scheduling cycle"),
-	add_parse(UINT32, schedule_cycle_sum, "schedule_cycle_sum", "Total run time in microseconds for all scheduling cycles since last reset"),
+	add_parse(UINT64, schedule_cycle_sum, "schedule_cycle_sum", "Total run time in microseconds for all scheduling cycles since last reset"),
 	add_parse(UINT32, schedule_cycle_counter, "schedule_cycle_total", "Number of scheduling cycles since last reset"),
 	add_cparse(STATS_MSG_CYCLE_MEAN, "schedule_cycle_mean", "Mean time in microseconds for all scheduling cycles since last reset"),
 	add_cparse(STATS_MSG_CYCLE_MEAN_DEPTH, "schedule_cycle_mean_depth", "Mean of the number of jobs processed in a scheduling cycle"),
@@ -8079,6 +8359,7 @@ static const parser_t PARSER_ARRAY(STATS_MSG)[] = {
 	add_skip(rpc_dump_types), /* handled by STATS_MSG_RPCS_DUMP */
 	add_skip(rpc_dump_hostlist), /* handled by STATS_MSG_RPCS_DUMP */
 };
+#undef add_removed
 #undef add_parse
 #undef add_cparse
 #undef add_skip
@@ -8138,6 +8419,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(NODE_STATES)[] = {
 	add_flag_masked_bit(NODE_STATE_POWER_UP, NODE_STATE_FLAGS, "POWER_UP"),
 	add_flag_masked_bit(NODE_STATE_POWER_DRAIN, NODE_STATE_FLAGS, "POWER_DRAIN"),
 	add_flag_masked_bit(NODE_STATE_DYNAMIC_NORM, NODE_STATE_FLAGS, "DYNAMIC_NORM"),
+	add_flag_masked_bit(NODE_STATE_BLOCKED, NODE_STATE_FLAGS, "BLOCKED"),
 };
 
 static const flag_bit_t PARSER_FLAG_ARRAY(PARTITION_STATES)[] = {
@@ -8236,6 +8518,7 @@ static const parser_t PARSER_ARRAY(LICENSE)[] = {
 	add_parse(UINT32, last_consumed, "LastConsumed", "Last known number of licenses that were consumed in the license manager (Remote Only)"),
 	add_parse(UINT32, last_deficit, "LastDeficit", "Number of \"missing licenses\" from the cluster's perspective"),
 	add_parse(TIMESTAMP, last_update, "LastUpdate", "When the license information was last updated (UNIX Timestamp)"),
+	add_parse(STRING, nodes, "Nodes", "HRes nodes"),
 };
 #undef add_parse
 
@@ -8282,6 +8565,9 @@ static const flag_bit_t PARSER_FLAG_ARRAY(JOB_FLAGS)[] = {
 	add_flag_bit(BACKFILL_SCHED, "BACKFILL_ATTEMPTED"),
 	add_flag_bit(BACKFILL_LAST, "SCHEDULING_ATTEMPTED"),
 	add_flag_bit(STEPMGR_ENABLED, "STEPMGR_ENABLED"),
+	add_flag_bit(SPREAD_SEGMENTS, "SPREAD_SEGMENTS"),
+	add_flag_bit(CONSOLIDATE_SEGMENTS, "CONSOLIDATE_SEGMENTS"),
+	add_flag_bit(EXPEDITED_REQUEUE, "EXPEDITED_REQUEUE"),
 };
 
 static const flag_bit_t PARSER_FLAG_ARRAY(JOB_SHOW_FLAGS)[] = {
@@ -8410,7 +8696,7 @@ static const parser_t PARSER_ARRAY(JOB_INFO)[] = {
 	add_parse(UINT32_NO_VAL, het_job_id, "het_job_id", "Heterogeneous job ID, if applicable"),
 	add_parse(STRING, het_job_id_set, "het_job_id_set", "Job ID range for all heterogeneous job components"),
 	add_parse(UINT32_NO_VAL, het_job_offset, "het_job_offset", "Unique sequence number applied to this component of the heterogeneous job"),
-	add_parse(UINT32, job_id, "job_id", "Job ID"),
+	add_parse(UINT32, step_id.job_id, "job_id", "Job ID"),
 	add_parse(JOB_RES_PTR, job_resrcs, "job_resources", "Resources used by the job"),
 	add_parse(CSV_STRING, job_size_str, "job_size_str", "Number of nodes (in a range) required for this job"),
 	add_parse(JOB_STATE, job_state, "job_state", "Current state"),
@@ -8466,6 +8752,7 @@ static const parser_t PARSER_ARRAY(JOB_INFO)[] = {
 	add_parse(UINT16, segment_size, "segment_size", "Requested segment size"),
 	add_parse(STRING, selinux_context, "selinux_context", "SELinux context"),
 	add_parse(JOB_SHARED, shared, "shared", "How the job can share resources with other jobs, if at all"),
+	add_parse(SLURM_STEP_ID, step_id, "step_id", "Job step ID"),
 	add_parse(UINT16, sockets_per_board, "sockets_per_board", "Number of sockets per board required"),
 	add_parse(UINT16_NO_VAL, sockets_per_node, "sockets_per_node", "Number of sockets per node required"),
 	add_parse(TIMESTAMP_NO_VAL, start_time, "start_time", "Time execution began, or is expected to begin (UNIX timestamp)"),
@@ -8479,6 +8766,7 @@ static const parser_t PARSER_ARRAY(JOB_INFO)[] = {
 	add_cparse(JOB_INFO_STDOUT_EXP, "stdout_expanded", "Job stdout with expanded fields"),
 	add_cparse(JOB_INFO_STDERR_EXP, "stderr_expanded", "Job stderr with expanded fields"),
 	add_parse(TIMESTAMP_NO_VAL, submit_time, "submit_time", "Time when the job was submitted (UNIX timestamp)"),
+	add_parse(STRING, submit_line, "submit_line", "Job submit line (e.g. 'sbatch -N3 job.sh job_arg'"),
 	add_parse(TIMESTAMP_NO_VAL, suspend_time, "suspend_time", "Time the job was last suspended or resumed (UNIX timestamp)"),
 	add_parse(STRING, system_comment, "system_comment", "Arbitrary comment from slurmctld"),
 	add_parse(UINT32_NO_VAL, time_limit, "time_limit", "Maximum run time in minutes"),
@@ -8947,8 +9235,8 @@ static const parser_t PARSER_ARRAY(RESERVATION_MOD_REQ)[] = {
 #define add_parse_overload(mtype, field, overloads, path, desc)		\
 	add_parser(submit_response_msg_t, mtype, false, field, overloads, path, desc)
 static const parser_t PARSER_ARRAY(JOB_SUBMIT_RESPONSE_MSG)[] = {
-	add_parse(UINT32, job_id, "job_id", "New job ID"),
-	add_parse(STEP_ID, step_id, "step_id", "New job step ID"),
+	add_parse(UINT32, step_id.job_id, "job_id", "New job ID"),
+	add_parse(STEP_ID, step_id.step_id, "step_id", "New job step ID"),
 	add_parse_overload(UINT32, error_code, 1, "error_code", "Error code"),
 	add_parse_overload(ERROR, error_code, 1, "error", "Error message"),
 	add_parse(STRING, job_submit_user_msg, "job_submit_user_msg", "Message to user from job_submit plugin"),
@@ -9004,7 +9292,6 @@ static const flag_bit_t PARSER_FLAG_ARRAY(MEMORY_BINDING_TYPE)[] = {
 	add_flag_equal(MEM_BIND_MASK, MEM_BIND_TYPE_MASK, "MASK"),
 	add_flag_equal(MEM_BIND_LOCAL, MEM_BIND_TYPE_MASK, "LOCAL"),
 	add_flag_masked_bit(MEM_BIND_VERBOSE, MEM_BIND_VERBOSE, "VERBOSE"),
-	add_flag_masked_bit(MEM_BIND_SORT, MEM_BIND_TYPE_FLAGS_MASK, "SORT"),
 	add_flag_masked_bit(MEM_BIND_PREFER, MEM_BIND_TYPE_FLAGS_MASK, "PREFER"),
 };
 
@@ -9105,7 +9392,7 @@ static const parser_t PARSER_ARRAY(JOB_DESC_MSG)[] = {
 	add_parse(GROUP_ID, group_id, "group_id", "Group ID of the user that owns the job"),
 	add_parse(UINT32, het_job_offset, "hetjob_group", "Unique sequence number applied to this component of the heterogeneous job"),
 	add_parse(BOOL16, immediate, "immediate", "If true, exit if resources are not available within the time period specified"),
-	add_parse(UINT32, job_id, "job_id", "Job ID"),
+	add_parse(UINT32, step_id.job_id, "job_id", "Job ID"),
 	add_skip(job_id_str),
 	add_parse(BOOL16, kill_on_node_fail, "kill_on_node_fail", "If true, kill job on node failure"),
 	add_parse(STRING, licenses, "licenses", "License(s) required by the job"),
@@ -9148,6 +9435,7 @@ static const parser_t PARSER_ARRAY(JOB_DESC_MSG)[] = {
 	add_cparse(JOB_DESC_MSG_SPANK_ENV, "spank_environment", "Environment variables for job prolog/epilog scripts as set by SPANK plugins"),
 	add_skip(spank_job_env),
 	add_skip(spank_job_env_size),
+	add_parse(SLURM_STEP_ID, step_id, "step_id", "Job step ID"),
 	add_skip(submit_line),
 	add_cparse(JOB_DESC_MSG_TASK_DISTRIBUTION, "distribution", "Layout"),
 	add_skip(task_dist),
@@ -9332,6 +9620,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(JOB_CONDITION_DB_FLAGS)[] = {
 	add_flag(SLURMDB_JOB_FLAG_SCHED, "scheduled_by_main", false, "Job was started from main scheduler"),
 	add_flag(SLURMDB_JOB_FLAG_BACKFILL, "scheduled_by_backfill", false, "Job was started from backfill"),
 	add_flag(SLURMDB_JOB_FLAG_START_R, "job_started", false, "Job start RPC was received"),
+	add_flag(SLURMDB_JOB_FLAG_ALTERED, "job_altered", false, "Job record has been altered"),
 };
 #undef add_flag
 #undef add_flag_eq
@@ -9712,6 +10001,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(JOB_STATE)[] = {
 	add_flag(JOB_RESV_DEL_HOLD, JOB_STATE_FLAGS, "RESV_DEL_HOLD", false, "Job is being held"),
 	add_flag(JOB_SIGNALING, JOB_STATE_FLAGS, "SIGNALING", false, "Outgoing signal is pending"),
 	add_flag(JOB_STAGE_OUT, JOB_STATE_FLAGS, "STAGE_OUT", false, "Staging out data (burst buffer)"),
+	add_flag(JOB_EXPEDITING, JOB_EXPEDITING, "EXPEDITING", false, "Expediting the requeue"),
 };
 #undef add_flag
 #undef add_flag_eq
@@ -9748,6 +10038,7 @@ static const parser_t PARSER_ARRAY(PROCESS_EXIT_CODE_VERBOSE)[] = {
 #define add_parse(mtype, field, path, desc)				\
 	add_parser(slurm_step_id_t, mtype, false, field, 0, path, desc)
 static const parser_t PARSER_ARRAY(SLURM_STEP_ID)[] = {
+	add_parse(SLUID, sluid, "sluid", "SLUID"),
 	add_parse(UINT32_NO_VAL, job_id, "job_id", "Job ID"),
 	add_parse(UINT32_NO_VAL, step_het_comp, "step_het_component", "HetJob component"),
 	add_parse(STEP_ID, step_id, "step_id", "Job step ID"),
@@ -9763,6 +10054,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(STEP_NAMES)[] = {
 	add_flag_eq(SLURM_EXTERN_CONT, INFINITE, "extern", false, "External step"),
 	add_flag_eq(SLURM_BATCH_SCRIPT, INFINITE, "batch", false, "Batch step"),
 	add_flag_eq(SLURM_INTERACTIVE_STEP, INFINITE, "interactive", false, "Interactive step"),
+	add_flag_eq(NO_VAL, INFINITE, "entire", false, "Entire job (not a specific step)"),
 };
 #undef add_flag_eq
 
@@ -10166,24 +10458,42 @@ static const parser_t PARSER_ARRAY(TOPOLOGY_CONF)[] = {
 static const flag_bit_t PARSER_FLAG_ARRAY(H_RESOURCE_MODE_FLAG)[] = {
 	add_flag_eq(HRES_MODE_1, "MODE_1", NULL),
 	add_flag_eq(HRES_MODE_2, "MODE_2", NULL),
+	add_flag_eq(HRES_MODE_3, "MODE_3", NULL),
 };
 #undef add_flag_eq
 
 #define add_parse(mtype, field, path, desc)				\
-	add_parser(hierarchy_layer_t, mtype, true, field, 0, path, desc)
-static const parser_t PARSER_ARRAY(H_LAYER)[] = {
-	add_parse(HOSTLIST_STRING, nodes, "nodes", "Multiple node names may be specified using simple node range expressions"),
-	add_parse(UINT32_NO_VAL, count, "count", "Resource quantity"),
+	add_parser(hres_variable_t, mtype, true, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(H_VARIABLE)[] = {
+	add_parse(STRING, name, "name", "Variable name"),
+	add_parse(UINT32_NO_VAL, value, "value", "Variable value"),
 };
 #undef add_parse
 
 #define add_parse(mtype, field, path, desc)				\
+	add_parser(hierarchy_layer_t, mtype, false, field, 0, path, desc)
+#define add_parse_req(mtype, field, path, desc)				\
+	add_parser(hierarchy_layer_t, mtype, true, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(H_LAYER)[] = {
+	add_parse_req(HOSTLIST_STRING, nodes, "nodes", "Multiple node names may be specified using simple node range expressions"),
+	add_parse(H_VARIABLE_LIST, base, "base", "Resource consumption that will be factored into the current system state"),
+	add_parse_req(UINT32_NO_VAL, count, "count", "Resource quantity"),
+};
+#undef add_parse
+#undef add_parse_req
+
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(hierarchical_resource_t, mtype, false, field, 0, path, desc)
+#define add_parse_req(mtype, field, path, desc)				\
 	add_parser(hierarchical_resource_t, mtype, true, field, 0, path, desc)
 static const parser_t PARSER_ARRAY(H_RESOURCE)[] = {
-	add_parse(STRING, name, "resource", "Name of hierarchical resource"),
-	add_parse(H_RESOURCE_MODE_FLAG, mode, "mode", "Hierarchical resource mode"),
-	add_parse(H_LAYER_LIST, layers, "layers", "Hierarchical resource layers"),
+	add_parse_req(STRING, name, "resource", "Name of hierarchical resource"),
+	add_parse_req(H_RESOURCE_MODE_FLAG, mode, "mode", "Hierarchical resource mode"),
+	add_parse_req(H_LAYER_LIST, layers, "layers", "Hierarchical resource layers"),
+	add_parse(STRING, topology_name, "topology", "Name of topology associated to hierarchical resource"),
+	add_parse(H_VARIABLE_LIST, variables, "variables", "Hierarchical resource variables"),
 };
+#undef add_parse_req
 #undef add_parse
 
 #define add_openapi_response_meta(rtype)				\
@@ -10238,6 +10548,9 @@ add_openapi_response_single(OPENAPI_SINFO_RESP, SINFO_DATA_LIST, "sinfo", "node 
 add_openapi_response_single(OPENAPI_KILL_JOBS_RESP, KILL_JOBS_RESP_MSG_PTR, "status", "resultant status of signal request");
 add_openapi_response_single(OPENAPI_KILL_JOB_RESP, KILL_JOBS_RESP_MSG_PTR, "status", "resultant status of signal request");
 add_openapi_response_single(OPENAPI_RESERVATION_MOD_RESP, RESERVATION_DESC_MSG_LIST, "reservations", "Reservation descriptions");
+add_openapi_response_single(OPENAPI_HOSTLIST_REQ_RESP, HOSTLIST_STRING_TO_STRING, "hostlist", "Hostlist expression string");
+add_openapi_response_single(OPENAPI_HOSTNAMES_REQ_RESP, HOSTLIST_STRING, "hostnames", "Array of host names");
+add_openapi_response_single(OPENAPI_JOB_MODIFY_RESP, STRING_LIST, "results", "Job modify results");
 
 #define add_parse(mtype, field, path, desc)				\
 	add_parser(openapi_job_post_response_t, mtype, false, field, 0, path, desc)
@@ -10257,8 +10570,8 @@ static const parser_t PARSER_ARRAY(OPENAPI_JOB_POST_RESPONSE)[] = {
 #define add_parse_deprec(mtype, field, overloads, path, desc, deprec)	\
 	add_parser_deprec(openapi_job_submit_response_t, mtype, false, field, overloads, path, desc, deprec)
 static const parser_t PARSER_ARRAY(OPENAPI_JOB_SUBMIT_RESPONSE)[] = {
-	add_parse(UINT32, resp.job_id, "job_id", "submitted Job ID"),
-	add_parse(STEP_ID, resp.step_id, "step_id", "submitted Step ID"),
+	add_parse(UINT32, resp.step_id.job_id, "job_id", "submitted Job ID"),
+	add_parse(STEP_ID, resp.step_id.step_id, "step_id", "submitted Step ID"),
 	add_parse(STRING, resp.job_submit_user_msg, "job_submit_user_msg", "Job submission user message"),
 	add_openapi_response_meta(openapi_job_submit_response_t),
 	add_openapi_response_errors(openapi_job_submit_response_t),
@@ -10427,6 +10740,17 @@ static const parser_t PARSER_ARRAY(OPENAPI_JOB_ALLOC_RESP)[] = {
 	add_openapi_response_meta(openapi_job_submit_response_t),
 	add_openapi_response_errors(openapi_job_submit_response_t),
 	add_openapi_response_warnings(openapi_job_submit_response_t),
+};
+#undef add_parse
+
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(openapi_job_modify_req_t, mtype, false, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(OPENAPI_JOB_MODIFY_REQ)[] = {
+	add_parse(SELECTED_STEP_LIST, job_id_list, "job_id_list", "CSV list of Job IDs to modify"),
+	add_parse(JOB_MODIFY_PTR, job_rec, "job_rec", "Job modify message"),
+	add_openapi_response_meta(openapi_job_modify_req_t),
+	add_openapi_response_errors(openapi_job_modify_req_t),
+	add_openapi_response_warnings(openapi_job_modify_req_t),
 };
 #undef add_parse
 
@@ -10733,6 +11057,7 @@ static const parser_t parsers[] = {
 	addps(CONTROLLER_PING_RESULT, bool, NEED_NONE, STRING, NULL, NULL, NULL),
 	addpsa(HOSTLIST, STRING, hostlist_t *, NEED_NONE, NULL),
 	addpsa(HOSTLIST_STRING, STRING, char *, NEED_NONE, NULL),
+	addps(HOSTLIST_STRING_TO_STRING, char *, NEED_NONE, STRING, NULL, NULL, "Hostlist expression string"),
 	addps(CPU_FREQ_FLAGS, uint32_t, NEED_NONE, STRING, NULL, NULL, NULL),
 	addps(ERROR, int, NEED_NONE, STRING, NULL, NULL, NULL),
 	addpsa(JOB_INFO_MSG, JOB_INFO, job_info_msg_t, NEED_NONE, NULL),
@@ -10760,6 +11085,7 @@ static const parser_t parsers[] = {
 	addpsa(KILL_JOBS_RESP_MSG, KILL_JOBS_RESP_JOB, kill_jobs_resp_msg_t, NEED_NONE, "List of jobs signal responses"),
 	addpsp(CONTROLLER_PING_PRIMARY, BOOL, int, NEED_NONE, "Is responding slurmctld the primary controller"),
 	addpsp(H_RESOURCES_AS_LICENSE_LIST, H_RESOURCE_LIST, list_t *, NEED_NONE, "List of hierarchical resources"),
+	addps(SLUID, sluid_t, NEED_NONE, STRING, NULL, NULL, "Slurm Lexicographically-sortable Unique ID"),
 
 	/* Complex type parsers */
 	addpcp(ASSOC_ID, UINT32, slurmdb_assoc_rec_t, NEED_NONE, "Association ID"),
@@ -10868,7 +11194,7 @@ static const parser_t parsers[] = {
 	addpp(LISTSTEPS_INFO_PTR, liststeps_info_t *, LISTSTEPS_INFO, false, NULL, NULL),
 	addpp(PARTITION_INFO_MSG_PTR, partition_info_msg_t *, PARTITION_INFO_MSG, false, NULL, NULL),
 	addpp(RESERVATION_INFO_MSG_PTR, reserve_info_msg_t *, RESERVATION_INFO_MSG, false, NULL, NULL),
-	addpp(SELECTED_STEP_PTR, slurm_selected_step_t *, SELECTED_STEP, false, NULL, NULL),
+	addpp(SELECTED_STEP_PTR, slurm_selected_step_t *, SELECTED_STEP, false, NULL, slurm_destroy_selected_step),
 	addpp(SLURM_STEP_ID_STRING_PTR, slurm_step_id_t *, SLURM_STEP_ID_STRING, false, NULL, NULL),
 	addpp(STEP_INFO_MSG_PTR, job_step_info_response_msg_t *, STEP_INFO_MSG, false, NULL, NULL),
 	addpp(BITSTR_PTR, bitstr_t *, BITSTR, false, NULL, NULL),
@@ -10877,6 +11203,7 @@ static const parser_t parsers[] = {
 	addpp(POWER_MGMT_DATA_PTR, void *, POWER_MGMT_DATA, true, NULL, NULL),
 	addpp(KILL_JOBS_RESP_MSG_PTR, kill_jobs_resp_msg_t *, KILL_JOBS_RESP_MSG, false, NULL, FREE_FUNC(KILL_JOBS_RESP_MSG)),
 	addpp(INT32_PTR, int32_t *, INT32, false, NULL, xfree_ptr),
+	addpp(SLUID_PTR, sluid_t *, STRING, true, NULL, xfree_ptr),
 
 	/* Array of parsers */
 	addpap(ASSOC_SHORT, slurmdb_assoc_rec_t, NEW_FUNC(ASSOC), slurmdb_destroy_assoc_rec),
@@ -10886,6 +11213,8 @@ static const parser_t parsers[] = {
 	addpap(USER, slurmdb_user_rec_t, NEW_FUNC(USER), slurmdb_destroy_user_rec),
 	addpap(USER_SHORT, slurmdb_user_rec_t, NULL, slurmdb_destroy_user_rec),
 	addpap(JOB, slurmdb_job_rec_t, (parser_new_func_t) slurmdb_create_job_rec, slurmdb_destroy_job_rec),
+	addpap(JOB_MODIFY, slurmdb_job_rec_t, (parser_new_func_t) slurmdb_create_job_rec, slurmdb_destroy_job_rec),
+	addpap(OPENAPI_JOB_MODIFY_REQ, openapi_job_modify_req_t, NULL, FREE_FUNC(OPENAPI_JOB_MODIFY_REQ)),
 	addpap(STEP, slurmdb_step_rec_t, (parser_new_func_t) slurmdb_create_step_rec, slurmdb_destroy_step_rec),
 	addpap(ACCOUNT, slurmdb_account_rec_t, NEW_FUNC(ACCOUNT), slurmdb_destroy_account_rec),
 	addpap(ACCOUNT_SHORT, slurmdb_account_rec_t, NULL, slurmdb_destroy_account_rec),
@@ -10995,6 +11324,7 @@ static const parser_t parsers[] = {
 	addpap(BLOCK_CONFIG, slurm_conf_block_t, NULL, (parser_free_func_t) free_block_conf),
 	addpap(H_RESOURCE, hierarchical_resource_t, NULL, FREE_FUNC(H_RESOURCE)),
 	addpap(H_LAYER, hierarchy_layer_t, NULL, FREE_FUNC(H_LAYER)),
+	addpap(H_VARIABLE, hres_variable_t, NULL, hres_variable_free),
 
 	/* OpenAPI responses */
 	addoar(OPENAPI_RESP),
@@ -11038,6 +11368,9 @@ static const parser_t parsers[] = {
 	addpap(OPENAPI_JOB_ALLOC_RESP, openapi_job_alloc_response_t, NULL, NULL),
 	addoar(OPENAPI_KILL_JOB_RESP),
 	addoar(OPENAPI_RESERVATION_MOD_RESP),
+	addoar(OPENAPI_HOSTNAMES_REQ_RESP),
+	addoar(OPENAPI_HOSTLIST_REQ_RESP),
+	addoar(OPENAPI_JOB_MODIFY_RESP),
 
 	/* Flag bit arrays */
 	addfa(ASSOC_FLAGS, slurmdb_assoc_flags_t),
@@ -11122,6 +11455,7 @@ static const parser_t parsers[] = {
 	addpl(INT32_LIST, INT32_PTR, NEED_NONE),
 	addpl(H_RESOURCE_LIST, H_RESOURCE_PTR, NEED_NONE),
 	addpl(H_LAYER_LIST, H_LAYER_PTR, NEED_NONE),
+	addpl(H_VARIABLE_LIST, H_VARIABLE_PTR, NEED_NONE),
 };
 #undef addpl
 #undef addps

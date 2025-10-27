@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #include "slurm/slurm.h"
+#include "slurm/slurm_errno.h"
 
 #include "src/common/http.h"
 #include "src/common/read_config.h"
@@ -53,84 +54,141 @@ typedef struct {
 	char *text;
 } http_status_code_txt_t;
 
+#define T(code, text) { code, text }
 static const http_status_code_txt_t http_status_codes[] = {
-	{ HTTP_STATUS_CODE_CONTINUE, "CONTINUE" },
-	{ HTTP_STATUS_CODE_SWITCH_PROTOCOLS, "SWITCH PROTOCOLS" },
-	{ HTTP_STATUS_CODE_SUCCESS_OK, "OK" },
-	{ HTTP_STATUS_CODE_SUCCESS_CREATED, "CREATED" },
-	{ HTTP_STATUS_CODE_SUCCESS_ACCEPTED, "ACCEPTED" },
-	{ HTTP_STATUS_CODE_SUCCESS_NON_AUTHORITATIVE,
-	  "OK (NON AUTHORITATIVE)" },
-	{ HTTP_STATUS_CODE_SUCCESS_NO_CONTENT, "NO CONTENT" },
-	{ HTTP_STATUS_CODE_SUCCESS_RESET_CONNECTION, "RESET CONNECTION" },
-	{ HTTP_STATUS_CODE_SUCCESS_PARTIAL_CONTENT, "PARTIAL CONTENT" },
-	{ HTTP_STATUS_CODE_REDIRECT_MULTIPLE_CHOICES,
-	  "REDIRECT MULTIPLE CHOICES" },
-	{ HTTP_STATUS_CODE_REDIRECT_MOVED_PERMANENTLY, "MOVED PERMANENTLY" },
-	{ HTTP_STATUS_CODE_REDIRECT_FOUND, "REDIRECT FOUND" },
-	{ HTTP_STATUS_CODE_REDIRECT_SEE_OTHER, "REDIRECT SEE OTHER" },
-	{ HTTP_STATUS_CODE_REDIRECT_NOT_MODIFIED, "NOT MODIFIED" },
-	{ HTTP_STATUS_CODE_REDIRECT_USE_PROXY, "USE PROXY" },
-	{ HTTP_STATUS_CODE_REDIRECT_TEMP_REDIRCT, "TEMP REDIRECT" },
-	{ HTTP_STATUS_CODE_ERROR_BAD_REQUEST, "BAD REQUEST" },
-	{ HTTP_STATUS_CODE_ERROR_UNAUTHORIZED, "UNAUTHORIZED" },
-	{ HTTP_STATUS_CODE_ERROR_PAYMENT_REQUIRED, "PAYMENT REQUIRED" },
-	{ HTTP_STATUS_CODE_ERROR_FORBIDDEN, "FORBIDDEN" },
-	{ HTTP_STATUS_CODE_ERROR_NOT_FOUND, "NOT FOUND" },
-	{ HTTP_STATUS_CODE_ERROR_METHOD_NOT_ALLOWED, "NOT ALLOWED" },
-	{ HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE, "NOT ACCEPTABLE" },
-	{ HTTP_STATUS_CODE_ERROR_PROXY_AUTH_REQ,
-	  "PROXY AUTHENTICATION REQUIRED" },
-	{ HTTP_STATUS_CODE_ERROR_REQUEST_TIMEOUT, "REQUEST TIMEOUT" },
-	{ HTTP_STATUS_CODE_ERROR_CONFLICT, "CONFLICT" },
-	{ HTTP_STATUS_CODE_ERROR_GONE, "GONE" },
-	{ HTTP_STATUS_CODE_ERROR_LENGTH_REQUIRED, "LENGTH REQUIRED" },
-	{ HTTP_STATUS_CODE_ERROR_PRECONDITION_FAILED, "PRECONDITION FAILED" },
-	{ HTTP_STATUS_CODE_ERROR_ENTITY_TOO_LARGE, "ENTITY TOO LARGE" },
-	{ HTTP_STATUS_CODE_ERROR_URI_TOO_LONG, "URI TOO LONG" },
-	{ HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE,
-	  "UNSUPPORTED MEDIA TYPE" },
-	{ HTTP_STATUS_CODE_ERROR_REQUEST_RANGE_UNSATISFIABLE,
-	  "REQUEST RANGE UNJUSTIFIABLE" },
-	{ HTTP_STATUS_CODE_ERROR_EXPECTATION_FAILED, "EXPECTATION FAILED" },
-	{ HTTP_STATUS_CODE_ERROR_IM_A_TEAPOT, "I'm a Teapot" }, /* rfc7168 */
-	{ HTTP_STATUS_CODE_ERROR_MISDIRECT_REQUESTED,
-	  "MISDIRECTED REQUEST" }, /* rfc9110 15.5.20 */
-	{ HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT,
-	  "UNPROCESSABLE CONTENT" }, /* rfc9110 15.5.21 */
-	{ HTTP_STATUS_CODE_ERROR_UPGRADE_REQUIRED,
-	  "UPGRADE REQUIRED" }, /* rfc7231 6.5.15 */
-	{ HTTP_STATUS_CODE_SRVERR_INTERNAL, "INTERNAL ERROR" },
-	{ HTTP_STATUS_CODE_SRVERR_NOT_IMPLEMENTED, "NOT IMPLEMENTED" },
-	{ HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY, "BAD GATEWAY" },
-	{ HTTP_STATUS_CODE_SRVERR_SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE" },
-	{ HTTP_STATUS_CODE_SRVERR_GATEWAY_TIMEOUT, "GATEWAY TIMEOUT" },
-	{ HTTP_STATUS_CODE_SRVERR_HTTP_VERSION_NOT_SUPPORTED,
-	  "HTTP VERSION NOT SUPPORTED" },
-	{ HTTP_STATUS_CODE_SRVERR_VARIANT_ALSO_NEGOTIATES,
-		"Variant Also Negotiates" },
-	{ HTTP_STATUS_CODE_SRVERR_INSUFFICENT_STORAGE, "Insufficient Storage" },
-	{ HTTP_STATUS_CODE_SRVERR_LOOP_DETECTED, "Loop Detected" },
-	{ HTTP_STATUS_CODE_SRVERR_NOT_EXTENDED, "Not Extended" },
-	{ HTTP_STATUS_CODE_SRVERR_NETWORK_AUTH_REQ,
-		"Network Authentication Required" },
-	{ HTTP_STATUS_CODE_DEFAULT, "default" },
+	// clang-format off
+	T(HTTP_STATUS_CODE_CONTINUE, "CONTINUE"),
+	T(HTTP_STATUS_CODE_SWITCH_PROTOCOLS, "SWITCH PROTOCOLS"),
+	T(HTTP_STATUS_CODE_SUCCESS_OK, "OK"),
+	T(HTTP_STATUS_CODE_SUCCESS_CREATED, "CREATED"),
+	T(HTTP_STATUS_CODE_SUCCESS_ACCEPTED, "ACCEPTED"),
+	T(HTTP_STATUS_CODE_SUCCESS_NON_AUTHORITATIVE, "OK (NON AUTHORITATIVE)"),
+	T(HTTP_STATUS_CODE_SUCCESS_NO_CONTENT, "NO CONTENT"),
+	T(HTTP_STATUS_CODE_SUCCESS_RESET_CONNECTION, "RESET CONNECTION"),
+	T(HTTP_STATUS_CODE_SUCCESS_PARTIAL_CONTENT, "PARTIAL CONTENT"),
+	T(HTTP_STATUS_CODE_REDIRECT_MULTIPLE_CHOICES, "REDIRECT MULTIPLE CHOICES"),
+	T(HTTP_STATUS_CODE_REDIRECT_MOVED_PERMANENTLY, "MOVED PERMANENTLY"),
+	T(HTTP_STATUS_CODE_REDIRECT_FOUND, "REDIRECT FOUND"),
+	T(HTTP_STATUS_CODE_REDIRECT_SEE_OTHER, "REDIRECT SEE OTHER"),
+	T(HTTP_STATUS_CODE_REDIRECT_NOT_MODIFIED, "NOT MODIFIED"),
+	T(HTTP_STATUS_CODE_REDIRECT_USE_PROXY, "USE PROXY"),
+	T(HTTP_STATUS_CODE_REDIRECT_TEMP_REDIRCT, "TEMP REDIRECT"),
+	T(HTTP_STATUS_CODE_ERROR_BAD_REQUEST, "BAD REQUEST"),
+	T(HTTP_STATUS_CODE_ERROR_UNAUTHORIZED, "UNAUTHORIZED"),
+	T(HTTP_STATUS_CODE_ERROR_PAYMENT_REQUIRED, "PAYMENT REQUIRED"),
+	T(HTTP_STATUS_CODE_ERROR_FORBIDDEN, "FORBIDDEN"),
+	T(HTTP_STATUS_CODE_ERROR_NOT_FOUND, "NOT FOUND"),
+	T(HTTP_STATUS_CODE_ERROR_METHOD_NOT_ALLOWED, "NOT ALLOWED"),
+	T(HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE, "NOT ACCEPTABLE"),
+	T(HTTP_STATUS_CODE_ERROR_PROXY_AUTH_REQ, "PROXY AUTHENTICATION REQUIRED"),
+	T(HTTP_STATUS_CODE_ERROR_REQUEST_TIMEOUT, "REQUEST TIMEOUT"),
+	T(HTTP_STATUS_CODE_ERROR_CONFLICT, "CONFLICT"),
+	T(HTTP_STATUS_CODE_ERROR_GONE, "GONE"),
+	T(HTTP_STATUS_CODE_ERROR_LENGTH_REQUIRED, "LENGTH REQUIRED"),
+	T(HTTP_STATUS_CODE_ERROR_PRECONDITION_FAILED, "PRECONDITION FAILED"),
+	T(HTTP_STATUS_CODE_ERROR_ENTITY_TOO_LARGE, "ENTITY TOO LARGE"),
+	T(HTTP_STATUS_CODE_ERROR_URI_TOO_LONG, "URI TOO LONG"),
+	T(HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED MEDIA TYPE"),
+	T(HTTP_STATUS_CODE_ERROR_REQUEST_RANGE_UNSATISFIABLE, "REQUEST RANGE UNJUSTIFIABLE"),
+	T(HTTP_STATUS_CODE_ERROR_EXPECTATION_FAILED, "EXPECTATION FAILED"),
+	/* rfc7168 */
+	T(HTTP_STATUS_CODE_ERROR_IM_A_TEAPOT, "I'm a Teapot"),
+	/* rfc9110 15.5.20 */
+	T(HTTP_STATUS_CODE_ERROR_MISDIRECT_REQUESTED, "MISDIRECTED REQUEST"),
+	/* rfc9110 15.5.21 */
+	T(HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT, "UNPROCESSABLE CONTENT"),
+	/* rfc7231 6.5.15 */
+	T(HTTP_STATUS_CODE_ERROR_UPGRADE_REQUIRED, "UPGRADE REQUIRED"),
+	T(HTTP_STATUS_CODE_SRVERR_INTERNAL, "INTERNAL ERROR"),
+	T(HTTP_STATUS_CODE_SRVERR_NOT_IMPLEMENTED, "NOT IMPLEMENTED"),
+	T(HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY, "BAD GATEWAY"),
+	T(HTTP_STATUS_CODE_SRVERR_SERVICE_UNAVAILABLE, "SERVICE UNAVAILABLE"),
+	T(HTTP_STATUS_CODE_SRVERR_GATEWAY_TIMEOUT, "GATEWAY TIMEOUT"),
+	T(HTTP_STATUS_CODE_SRVERR_HTTP_VERSION_NOT_SUPPORTED, "HTTP VERSION NOT SUPPORTED"),
+	T(HTTP_STATUS_CODE_SRVERR_VARIANT_ALSO_NEGOTIATES, "Variant Also Negotiates"),
+	T(HTTP_STATUS_CODE_SRVERR_INSUFFICENT_STORAGE, "Insufficient Storage"),
+	T(HTTP_STATUS_CODE_SRVERR_LOOP_DETECTED, "Loop Detected"),
+	T(HTTP_STATUS_CODE_SRVERR_NOT_EXTENDED, "Not Extended"),
+	T(HTTP_STATUS_CODE_SRVERR_NETWORK_AUTH_REQ, "Network Authentication Required"),
+	T(HTTP_STATUS_CODE_DEFAULT, "default"),
+	// clang-format on
+};
+#undef T
+
+/* Conversion from slurm_error to http_status code map */
+#define T(error, code) { error, code }
+
+static const struct {
+	slurm_err_t error;
+	http_status_code_t code;
+} http_status_errors[] = {
+	// clang-format off
+	T(SLURM_SUCCESS, HTTP_STATUS_CODE_SUCCESS_OK),
+	T(SLURM_NO_CHANGE_IN_DATA, HTTP_STATUS_CODE_REDIRECT_NOT_MODIFIED),
+	T(ESLURM_REST_INVALID_QUERY, HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT),
+	T(ESLURM_REST_FAIL_PARSING, HTTP_STATUS_CODE_ERROR_BAD_REQUEST),
+	T(ESLURM_REST_INVALID_JOBS_DESC, HTTP_STATUS_CODE_ERROR_BAD_REQUEST),
+	T(ESLURM_DATA_UNKNOWN_MIME_TYPE, HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE),
+	T(ESLURM_INVALID_JOB_ID, HTTP_STATUS_CODE_ERROR_NOT_FOUND),
+	T(ESLURM_REST_UNKNOWN_URL, HTTP_STATUS_CODE_ERROR_NOT_FOUND),
+	T(ESLURM_URL_INVALID_PATH, HTTP_STATUS_CODE_ERROR_NOT_FOUND),
+	T(SLURM_PROTOCOL_SOCKET_ZERO_BYTES_SENT, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURM_COMMUNICATIONS_CONNECTION_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURM_COMMUNICATIONS_SEND_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURM_COMMUNICATIONS_RECEIVE_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURM_COMMUNICATIONS_SHUTDOWN_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURMCTLD_COMMUNICATIONS_CONNECTION_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURMCTLD_COMMUNICATIONS_SEND_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURMCTLD_COMMUNICATIONS_RECEIVE_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURMCTLD_COMMUNICATIONS_SHUTDOWN_ERROR, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURMCTLD_COMMUNICATIONS_BACKOFF, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(ESLURM_DB_CONNECTION, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(ESLURM_PROTOCOL_INCOMPLETE_PACKET, HTTP_STATUS_CODE_SRVERR_BAD_GATEWAY),
+	T(SLURM_PROTOCOL_SOCKET_IMPL_TIMEOUT, HTTP_STATUS_CODE_SRVERR_GATEWAY_TIMEOUT),
+	T(SLURM_PROTOCOL_AUTHENTICATION_ERROR, HTTP_STATUS_CODE_SRVERR_NETWORK_AUTH_REQ),
+	T(ESLURM_HTTP_INVALID_CONTENT_LENGTH, HTTP_STATUS_CODE_ERROR_BAD_REQUEST),
+	T(ESLURM_HTTP_CONTENT_LENGTH_TOO_LARGE, HTTP_STATUS_CODE_ERROR_ENTITY_TOO_LARGE),
+	T(ESLURM_HTTP_POST_MISSING_CONTENT_LENGTH, HTTP_STATUS_CODE_ERROR_LENGTH_REQUIRED),
+	T(ESLURM_HTTP_INVALID_CONTENT_ENCODING, HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE),
+	T(ESLURM_HTTP_UNSUPPORTED_EXPECT, HTTP_STATUS_CODE_ERROR_EXPECTATION_FAILED),
+	T(ESLURM_HTTP_UNSUPPORTED_KEEP_ALIVE, HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE),
+	T(ESLURM_HTTP_INVALID_METHOD, HTTP_STATUS_CODE_ERROR_METHOD_NOT_ALLOWED),
+	T(ESLURM_HTTP_UNSUPPORTED_UPGRADE, HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE),
+	T(ESLURM_HTTP_INVALID_TRANSFER_ENCODING, HTTP_STATUS_CODE_ERROR_NOT_ACCEPTABLE),
+	T(ESLURM_AUTH_CRED_INVALID, HTTP_STATUS_CODE_ERROR_UNAUTHORIZED),
+	T(ESLURM_AUTH_EXPIRED, HTTP_STATUS_CODE_ERROR_UNAUTHORIZED),
+	T(ESLURM_AUTH_UNABLE_TO_GENERATE_TOKEN, HTTP_STATUS_CODE_ERROR_UNAUTHORIZED),
+	T(ESLURM_HTTP_UNEXPECTED_BODY, HTTP_STATUS_CODE_ERROR_BAD_REQUEST),
+	T(ESLURM_DATA_UNKNOWN_MIME_TYPE, HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE),
+	T(ESLURM_HTTP_UNKNOWN_ACCEPT_MIME_TYPE, HTTP_STATUS_CODE_ERROR_UNSUPPORTED_MEDIA_TYPE),
+	T(ESLURM_REST_UNKNOWN_URL_METHOD, HTTP_STATUS_CODE_ERROR_METHOD_NOT_ALLOWED),
+	T(ESLURM_DATA_PATH_NOT_FOUND, HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT),
+	T(ESLURM_DATA_PARSE_BAD_INPUT, HTTP_STATUS_CODE_ERROR_UNPROCESSABLE_CONTENT),
+	// clang-format on
 };
 
+#undef T
+
+#define T(method, upper_case, lower_case) \
+	[method] = { method, upper_case, lower_case }
 static const struct {
 	http_request_method_t method;
 	const char *uc_text;
 	const char *lc_text;
 } method_strings[] = {
-	{ HTTP_REQUEST_GET, "GET", "get" },
-	{ HTTP_REQUEST_POST, "POST", "post" },
-	{ HTTP_REQUEST_PUT, "PUT", "put" },
-	{ HTTP_REQUEST_DELETE, "DELETE", "delete" },
-	{ HTTP_REQUEST_OPTIONS, "OPTIONS", "options" },
-	{ HTTP_REQUEST_HEAD, "HEAD", "head" },
-	{ HTTP_REQUEST_PATCH, "PATCH", "patch" },
-	{ HTTP_REQUEST_TRACE, "TRACE", "trace" },
+	T(HTTP_REQUEST_INVALID, NULL, NULL),
+	T(HTTP_REQUEST_GET, "GET", "get"),
+	T(HTTP_REQUEST_POST, "POST", "post"),
+	T(HTTP_REQUEST_PUT, "PUT", "put"),
+	T(HTTP_REQUEST_DELETE, "DELETE", "delete"),
+	T(HTTP_REQUEST_OPTIONS, "OPTIONS", "options"),
+	T(HTTP_REQUEST_HEAD, "HEAD", "head"),
+	T(HTTP_REQUEST_PATCH, "PATCH", "patch"),
+	T(HTTP_REQUEST_TRACE, "TRACE", "trace"),
+	T(HTTP_REQUEST_INVALID_MAX, NULL, NULL),
 };
+
+#undef T
 
 #define T(tscheme, str) \
 	{ \
@@ -146,7 +204,8 @@ static const struct {
 	T(URL_SCHEME_INVALID, "INVALID"),
 	T(URL_SCHEME_HTTP, "http"),
 	T(URL_SCHEME_HTTPS, "https"),
-	T(URL_SCHEME_INVALID_MAX, "INVALID_MAX")
+	T(URL_SCHEME_UNIX, "unix"),
+	T(URL_SCHEME_INVALID_MAX, "INVALID_MAX"),
 };
 #undef T
 
@@ -201,37 +260,35 @@ static bool _is_valid_url_char(char buffer)
 		buffer == '-' || buffer == '.' || buffer == '_');
 }
 
-/*
- * decodes % sequence.
- * IN ptr pointing to % character
- * RET \0 on error or decoded character
- */
-static unsigned char _decode_seq(const char *ptr)
+extern unsigned char url_decode_escape_seq(const char *ptr)
 {
 	if (isxdigit(*(ptr + 1)) && isxdigit(*(ptr + 2))) {
-		/* using unsigned char to avoid any rollover */
-		unsigned char high = *(ptr + 1);
-		unsigned char low = *(ptr + 2);
-		unsigned char decoded = (slurm_char_to_hex(high) << 4) +
-					slurm_char_to_hex(low);
+		/* using uint16_t char to catch any overflows */
+		uint16_t high = *(ptr + 1);
+		uint16_t low = *(ptr + 2);
+		uint16_t decoded = ((slurm_char_to_hex(high) << 4) +
+				    slurm_char_to_hex(low));
 
 		//TODO: find more invalid characters?
 		if (decoded == '\0') {
-			error("%s: invalid URL escape sequence for 0x00",
-			      __func__);
+			log_flag(DATA, "%s: invalid URL escape sequence for 0x00",
+				 __func__);
 			return '\0';
-		} else if (decoded == 0xff) {
-			error("%s: invalid URL escape sequence for 0xff",
-			      __func__);
+		} else if (decoded >= 0xff) {
+			log_flag(DATA, "%s: invalid URL escape sequence for 0x%02" PRIx16,
+				 __func__, decoded);
 			return '\0';
 		}
 
-		debug5("%s: URL decoded: 0x%c%c -> %c",
-		       __func__, high, low, decoded);
+		log_flag(DATA, "%s: URL decoded: 0x%c%c -> %c (0x%02" PRIx16 ")",
+		       __func__, (unsigned char) high, (unsigned char) low,
+		       (unsigned char) decoded, decoded);
 
-		return decoded;
+		return (unsigned char) decoded;
 	} else {
-		debug("%s: invalid URL escape sequence: %s", __func__, ptr);
+		log_flag_hex(DATA, ptr, strnlen(ptr, 3),
+			     "%s: invalid URL escape sequence: %s", __func__,
+			     ptr);
 		return '\0';
 	}
 }
@@ -295,7 +352,7 @@ extern data_t *parse_url_path(const char *path, bool convert_types,
 			}
 		case '%': /* rfc3986 */
 		{
-			const char c = _decode_seq(ptr);
+			const char c = url_decode_escape_seq(ptr);
 			if (c != '\0') {
 				/* shift past the hex value */
 				ptr += 2;
@@ -337,8 +394,16 @@ extern http_status_code_t get_http_status_code(const char *str)
 	if (isdigit(str[0])) {
 		uint64_t n = slurm_atoul(str);
 
-		if (!n || (n > HTTP_STATUS_CODE_DEFAULT))
-			return HTTP_STATUS_NONE;
+		/*
+		 * Check for default explicitly as it is outside the valid range
+		 * that is checked by next if()
+		 */
+		if (n == HTTP_STATUS_CODE_DEFAULT)
+			return HTTP_STATUS_CODE_DEFAULT;
+
+		if ((n <= HTTP_STATUS_CODE_INVALID) ||
+		    (n >= HTTP_STATUS_CODE_INVALID_MAX))
+			return HTTP_STATUS_CODE_INVALID;
 
 		return n;
 	}
@@ -347,7 +412,16 @@ extern http_status_code_t get_http_status_code(const char *str)
 		if (!xstrcasecmp(http_status_codes[i].text, str))
 			return http_status_codes[i].code;
 
-	return HTTP_STATUS_NONE;
+	return HTTP_STATUS_CODE_INVALID;
+}
+
+extern http_status_code_t http_status_from_error(slurm_err_t error)
+{
+	for (int i = 0; i < ARRAY_SIZE(http_status_errors); i++)
+		if (error == http_status_errors[i].error)
+			return http_status_errors[i].code;
+
+	return HTTP_STATUS_CODE_SRVERR_INTERNAL;
 }
 
 extern const char *get_http_status_code_string(http_status_code_t code)
@@ -361,20 +435,20 @@ extern const char *get_http_status_code_string(http_status_code_t code)
 
 extern const char *get_http_method_string(http_request_method_t method)
 {
-	for (int i = 0; i < ARRAY_SIZE(method_strings); i++)
-		if (method_strings[i].method == method)
-			return method_strings[i].uc_text;
+	if ((method <= HTTP_REQUEST_INVALID) ||
+	    (method >= HTTP_REQUEST_INVALID_MAX))
+		return NULL;
 
-	return "INVALID";
+	return method_strings[method].uc_text;
 }
 
 extern const char *get_http_method_string_lc(http_request_method_t method)
 {
-	for (int i = 0; i < ARRAY_SIZE(method_strings); i++)
-		if (method_strings[i].method == method)
-			return method_strings[i].lc_text;
+	if ((method <= HTTP_REQUEST_INVALID) ||
+	    (method >= HTTP_REQUEST_INVALID_MAX))
+		return NULL;
 
-	return "INVALID";
+	return method_strings[method].lc_text;
 }
 
 extern http_request_method_t get_http_method(const char *str)
@@ -383,8 +457,92 @@ extern http_request_method_t get_http_method(const char *str)
 		return HTTP_REQUEST_INVALID;
 
 	for (int i = 0; i < ARRAY_SIZE(method_strings); i++)
-		if (!xstrcasecmp(method_strings[i].lc_text, str))
+		if (method_strings[i].method &&
+		    !xstrcasecmp(method_strings[i].lc_text, str))
 			return method_strings[i].method;
 
 	return HTTP_REQUEST_INVALID;
+}
+
+extern void url_free_members(url_t *url)
+{
+	url->scheme = URL_SCHEME_INVALID;
+	xfree(url->host);
+	xfree(url->port);
+	xfree(url->user);
+	xfree(url->path);
+	xfree(url->query);
+	xfree(url->fragment);
+}
+
+extern void url_copy_members(url_t *dst, const url_t *src)
+{
+	url_free_members(dst);
+
+	dst->scheme = src->scheme;
+	dst->host = xstrdup(src->host);
+	dst->port = xstrdup(src->port);
+	dst->user = xstrdup(src->user);
+	dst->path = xstrdup(src->path);
+	dst->query = xstrdup(src->query);
+	dst->fragment = xstrdup(src->fragment);
+}
+
+extern http_header_t *http_header_new(const char *name, const char *value)
+{
+	http_header_t *header = NULL;
+
+	header = xmalloc(sizeof(*header));
+	header->magic = HTTP_HEADER_MAGIC;
+	header->name = xstrdup(name);
+	header->value = xstrdup(value);
+
+	return header;
+}
+
+extern void free_http_header(http_header_t *header)
+{
+	xassert(header->magic == HTTP_HEADER_MAGIC);
+	xfree(header->name);
+	xfree(header->value);
+	header->magic = ~HTTP_HEADER_MAGIC;
+	xfree(header);
+}
+
+/* find operator against http_header_t */
+static int _http_header_find_key(void *x, void *y)
+{
+	const http_header_t *entry = x;
+	const char *key = y;
+
+	xassert(entry->name);
+	xassert(entry->magic == HTTP_HEADER_MAGIC);
+
+	if (key == NULL)
+		return 0;
+
+	/* case insensitive compare per rfc2616:4.2 */
+	if (entry->name && !xstrcasecmp(entry->name, key))
+		return 1;
+	else
+		return 0;
+}
+
+extern const char *find_http_header(list_t *headers, const char *name)
+{
+	http_header_t *header = NULL;
+
+	if (!headers || !name)
+		return NULL;
+
+	header = (http_header_t *) list_find_first(headers,
+						   _http_header_find_key,
+						   (void *) name);
+
+	if (header) {
+		xassert(header->magic == HTTP_HEADER_MAGIC);
+		return header->value;
+	}
+
+	return NULL;
 }

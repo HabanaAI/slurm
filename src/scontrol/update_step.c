@@ -42,25 +42,26 @@
 
 /* Return the current time limit of the specified job/step_id or NO_VAL if the
  * information is not available */
-static uint32_t _get_step_time(uint32_t job_id, uint32_t step_id)
+static uint32_t _get_step_time(slurm_step_id_t *step_id)
 {
 	uint32_t time_limit = NO_VAL;
 	int i, rc;
 	job_step_info_response_msg_t *resp;
 
-	rc = slurm_get_job_steps((time_t) 0, job_id, step_id, &resp, SHOW_ALL);
+	rc = slurm_get_job_steps(step_id, &resp, SHOW_ALL);
 	if (rc == SLURM_SUCCESS) {
 		for (i = 0; i < resp->job_step_count; i++) {
-			if ((resp->job_steps[i].step_id.job_id != job_id) ||
-			    (resp->job_steps[i].step_id.step_id != step_id))
+			if ((resp->job_steps[i].step_id.job_id !=
+			     step_id->job_id) ||
+			    (resp->job_steps[i].step_id.step_id !=
+			     step_id->step_id))
 				continue;	/* should not happen */
 			time_limit = resp->job_steps[i].time_limit;
 			break;
 		}
 		slurm_free_job_step_info_response_msg(resp);
 	} else {
-		error("Could not load state information for step %u.%u: %m",
-		      job_id, step_id);
+		error("Could not load state information for %ps: %m", step_id);
 	}
 
 	return time_limit;
@@ -98,10 +99,12 @@ extern int scontrol_update_step (int argc, char **argv)
 
 		if (xstrncasecmp(tag, "StepId", MAX(taglen, 4)) == 0) {
 			char *end_ptr;
-			step_msg.job_id = (uint32_t) strtol(val, &end_ptr, 10);
+			step_msg.step_id.job_id =
+				(uint32_t) strtol(val, &end_ptr, 10);
 			if (end_ptr[0] == '.') {
-				step_msg.step_id = (uint32_t)
-					strtol(end_ptr+1, (char **) NULL, 10);
+				step_msg.step_id.step_id =
+					(uint32_t) strtol(end_ptr + 1,
+							  (char **) NULL, 10);
 			} else if (end_ptr[0] != '\0') {
 				exit_code = 1;
 				fprintf (stderr, "Invalid StepID parameter: "
@@ -124,9 +127,8 @@ extern int scontrol_update_step (int argc, char **argv)
 				return 0;
 			}
 			if (incr || decr) {
-				step_current_time = _get_step_time(
-							step_msg.job_id,
-							step_msg.step_id);
+				step_current_time =
+					_get_step_time(&step_msg.step_id);
 				if (step_current_time == NO_VAL) {
 					exit_code = 1;
 					return 0;

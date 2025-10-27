@@ -46,11 +46,18 @@
 
 #include "src/common/macros.h"
 
-/* close all FDs >= a specified value */
+/*
+ * Close all FDs >= a specified value
+ * NOTE: logging file descriptors will be skipped
+ * WARNING: Will skip close()ing any open logging file descriptors
+ * IN fd - start closing file descriptors at fd
+ */
 extern void closeall(int fd);
 
 /*
  * close all FDs >= a specified value except FDs in skipped array
+ * NOTE: logging file descriptors will be skipped
+ * WARNING: Will skip close()ing any open logging file descriptors
  * IN fd - start closing file descriptors at fd
  * IN skipped - array of file descriptors to skip (or NULL)
  *              array must be terminated by -1 if provided
@@ -76,6 +83,10 @@ void fd_set_nonblocking(int fd);
  */
 
 void fd_set_blocking(int fd);
+
+/* True is fd has O_NONBLOCK flag active */
+bool fd_is_nonblocking(int fd);
+
 /*
  * Sets the file descriptor (fd) for blocking I/O.
  */
@@ -105,9 +116,6 @@ pid_t fd_is_read_lock_blocked(int fd);
  *    (ie, if a write-lock is already being held on the file),
  *    returns the pid of the process holding the lock; o/w, returns 0.
  */
-
-/* return true if fd is writable right now */
-extern bool fd_is_writable(int fd);
 
 extern int wait_fd_readable(int fd, int time_limit);
 /* Wait for a file descriptor to be readable (up to time_limit seconds).
@@ -168,6 +176,7 @@ extern char *poll_revents_to_str(const short revents);
  * Pass an open fd back over a socket.
  */
 extern void send_fd_over_socket(int socket, int fd);
+extern void send_fd_over_socket_payload(int socket, int fd, char *payload);
 extern int receive_fd_over_socket(int socket);
 
 /*

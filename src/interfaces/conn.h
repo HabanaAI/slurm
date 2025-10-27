@@ -44,9 +44,9 @@
 #include "src/common/slurm_time.h"
 
 typedef enum {
-	TLS_CONN_NULL = 0,
-	TLS_CONN_SERVER,
-	TLS_CONN_CLIENT,
+	CONN_NULL = 0,
+	CONN_SERVER,
+	CONN_CLIENT,
 } conn_mode_t;
 
 typedef struct {
@@ -83,7 +83,7 @@ typedef struct {
          */
 	bool defer_negotiation;
 	/*
-	 * server certificate used by TLS_CONN_CLIENT connections when server
+	 * server certificate used by CONN_CLIENT connections when server
 	 * certificate is not signed by a CA in our trust store
 	 */
 	char *cert;
@@ -93,9 +93,9 @@ extern char *conn_mode_to_str(conn_mode_t mode);
 
 /*
  * Return true if TLS is enabled for Slurm communications
- * WARNING: tls_enabled() is different than tls_available()
+ * WARNING: conn_tls_enabled() is different than tls_available()
  */
-extern bool tls_enabled(void);
+extern bool conn_tls_enabled(void);
 
 extern int conn_g_init(void);
 extern int conn_g_fini(void);
@@ -152,7 +152,20 @@ extern int conn_g_load_ca_cert(char *cert_file);
  * RET ptr to TLS state
  */
 extern void *conn_g_create(const conn_args_t *conn_args);
+/*
+ * Destroy connection state and release memory
+ * Note: Use FREE_NULL_CONN() instead of calling directly
+ * IN conn - connection to destroy
+ * IN close_fds - True to close input and output file descriptors
+ */
 extern void conn_g_destroy(void *conn, bool close_fds);
+
+#define FREE_NULL_CONN(_X)                        \
+	do {                                      \
+		if (_X)                           \
+			conn_g_destroy(_X, true); \
+		_X = NULL;                        \
+	} while (0)
 
 /*
  * Attempt TLS connection negotiation

@@ -1,4 +1,4 @@
-.TH slurmrestd "8" "Slurm REST Daemon" "June 2025" "Slurm REST Daemon"
+.TH slurmrestd "8" "Slurm REST Daemon" "Slurm 25.11" "Slurm REST Daemon"
 
 .SH "NAME"
 slurmrestd \- Interface to Slurm via REST API.
@@ -10,9 +10,8 @@ slurmrestd \- Interface to Slurm via REST API.
 .PP
 \fBInetd Mode\fR: slurmrestd will read and write to STDIO. If STDIN is a socket
 file descriptor, then slurmrestd will detect this and use relevant
-functionality. If a controlling TTY is detected, interactive mode will
-automatically activate to provide additional logging information. This mode is
-designed to work with piped input, inetd, xinetd or systemd socket activation.
+functionality. This mode is designed to work with piped input, inetd, xinetd or
+systemd socket activation.
 
 .PP
 \fBListen Mode\fR: slurmrestd will open a listening socket on each requested
@@ -32,7 +31,7 @@ TLS plugin to encrypt traffic.
 .IP
 
 .TP
-\fBunix:/path/to/socket\fR
+\fBunix:///path/to/socket\fR
 Listen on local UNIX socket. Must have permission to create socket in
 filesystem.
 .IP
@@ -175,6 +174,28 @@ OpenAPI specifications if the schema is only referenced once.
 .RE
 .IP
 
+.TP
+\fB[data_parser/]v0.0.44[+fast][+minimize_refs]\fR
+Load data_parser/]v0.0.44 plugin to for formatting of data. Only compatible
+with \fBopenapi/slurmctld\fR, \fBopenapi/slurmdbd\fR, and \fBopenapi/util\fR
+content plugins.
+.RS
+.TP
+\fB+fast\fR
+Disable builtin warnings and other logic to strictly validate
+incoming requests. Should only ever be used in a production environment with
+very well tested clients and potentially malformatted requests will be accepted
+as given and no warnings will be generated about ignored or incorrect fields or
+values.
+.IP
+.TP
+\fB+minimize_refs\fR
+Avoid inline expansion of referenced schemas (via \fI$ref\fR) in generated
+OpenAPI specifications if the schema is only referenced once.
+.IP
+.RE
+.IP
+
 .RE
 .IP
 
@@ -228,7 +249,10 @@ Default: 124
 .TP
 \fB\-s <plugin>\fR[,plugin]...
 Comma\-delimited list of OpenAPI plugins to load, which will determine the
-available content. By default all available OpenAPI plugins will be loaded.
+available content. By default, OpenAPI plugins loaded will be
+\fIslurmctld,slurmdbd\fR when
+\fBAccountingStorageType\fR=\fIaccounting_storage/slurmdbd\fR is configured in
+\fBslurm.conf\fR(5) or \fIslurmctld\fR for any other configuration.
 See also \fB-d\fR for the data_parser plugins controlling the output format.
 .RS
 .TP
@@ -245,6 +269,12 @@ Provides 'slurm/' endpoints for the loaded data_parser plugins.
 \fB[openapi/]slurmdbd\fR
 Provides 'slurmdb/' endpoints for the loaded data_parser plugins. This plugin
 will fail if \fBaccounting_storage/slurmdbd\fR is not used in the cluster.
+.IP
+
+.TP
+\fB[openapi/]util\fR
+Provides 'util/' endpoints for the loaded data_parser plugins. Util is short for
+utility. It provides utilities available directly through slurmrestd.
 .IP
 .RE
 .IP
@@ -266,7 +296,8 @@ or root or the daemon won't start with the default settings.
 \fB\-v\fR
 Verbose operation. Multiple \fBv\fR's can be specified, with each '\fBv\fR'
 beyond the first increasing verbosity, up to 6 times (i.e. \-vvvvvv).
-Higher verbosity levels will have significant performance impact.
+Higher verbosity levels will have significant performance impact. See
+\fBSLURMRESTD_DEBUG\fR for description of logging targets.
 .IP
 
 .TP
@@ -356,6 +387,16 @@ variable takes precedence over the setting in the slurm.conf.
 .IP
 
 .TP
+\fBSLURM_DEBUG\fR
+Set debug level explicitly. Valid values are 0\-9, or the same string values as
+the debug options such as SlurmctldDebug in slurm.conf(5). Increased if
+\fB\-v\fR passed as argument during invocation. Ignored if
+\fBSLURMRESTD_DEBUG\fR or \fBSLURMRESTD_DEBUG_STDERR\fR or
+\fBSLURMRESTD_DEBUG_SYSLOG\fR are set in environment. See
+\fBSLURMRESTD_DEBUG\fR for description of logging targets.
+.IP
+
+.TP
 \fBSLURMRESTD_JSON\fR or \fBSLURM_JSON\fR
 Control JSON serialization:
 .IP
@@ -384,8 +425,26 @@ Set allowed authentication types. See \fB\-a\fR
 .TP
 \fBSLURMRESTD_DEBUG\fR
 Set debug level explicitly. Valid values are 0\-9, or the same string values as
-the debug options such as SlurmctldDebug in slurm.conf(5).
-Ignored if \fB\-v\fR passed as argument during invocation.
+the debug options such as SlurmctldDebug in slurm.conf(5). If a controlling
+TTY is detected, interactive mode will automatically activate to provide
+additional logging information to stderr. If a controlling TTY is not detected,
+then logs are sent to syslog. Increased if \fB\-v\fR passed as argument during
+invocation. Ignored if \fBSLURMRESTD_DEBUG_STDERR\fR or
+\fBSLURMRESTD_DEBUG_SYSLOG\fR are set in environment.
+.IP
+
+.TP
+\fBSLURMRESTD_DEBUG_STDERR\fR
+Set debug level explicitly for logging to STDERR. Valid values are 0\-9, or the
+same string values as the debug options such as SlurmctldDebug in
+slurm.conf(5). Increased if \fB\-v\fR passed as argument during invocation.
+.IP
+
+.TP
+\fBSLURMRESTD_DEBUG_SYSLOG\fR
+Set debug level explicitly for logging to syslog. Valid values are 0\-9, or the
+same string values as the debug options such as SlurmctldDebug in
+slurm.conf(5). Increased if \fB\-v\fR passed as argument during invocation.
 .IP
 
 .TP
@@ -484,6 +543,11 @@ Output YAML in pretty format to make it more readable.
 .TP
 \fBSIGPIPE\fR
 This signal is explicitly ignored.
+.IP
+
+.TP
+\fBSIGPROF\fR
+Logs connection manager state when debug level is at least info.
 .IP
 
 .SH "NOTES"

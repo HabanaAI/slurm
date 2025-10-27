@@ -161,7 +161,7 @@ static int _lua_remote_command(lua_State *L)
 
 	read_lock_state();
 	run.env = env_array_copy((const char **) state.job_env);
-	jobid = xstrdup_printf("%u", state.jobid);
+	jobid = xstrdup_printf("%u", state.step_id.job_id);
 	unlock_state();
 
 	_exec_add(args, "/bin/sh");
@@ -221,9 +221,6 @@ static void _loadscript_extra(lua_State *st)
 	xassert(st);
 
 	slurm_lua_table_register(st, NULL, slurm_functions);
-	luaL_loadstring(st,
-			"slurm.user_msg (string.format(table.unpack({...})))");
-	lua_setfield(st, -2, "log_user");
 
 	/* Must be always done after we register the slurm_functions */
 	lua_setglobal(st, "slurm");
@@ -289,7 +286,7 @@ extern int stage_in(void)
 	lua_pushstring(L, state.bundle);
 	lua_pushstring(L, state.spool_dir);
 	lua_pushstring(L, state.config_file);
-	lua_pushnumber(L, state.jobid);
+	lua_pushnumber(L, state.step_id.job_id);
 	lua_pushnumber(L, state.user_id);
 	lua_pushnumber(L, state.group_id);
 	lua_createtable(L, 0, envcount(state.job_env));
@@ -352,7 +349,7 @@ extern int stage_out(void)
 	lua_pushstring(L, state.orig_root_path);
 	lua_pushstring(L, state.spool_dir);
 	lua_pushstring(L, state.config_file);
-	lua_pushnumber(L, state.jobid);
+	lua_pushnumber(L, state.step_id.job_id);
 	lua_pushnumber(L, state.user_id);
 	lua_pushnumber(L, state.group_id);
 	unlock_state();

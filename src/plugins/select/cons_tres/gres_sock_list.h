@@ -50,6 +50,7 @@ typedef struct {
 	bitstr_t *gpu_spec_bitmap; /* IN - bitmap of reserved gpu cores */
 	list_t *job_gres_list; /* IN - job's gres_list built by
 				* gres_job_state_validate() */
+	bool need_gpu; /* OUT - true if job request GPU */
 	list_t *node_gres_list; /* IN - node's gres_list built by
 				 * gres_node_config_validate() */
 	uint32_t node_inx; /* IN - index of node to be evaluated */
@@ -65,7 +66,6 @@ typedef struct {
 				 * what resources are available on each
 				 * socket. Returns NULL if none available. Call
 				 * FREE_NULL_LIST() to release memory. */
-	uint32_t s_p_n; /* IN - Expected sockets_per_node */
 	bool use_total_gres; /* IN - if set then consider all gres resources as
 			      * available, and none are committed to running
 			      * jobs */

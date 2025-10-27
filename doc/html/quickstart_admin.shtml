@@ -191,13 +191,12 @@ package of the same name.</td>
 <td><i>readline</i></td>
 </tr>
 <tr>
-<td><code>slurmrestd</code>
-<br>Provides support for Slurm's <a href="rest_quickstart.html">REST API</a>
-	(optional prerequisites will enable additional functionality)</td>
-<td><i>http-parser</i>
-<br><i>json-c</i>
-<br><i>yaml</i> (opt.)
-<br><i>jwt</i> (opt.)</td>
+<td><code>slurmrestd</code>(<a href="#restd">restd node</a>)</td>
+<td><i><a href="related_software.html#httpparser">http_parser</a></i>
+<br><i><a href="related_software.html#json">json-c</a></i>
+<br><i><a href="related_software.html#yaml">yaml</a></i> (optional)
+<br><i><a href="related_software.html#jwt">jwt</a></i> (optional)
+<br><i><a href="tls.html#s2n">s2n</a></i> (optional)</td>
 </tr>
 <tr>
 <td><code>sview</code> (<a href="sview.html">man page</a>)</td>
@@ -483,15 +482,12 @@ should be running to provide authentication. If running in
 manage your configuration files.</p>
 
 <h3 id="restd">Restd Node<a class="slurm_link" href="#restd"></a></h3>
-<p>The <a href="slurmrestd.html">slurmrestd</a> daemon was introduced in version
-20.02 and provides a <a href="rest_quickstart.html">REST API</a> that can be
-used to interact with the Slurm cluster. This is installed by default for
-<a href="#manual_build">manual builds</a>, assuming
-the <a href="rest.html#prereq">prerequisites</a> are met, but must be enabled
-for <a href="#rpmbuild">RPM builds</a>. It has two
-<a href="slurmrestd.html#SECTION_DESCRIPTION">run modes</a>, allowing you to
-have it run as a traditional Unix service and always listen for TCP connections,
-or you can have it run as an Inet service and only have it active when in use.</p>
+<p>The <a href="slurmrestd.html">slurmrestd</a> daemon can be deployed to
+provide a <a href="rest.html">REST API</a> that can be used to interact with the
+Slurm cluster programmatically. See detailed
+<a href="rest_quickstart.html#prereq">prerequisite</a>,
+<a href="rest_quickstart.html#quick_start">installation</a>, and
+<a href="rest_quickstart.html#systemd">systemd configuration</a> guides.
 
 <h2 id="HA">High Availability<a class="slurm_link" href="#HA"></a></h2>
 
@@ -499,7 +495,7 @@ or you can have it run as an Inet service and only have it active when in use.</
 first being treated as a backup host. Any backup hosts configured should be on
 a different node than the node hosting the primary slurmctld. However, all
 hosts should mount a common file system containing the state information (see
-&quot;StateSaveLocation&quot; in the <a href="#Config">Configuration</a>
+<b>StateSaveLocation</b> in the <a href="#Config">Configuration</a>
 section below).</p>
 
 <p>If more than one host is specified, when the primary fails the second listed
@@ -508,18 +504,12 @@ notifies the backup.  The backup then saves the state and returns to backup
 mode. The primary reads the saved state and resumes normal operation. Likewise,
 if both of the first two listed hosts fail the third SlurmctldHost will take
 over until the primary returns to service. Other than a brief period of non-
-responsiveness, the transition back and forth should go undetected.</p>
-
-<p>Prior to 18.08, Slurm used the <a href="slurm.conf.html#OPT_BackupAddr">
-&quot;BackupAddr&quot;</a> and <a href="slurm.conf.html#OPT_BackupController">
-&quot;BackupController&quot;</a> parameters for High Availability. These
-parameters have been deprecated and are replaced by
-<a href="slurm.conf.html#OPT_SlurmctldHost">&quot;SlurmctldHost&quot;</a>.
-Also see <a href="slurm.conf.html#OPT_SlurmctldPrimaryOnProg">&quot;
-SlurmctldPrimaryOnProg&quot;</a> and
-<a href="slurm.conf.html#OPT_SlurmctldPrimaryOffProg">&quot;
-SlurmctldPrimaryOffProg&quot;</a> to adjust the actions taken when machines
-transition between being the primary controller.</p>
+responsiveness, the transition back and forth should go undetected.
+You can use <a href="slurm.conf.html#OPT_SlurmctldPrimaryOnProg">
+SlurmctldPrimaryOnProg</a> and
+<a href="slurm.conf.html#OPT_SlurmctldPrimaryOffProg">
+SlurmctldPrimaryOffProg</a> to define the actions taken when machines
+transition between primary and backup roles.</p>
 
 <p>Any time the slurmctld daemon or hardware fails before state information
 reaches disk can result in lost state.
@@ -914,7 +904,5 @@ cd /usr/ports/sysutils/slurm-wlm && make install
 <p>The binary package installs a minimal Slurm configuration suitable for
 typical compute nodes.  Installing from source allows the user to enable
 options such as mysql and gui tools via a configuration menu.</p>
-
-<p style="text-align:center;">Last modified 05 June 2025</p>
 
 <!--#include virtual="footer.txt"-->

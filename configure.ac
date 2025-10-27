@@ -483,8 +483,8 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/hash/common_xkcp/Makefile
 		 src/plugins/hash/k12/Makefile
 		 src/plugins/hash/sha3/Makefile
-		 src/plugins/job_container/Makefile
-		 src/plugins/job_container/tmpfs/Makefile
+		 src/plugins/http_parser/Makefile
+		 src/plugins/http_parser/libhttp_parser/Makefile
 		 src/plugins/job_submit/Makefile
 		 src/plugins/job_submit/all_partitions/Makefile
 		 src/plugins/job_submit/defaults/Makefile
@@ -511,13 +511,17 @@ AC_CONFIG_FILES([Makefile
 		 src/plugins/mcs/group/Makefile
 		 src/plugins/mcs/label/Makefile
 		 src/plugins/mcs/user/Makefile
+		 src/plugins/metrics/Makefile
+		 src/plugins/metrics/openmetrics/Makefile
 		 src/plugins/mpi/Makefile
 		 src/plugins/mpi/cray_shasta/Makefile
 		 src/plugins/mpi/pmi2/Makefile
 		 src/plugins/mpi/pmix/Makefile
+		 src/plugins/namespace/Makefile
+		 src/plugins/namespace/linux/Makefile
+		 src/plugins/namespace/tmpfs/Makefile
 		 src/plugins/node_features/Makefile
 		 src/plugins/node_features/helpers/Makefile
-		 src/plugins/node_features/knl_generic/Makefile
 		 src/plugins/preempt/Makefile
 		 src/plugins/preempt/partition_prio/Makefile
 		 src/plugins/preempt/qos/Makefile
@@ -583,6 +587,7 @@ AC_CONFIG_FILES([Makefile
 		 src/slurmrestd/plugins/openapi/Makefile
 		 src/slurmrestd/plugins/openapi/slurmctld/Makefile
 		 src/slurmrestd/plugins/openapi/slurmdbd/Makefile
+		 src/slurmrestd/plugins/openapi/util/Makefile
 		 src/sprio/Makefile
 		 src/squeue/Makefile
 		 src/sreport/Makefile

@@ -109,18 +109,18 @@ static bool tls_enabled_bool = false;
 extern char *conn_mode_to_str(conn_mode_t mode)
 {
 	switch (mode) {
-	case TLS_CONN_NULL:
+	case CONN_NULL:
 		return "null";
-	case TLS_CONN_SERVER:
+	case CONN_SERVER:
 		return "server";
-	case TLS_CONN_CLIENT:
+	case CONN_CLIENT:
 		return "client";
 	}
 
 	return "INVALID";
 }
 
-extern bool tls_enabled(void)
+extern bool conn_tls_enabled(void)
 {
 	return tls_enabled_bool;
 }
@@ -161,8 +161,7 @@ extern int conn_g_init(void)
 
 	if (tls_enabled_bool) {
 		/* Load CA cert now, wait until later in configless */
-		if (!running_in_slurmstepd() && slurm_conf.last_update &&
-		    conn_g_load_ca_cert(NULL)) {
+		if (slurm_conf.last_update && conn_g_load_ca_cert(NULL)) {
 			error("Could not load trusted certificates for s2n");
 			rc = SLURM_ERROR;
 			goto done;
@@ -179,8 +178,12 @@ extern int conn_g_init(void)
 			goto done;
 		}
 
-		/* Load self-signed certificate in client commands */
-		if (!running_in_daemon() && conn_g_load_self_signed_cert()) {
+		/*
+		 * Load self-signed certificate in client commands and
+		 * slurmstepd
+		 */
+		if ((!running_in_daemon() && !running_in_slurmstepd()) &&
+		    conn_g_load_self_signed_cert()) {
 			error("Could not load self-signed TLS certificate");
 			rc = SLURM_ERROR;
 			goto done;

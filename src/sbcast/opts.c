@@ -104,7 +104,7 @@ static bool _need_hetjob_components(job_info_msg_t **job_info_msg)
 
 	jobs = (*job_info_msg)->job_array;
 
-	if (jobs->job_id != jobs->het_job_id)
+	if (jobs->step_id.job_id != jobs->het_job_id)
 		return false;
 
 	if ((*job_info_msg)->record_count < 2)
@@ -283,6 +283,7 @@ extern void parse_command_line(int argc, char **argv)
 				params.tree_width = atoi(optarg);
 			break;
 		case (int)'j':
+			slurm_destroy_selected_step(params.selected_step);
 			params.selected_step = slurm_parse_step_str(optarg);
 			break;
 		case (int)'p':

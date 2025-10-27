@@ -93,26 +93,54 @@ static void _nonblock(int state)
 
 }
 
-extern int parse_option_end(char *option)
+/*
+ * IN option - string to parse as /<command>([-+]=<value>)?/
+ * OUT op_type - Set to the type of operator parsed, '-', '+', or 0.
+ * OUT command_len - The strlen of <command>
+ * returns the offset of <value> if it exists, otherwise 0
+ */
+extern int parse_option_end(char *option, int *op_type, int *command_len)
 {
+	xassert(op_type);
+	xassert(command_len);
+
 	int end = 0;
+	*op_type = 0;
+	*command_len = 0;
 
 	if (!option)
 		return 0;
 
-	while(option[end]) {
-		if ((option[end] == '=')
-		   || (option[end] == '+' && option[end+1] == '=')
-		   || (option[end] == '-' && option[end+1] == '='))
-			break;
+	while (option[end] && option[end] != '=')
 		end++;
-	}
 
-	if (!option[end])
+	*command_len = end; /* before '=' */
+
+	if (!option[end]) /* no <value> */
 		return 0;
 
-	end++;
+	if (end) {
+		char tmp_type = option[end - 1];
+		if (tmp_type == '+' || tmp_type == '-') {
+			*op_type = tmp_type;
+			*command_len = end - 1; /* before "[+-]=" */
+		}
+	}
+
+	end++; /* past '=' */
 	return end;
+}
+
+extern bool common_verify_option_syntax(char *option, int op_type,
+					bool allow_op)
+{
+	if (op_type && !allow_op) {
+		exit_code = 1;
+		fprintf(stderr, " Invalid operator '%c=' in %s\n", op_type,
+			option);
+		return false;
+	}
+	return true;
 }
 
 /* you need to xfree whatever is sent from here */
@@ -1721,7 +1749,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->grp_tres, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  GrpTRES       = %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1729,7 +1758,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->grp_tres_mins, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);;
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  GrpTRESMins   = %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1737,7 +1767,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->grp_tres_run_mins, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  GrpTRESRunMins= %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1771,7 +1802,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->max_tres_pj, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  MaxTRES       = %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1779,7 +1811,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->max_tres_pn, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  MaxTRESPerNode= %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1787,7 +1820,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->max_tres_mins_pj, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  MaxTRESMins   = %s\n", tmp_char);
 		xfree(tmp_char);
 	}
@@ -1795,7 +1829,8 @@ extern void sacctmgr_print_assoc_limits(slurmdb_assoc_rec_t *assoc)
 		sacctmgr_initialize_g_tres_list();
 		tmp_char = slurmdb_make_tres_string_from_simple(
 			assoc->max_tres_run_mins, g_tres_list, NO_VAL,
-			CONVERT_NUM_UNIT_EXACT, 0, NULL);
+			CONVERT_NUM_UNIT_EXACT, TRES_STR_FLAG_ALLOW_AMEND,
+			NULL);
 		printf("  MaxTRESRUNMins= %s\n", tmp_char);
 		xfree(tmp_char);
 	}

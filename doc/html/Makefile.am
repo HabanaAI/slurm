@@ -34,7 +34,6 @@ generated_html = \
 	heterogeneous_jobs.html \
 	high_throughput.html \
 	hres.html \
-	intel_knl.html \
 	jobcomp_kafka.html \
 	job_array.html \
 	job_container_tmpfs.html \
@@ -51,6 +50,7 @@ generated_html = \
 	man_index.html \
 	mc_support.html \
 	mcs.html \
+	metrics.html \
 	mpi_guide.html \
 	multi_cluster.html \
 	network.html \
@@ -86,7 +86,6 @@ generated_html = \
 	site_factor.html \
 	slinky.html \
 	slurm.html \
-	slurm_ug_agenda.html \
 	tls.html \
 	topology.html \
 	tres.html \
@@ -99,7 +98,6 @@ html_DATA = \
 	${generated_html} \
 	allocation_pies.gif \
 	arch.gif \
-	coding_style.pdf \
 	configurator.html \
 	configurator.easy.html \
 	cg_hierarchy.jpg \
@@ -133,8 +131,6 @@ html_DATA = \
 	slurm_logo.png \
 	schedmd.png \
 	slurm.css \
-	Slurm_Entity.pdf \
-	Slurm_Individual.pdf \
 	squeue_color.png \
 	style.css \
 	topo_ex1.gif \

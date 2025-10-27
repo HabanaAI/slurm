@@ -110,10 +110,6 @@ static void _state_defaults(void)
 	/* Don't set up state->vni_table yet */
 }
 
-/*
- * init() is called when the plugin is loaded, before any other functions
- * are called.  Put global initialization here.
- */
 extern int init(void)
 {
 	debug("loaded");
@@ -130,7 +126,7 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
-extern int fini(void)
+extern void fini(void)
 {
 	if (running_in_slurmctld() || active_outside_ctld) {
 		FREE_NULL_BITMAP(slingshot_state.vni_table);
@@ -139,7 +135,6 @@ extern int fini(void)
 		slingshot_free_config();
 	} else
 		slingshot_free_services();
-	return SLURM_SUCCESS;
 }
 
 /*
@@ -294,7 +289,7 @@ error:
 	return SLURM_ERROR;
 }
 
-extern void switch_p_pack_jobinfo(void *switch_jobinfo, buf_t *buffer,
+extern void switch_p_jobinfo_pack(void *switch_jobinfo, buf_t *buffer,
 				  uint16_t protocol_version)
 {
 	slingshot_jobinfo_t *jobinfo = switch_jobinfo;
@@ -313,7 +308,7 @@ extern void switch_p_pack_jobinfo(void *switch_jobinfo, buf_t *buffer,
 	}
 }
 
-extern int switch_p_unpack_jobinfo(void **switch_jobinfo, buf_t *buffer,
+extern int switch_p_jobinfo_unpack(void **switch_jobinfo, buf_t *buffer,
 				   uint16_t protocol_version)
 {
 	bool tmp_bool;
@@ -354,7 +349,7 @@ unpack_error:
 }
 
 /* Used to free switch_jobinfo when switch_p_job_complete can't be used */
-extern void switch_p_free_jobinfo(job_record_t *job_ptr)
+extern void switch_p_jobinfo_free(job_record_t *job_ptr)
 {
 	slingshot_free_jobinfo(job_ptr->switch_jobinfo);
 	job_ptr->switch_jobinfo = NULL;
@@ -517,8 +512,8 @@ static uint32_t _get_het_job_node_cnt(step_record_t *step_ptr)
 	return node_cnt;
 }
 
-extern int switch_p_build_stepinfo(switch_stepinfo_t **switch_job,
-				   slurm_step_layout_t *step_layout,
+extern int switch_p_stepinfo_build(switch_stepinfo_t **stepinfo,
+				   void *switch_jobinfo,
 				   step_record_t *step_ptr)
 {
 	slingshot_stepinfo_t *job = NULL;
@@ -537,7 +532,7 @@ extern int switch_p_build_stepinfo(switch_stepinfo_t **switch_job,
 
 	job = xmalloc(sizeof(*job));
 	job->version = SLURM_PROTOCOL_VERSION;
-	*switch_job = (switch_stepinfo_t *) job;
+	*stepinfo = (switch_stepinfo_t *) job;
 
 	/*
 	 * If this is a homogeneous step, or the first component in a
@@ -566,7 +561,7 @@ extern int switch_p_build_stepinfo(switch_stepinfo_t **switch_job,
 		job_id = job_ptr->job_id;
 	} else {
 		/* This is a non-het step in a non-het job */
-		node_cnt = step_layout->node_cnt;
+		node_cnt = step_ptr->step_layout->node_cnt;
 		job_id = job_ptr->job_id;
 	}
 
@@ -586,7 +581,7 @@ extern int switch_p_build_stepinfo(switch_stepinfo_t **switch_job,
 	return SLURM_SUCCESS;
 }
 
-extern void switch_p_duplicate_stepinfo(switch_stepinfo_t *tmp,
+extern void switch_p_stepinfo_duplicate(switch_stepinfo_t *tmp,
 					switch_stepinfo_t **dest)
 {
 	slingshot_stepinfo_t *old = (slingshot_stepinfo_t *) tmp;
@@ -597,7 +592,7 @@ extern void switch_p_duplicate_stepinfo(switch_stepinfo_t *tmp,
 	*dest = (switch_stepinfo_t *) new;
 }
 
-extern void switch_p_free_stepinfo(switch_stepinfo_t *switch_job)
+extern void switch_p_stepinfo_free(switch_stepinfo_t *switch_job)
 {
 	slingshot_stepinfo_t *stepinfo = (slingshot_stepinfo_t *) switch_job;
 	xassert(stepinfo);
@@ -752,7 +747,7 @@ unpack_error:
 	return false;
 }
 
-extern void switch_p_pack_stepinfo(switch_stepinfo_t *switch_job, buf_t *buffer,
+extern void switch_p_stepinfo_pack(switch_stepinfo_t *switch_job, buf_t *buffer,
 				   uint16_t protocol_version)
 {
 	uint32_t pidx;
@@ -760,7 +755,39 @@ extern void switch_p_pack_stepinfo(switch_stepinfo_t *switch_job, buf_t *buffer,
 
 	xassert(buffer);
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		/* nothing to pack, pack special "null" version number */
+		if (!stepinfo ||
+		    (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
+			debug("Nothing to pack");
+			pack32(SLINGSHOT_JOBINFO_NULL_VERSION, buffer);
+			return;
+		}
+
+		pack32(protocol_version, buffer);
+		pack16_array(stepinfo->vnis, stepinfo->num_vnis, buffer);
+		pack32(stepinfo->tcs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.txqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tgqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.eqs, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.cts, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.tles, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.ptes, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.les, buffer);
+		_pack_slingshot_limits(&stepinfo->limits.acs, buffer);
+		pack32(stepinfo->depth, buffer);
+		pack32(stepinfo->num_profiles, buffer);
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			_pack_comm_profile(&stepinfo->profiles[pidx], buffer);
+		}
+		pack32(stepinfo->flags, buffer);
+		pack32(stepinfo->num_nics, buffer);
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			_pack_hsn_nic(&stepinfo->nics[pidx], buffer);
+		}
+		pack16(stepinfo->nic_dist_cnt, buffer);
+		_pack_hwcoll(stepinfo->hwcoll, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		/* nothing to pack, pack special "null" version number */
 		if (!stepinfo ||
 		    (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION)) {
@@ -797,7 +824,7 @@ extern void switch_p_pack_stepinfo(switch_stepinfo_t *switch_job, buf_t *buffer,
 	}
 }
 
-extern int switch_p_unpack_stepinfo(switch_stepinfo_t **switch_job,
+extern int switch_p_stepinfo_unpack(switch_stepinfo_t **switch_job,
 				    buf_t *buffer, uint16_t protocol_version)
 {
 	uint32_t pidx = 0;
@@ -813,7 +840,52 @@ extern int switch_p_unpack_stepinfo(switch_stepinfo_t **switch_job,
 	stepinfo = xmalloc(sizeof(*stepinfo));
 	*switch_job = (switch_stepinfo_t *) stepinfo;
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		safe_unpack32(&stepinfo->version, buffer);
+		if (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
+			debug("Nothing to unpack");
+			return SLURM_SUCCESS;
+		}
+		if (stepinfo->version != protocol_version) {
+			error("SLINGSHOT stepinfo version %"PRIu32" != %d",
+			      stepinfo->version, protocol_version);
+			goto error;
+		}
+
+		safe_unpack16_array(&stepinfo->vnis, &stepinfo->num_vnis,
+				    buffer);
+		safe_unpack32(&stepinfo->tcs, buffer);
+		if (!_unpack_slingshot_limits(&stepinfo->limits.txqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tgqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.eqs, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.cts, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.tles, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.ptes, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.les, buffer) ||
+		    !_unpack_slingshot_limits(&stepinfo->limits.acs, buffer))
+			goto unpack_error;
+
+		safe_unpack32(&stepinfo->depth, buffer);
+		safe_unpack32(&stepinfo->num_profiles, buffer);
+		stepinfo->profiles = xcalloc(stepinfo->num_profiles,
+					     sizeof(slingshot_comm_profile_t));
+		for (pidx = 0; pidx < stepinfo->num_profiles; pidx++) {
+			if (!_unpack_comm_profile(&stepinfo->profiles[pidx],
+						  buffer))
+				goto unpack_error;
+		}
+		safe_unpack32(&stepinfo->flags, buffer);
+
+		safe_unpack32(&stepinfo->num_nics, buffer);
+		stepinfo->nics = xcalloc(stepinfo->num_nics,
+					 sizeof(slingshot_hsn_nic_t));
+		for (pidx = 0; pidx < stepinfo->num_nics; pidx++) {
+			if (!_unpack_hsn_nic(&stepinfo->nics[pidx], buffer))
+				goto unpack_error;
+		}
+		safe_unpack16(&stepinfo->nic_dist_cnt, buffer);
+		_unpack_hwcoll(&stepinfo->hwcoll, buffer);
+	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_unpack32(&stepinfo->version, buffer);
 		if (stepinfo->version == SLINGSHOT_JOBINFO_NULL_VERSION) {
 			debug("Nothing to unpack");
@@ -866,9 +938,19 @@ extern int switch_p_unpack_stepinfo(switch_stepinfo_t **switch_job,
 unpack_error:
 	error("error unpacking stepinfo struct");
 error:
-	switch_p_free_stepinfo(*switch_job);
+	switch_p_stepinfo_free(*switch_job);
 	*switch_job = NULL;
 	return SLURM_ERROR;
+}
+
+extern bool switch_p_setup_special_steps(void)
+{
+	/*
+	 * Do not setup switch access for batch, interactive, or extern steps.
+	 *
+	 * Switch access is limited to normal job steps started with srun.
+	 */
+	return false;
 }
 
 /*
@@ -994,13 +1076,18 @@ extern int switch_p_job_step_complete(switch_stepinfo_t *stepinfo, char *nodelis
 	return SLURM_SUCCESS;
 }
 
-extern void switch_p_job_start(job_record_t *job_ptr)
+extern int switch_p_job_start(job_record_t *job_ptr, bool test_only)
 {
+	if (test_only)
+		return SLURM_SUCCESS;
+
 	if (!(job_ptr->bit_flags & STEPMGR_ENABLED))
-		return;
+		return SLURM_SUCCESS;
 
 	if (!slingshot_setup_job_vni_pool(job_ptr))
 		error("couldn't allocate vni pool for job %pJ", job_ptr);
+
+	return SLURM_SUCCESS;
 }
 
 /*
@@ -1024,12 +1111,6 @@ extern void switch_p_job_complete(job_record_t *job_ptr)
 extern int switch_p_fs_init(stepd_step_rec_t *step)
 {
 	return SLURM_SUCCESS;
-}
-
-extern void switch_p_extern_stepinfo(switch_stepinfo_t **stepinfo,
-				     job_record_t *job_ptr)
-{
-	/* not supported */
 }
 
 extern void switch_p_extern_step_fini(int job_id)

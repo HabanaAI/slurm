@@ -543,6 +543,7 @@ static int _add_cert_from_file_to_server(void)
 	char *default_cert_path = NULL, *default_key_path = NULL;
 	buf_t *cert_buf = NULL, *key_buf = NULL;
 	bool check_owner = true;
+	bool add_cert_to_server_only = false;
 
 	if (running_in_slurmdbd()) {
 		cert_conf = "dbd_cert_file=";
@@ -555,6 +556,19 @@ static int _add_cert_from_file_to_server(void)
 		default_cert_path = "restd_cert.pem";
 		default_key_path = "restd_cert_key.pem";
 		check_owner = false;
+		/*
+		 * slurmrestd certificate may not be signed by CA used for
+		 * internal Slurm communications via the conn plugin interface,
+		 * so don't add it to the client s2n config.
+		 *
+		 * This will prevent servers (e.g. slurmctld) trying to use mTLS
+		 * with slurmrestd when it has an untrusted certificate (servers
+		 * may only trust Slurm's ca_cert_file and no one else)
+		 *
+		 * mTLS is not required/used for any slurmrestd connections
+		 * currently.
+		 */
+		add_cert_to_server_only = true;
 	} else if (running_in_slurmctld()) {
 		cert_conf = "ctld_cert_file=";
 		key_conf = "ctld_cert_key_file=";
@@ -626,7 +640,8 @@ static int _add_cert_from_file_to_server(void)
 	}
 
 	rc = _add_cert_to_global_config(cert_buf->head, cert_buf->size,
-					key_buf->head, key_buf->size, false);
+					key_buf->head, key_buf->size,
+					add_cert_to_server_only);
 
 cleanup:
 	xfree(key_file);
@@ -700,12 +715,12 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
-extern int fini(void)
+extern void fini(void)
 {
 	static bool fini_run = false;
 
 	if (fini_run)
-		return SLURM_SUCCESS;
+		return;
 	fini_run = true;
 
 	if (s2n_config_free(client_config))
@@ -728,8 +743,6 @@ extern int fini(void)
 
 	xfree(own_cert);
 	xfree(own_key);
-
-	return SLURM_SUCCESS;
 }
 
 static int _negotiate(tls_conn_t *conn)
@@ -884,7 +897,7 @@ static int _set_conn_s2n_conf(tls_conn_t *conn,
 			      const conn_args_t *tls_conn_args)
 {
 	char *cert_file = NULL;
-	bool is_server = (tls_conn_args->mode == TLS_CONN_SERVER);
+	bool is_server = (tls_conn_args->mode == CONN_SERVER);
 
 	if (!slurm_rwlock_tryrdlock(&s2n_conf_lock)) {
 		if (is_server && !own_cert_and_key) {
@@ -965,12 +978,12 @@ extern void *tls_p_create_conn(const conn_args_t *tls_conn_args)
 	conn->maybe = tls_conn_args->maybe;
 
 	switch (tls_conn_args->mode) {
-	case TLS_CONN_SERVER:
+	case CONN_SERVER:
 	{
 		s2n_conn_mode = S2N_SERVER;
 		break;
 	}
-	case TLS_CONN_CLIENT:
+	case CONN_CLIENT:
 	{
 		s2n_conn_mode = S2N_CLIENT;
 		if (!tls_conn_args->cert) {
@@ -1162,7 +1175,10 @@ extern ssize_t tls_p_send(tls_conn_t *conn, const void *buf, size_t n)
 				     (n - bytes_written), &blocked);
 
 		if (w < 0) {
-			on_s2n_error(conn, s2n_send);
+			/* blocked is expected */
+			if (s2n_error_get_type(s2n_errno) != S2N_ERR_T_BLOCKED)
+				on_s2n_error(conn, s2n_send);
+
 			bytes_written = SLURM_ERROR;
 			break;
 		}
@@ -1207,10 +1223,18 @@ extern ssize_t tls_p_sendv(tls_conn_t *conn, const struct iovec *bufs,
 
 extern uint32_t tls_p_peek(tls_conn_t *conn)
 {
+	int readable = 0;
+
 	if (!conn)
 		return 0;
 
-	return s2n_peek(conn->s2n_conn);
+	if ((readable = s2n_peek(conn->s2n_conn)))
+		return readable;
+
+	if (fd_get_readable_bytes(conn->input_fd, &readable, NULL) || !readable)
+		return 0;
+
+	return readable;
 }
 
 extern ssize_t tls_p_recv(tls_conn_t *conn, void *buf, size_t n)
@@ -1219,6 +1243,18 @@ extern ssize_t tls_p_recv(tls_conn_t *conn, void *buf, size_t n)
 	ssize_t bytes_read = 0;
 
 	xassert(conn);
+
+	if (!n) {
+		ssize_t r = -1;
+
+		if (s2n_peek(conn->s2n_conn))
+			return 0;
+
+		if ((r = s2n_recv(conn->s2n_conn, NULL, 0, &blocked)) < 0)
+			on_s2n_error(conn, s2n_recv);
+
+		return r;
+	}
 
 	while (bytes_read < n) {
 		ssize_t r = s2n_recv(conn->s2n_conn, (buf + bytes_read),
@@ -1277,7 +1313,8 @@ extern bool tls_p_is_client_authenticated(tls_conn_t *conn)
 
 extern int tls_p_get_conn_fd(tls_conn_t *conn)
 {
-	xassert(conn);
+	if (!conn)
+		return -1;
 
 	if (conn->input_fd != conn->output_fd)
 		debug("%s: asymmetric connection %d->%d",

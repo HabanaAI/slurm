@@ -1,4 +1,4 @@
-.TH scancel "1" "Slurm Commands" "March 2025" "Slurm Commands"
+.TH scancel "1" "Slurm Commands" "Slurm 25.11" "Slurm Commands"
 
 .SH "NAME"
 scancel \- Used to signal jobs or job steps that are under the control of Slurm.
@@ -36,6 +36,12 @@ Restrict the scancel operation to jobs under this charge account.
 .IP
 
 .TP
+\fB\-\-admin\-comment\fR=\fIcomment\fR
+Set the AdminComment on the job while canceling jobs. User must have
+Administrator privileges on the system.
+.IP
+
+.TP
 \fB\-b\fR, \fB\-\-batch\fR
 By default, signals other than SIGKILL are not sent to the batch step (the shell
 script). With this option \fBscancel\fR signals only the batch step, but not
@@ -65,13 +71,13 @@ running in a federation with \fBFederationParameters=fed_display\fR configured.
 .TP
 \fB\-\-ctld\fR
 If this option is not used with \fB\-\-interactive\fR,
-\fB\-\-sibling\fR, or specific step ids, then this issues a single request
-to the slurmctld to signal all jobs matching the specified filters. This
-greatly improves the performance of slurmctld and scancel. Otherwise, this
-option causes scancel to send each job signal request to the slurmctld daemon
-rather than directly to the slurmd daemons, which increases overhead, but
-offers better fault tolerance. \fB\-\-ctld\fR is the default behavior on
-when the \fB\-\-clusters\fR option is used.
+\fB\-\-sibling\fR, federated job ids, or specific step ids, then this issues a
+single request to the slurmctld to signal all jobs matching the specified
+filters. This greatly improves the performance of slurmctld and scancel.
+Otherwise, this option causes scancel to send each job signal request to the
+slurmctld daemon rather than directly to the slurmd daemons, which increases
+overhead, but offers better fault tolerance. \fB\-\-ctld\fR is the default
+behavior on when the \fB\-\-clusters\fR option is used.
 .IP
 
 .TP

@@ -26,6 +26,8 @@ libcommon_la_SOURCES =				\
 	daemonize.h				\
 	data.c					\
 	data.h					\
+	dynamic_plugin_data.c			\
+	dynamic_plugin_data.h			\
 	eio.c					\
 	eio.h					\
 	env.c					\
@@ -47,6 +49,12 @@ libcommon_la_SOURCES =				\
 	hostlist.h				\
 	http.h					\
 	http.c					\
+	http_con.h				\
+	http_con.c				\
+	http_router.h				\
+	http_router.c				\
+	http_switch.h				\
+	http_switch.c				\
 	identity.h				\
 	identity.c				\
 	id_util.h				\

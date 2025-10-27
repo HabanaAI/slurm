@@ -123,6 +123,7 @@ typedef struct slurmd_config {
 	char         *instance_id;	/* cloud instance id		   */
 	char         *instance_type;	/* cloud instance type		   */
 	char         *logfile;		/* slurmd logfile, if any          */
+	char 	     *parameters;	/* additions to SlurmdParameters */
 	char         *pidfile;		/* slurmd pidfile, if any          */
 	char         *tmp_fs;		/* TmpFS                           */
 	uint32_t     syslog_debug;	/* send output to both logfile and
@@ -184,5 +185,8 @@ extern void update_stepd_logging(bool reconfig);
  * This must happen after all configuration is available, including topology
  */
 extern void build_conf_buf(void);
+
+/* True if listener is quiesced */
+extern bool listener_quiesced(void);
 
 #endif /* !_SLURMD_H */

@@ -239,8 +239,6 @@ extern char *slurm_xstr_mem_bind_type(mem_bind_type_t mem_bind_type)
 		xstrcat(str, "verbose,");
 	if (mem_bind_type & MEM_BIND_PREFER)
 		xstrcat(str, "prefer,");
-	if (mem_bind_type & MEM_BIND_SORT)
-		xstrcat(str, "sort,");
 	if (mem_bind_type & MEM_BIND_NONE)
 		xstrcat(str, "none,");
 	if (mem_bind_type & MEM_BIND_RANK)
@@ -271,7 +269,6 @@ void slurm_print_cpu_bind_help(void)
 "        q[uiet]         quietly bind before task runs (default)\n"
 "        v[erbose]       verbosely report binding before task runs\n"
 "        no[ne]          don't bind tasks to CPUs (default)\n"
-"        rank            bind by task rank\n"
 "        map_cpu:<list>  specify a CPU ID binding for each task\n"
 "                        where <list> is <cpuid1>,<cpuid2>,...<cpuidN>\n"
 "        mask_cpu:<list> specify a CPU ID binding mask for each task\n"
@@ -593,10 +590,6 @@ int slurm_verify_mem_bind(const char *arg, char **mem_bind,
 		} else if ((xstrcasecmp(tok, "p") == 0) ||
 			   (xstrcasecmp(tok, "prefer") == 0)) {
 		        *flags |= MEM_BIND_PREFER;
-		} else if (!xstrcasecmp(tok, "nosort")) {
-		        *flags &= ~MEM_BIND_SORT;
-		} else if (!xstrcasecmp(tok, "sort")) {
-		        *flags |= MEM_BIND_SORT;
 		} else if ((xstrcasecmp(tok, "q") == 0) ||
 			   (xstrcasecmp(tok, "quiet") == 0)) {
 		        *flags &= ~MEM_BIND_VERBOSE;

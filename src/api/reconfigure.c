@@ -97,10 +97,31 @@ extern int slurm_ping(int dest)
 	return rc;
 }
 
+/*
+ * This will ping all controllers for the current cluster,
+ * or if --cluster=<name> is specified, it will ping the
+ * primary for a remote cluster.
+ */
 extern controller_ping_t *ping_all_controllers(void)
 {
 	controller_ping_t *pings =
 		xcalloc(slurm_conf.control_cnt + 1, sizeof(*pings));
+
+	/* Only ping primary for --cluster=cluster */
+	if (working_cluster_rec) {
+		DEF_TIMERS;
+		/* hostname is not known, use cluster name */
+		pings[0].hostname = working_cluster_rec->name;
+		pings[0].offset = 0;
+
+		START_TIMER;
+		pings[0].pinged = !slurm_ping(0);
+		END_TIMER;
+
+		pings[0].latency = DELTA_TIMER;
+
+		return pings;
+	}
 
 	for (int i = 0; i < slurm_conf.control_cnt; i++) {
 		DEF_TIMERS;
@@ -169,31 +190,31 @@ extern int slurm_takeover(int backup_inx)
 static int _send_message_controller(int dest, slurm_msg_t *req)
 {
 	int rc = SLURM_SUCCESS;
-	void *tls_conn = NULL;
+	void *conn = NULL;
 	slurm_msg_t resp_msg;
 
 	/*
 	 * always communicate with a single node (primary or some backup per
 	 * value of "dest")
 	 */
-	if (!(tls_conn = slurm_open_controller(dest, working_cluster_rec))) {
+	if (!(conn = slurm_open_controller(dest, working_cluster_rec))) {
 		slurm_seterrno_ret(SLURMCTLD_COMMUNICATIONS_CONNECTION_ERROR);
 	}
 
 	slurm_msg_set_r_uid(req, slurm_conf.slurm_user_id);
-	if (slurm_send_node_msg(tls_conn, req) < 0) {
-		conn_g_destroy(tls_conn, true);
+	if (slurm_send_node_msg(conn, req) < 0) {
+		conn_g_destroy(conn, true);
 		slurm_seterrno_ret(SLURMCTLD_COMMUNICATIONS_SEND_ERROR);
 	}
 
 	slurm_msg_t_init(&resp_msg);
-	if ((rc = slurm_receive_msg(tls_conn, &resp_msg, 0)) != 0) {
+	if ((rc = slurm_receive_msg(conn, &resp_msg, 0)) != 0) {
 		slurm_free_msg_members(&resp_msg);
-		conn_g_destroy(tls_conn, true);
+		conn_g_destroy(conn, true);
 		return SLURMCTLD_COMMUNICATIONS_RECEIVE_ERROR;
 	}
 
-	conn_g_destroy(tls_conn, true);
+	conn_g_destroy(conn, true);
 
 	if (resp_msg.msg_type != RESPONSE_SLURM_RC)
 		rc = SLURM_UNEXPECTED_MSG_ERROR;

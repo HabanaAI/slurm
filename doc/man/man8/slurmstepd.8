@@ -1,4 +1,4 @@
-.TH slurmstepd "8" "Slurm Component" "January 2025" "Slurm Component"
+.TH slurmstepd "8" "Slurm Component" "Slurm 25.11" "Slurm Component"
 
 .SH "NAME"
 slurmstepd \- The job step manager for Slurm.
@@ -28,6 +28,11 @@ variable takes precedence over the setting in the slurm.conf.
 .TP
 \fBSIGINT SIGTERM SIGQUIT\fR
 \fBslurmstepd\fR will shutdown cleanly.
+.IP
+
+.TP
+\fBSIGPROF\fR
+Logs connection manager state when debug level is at least info.
 .IP
 
 .TP

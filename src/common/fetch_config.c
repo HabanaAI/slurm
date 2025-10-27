@@ -57,15 +57,32 @@
 strong_alias(dump_to_memfd, slurm_dump_to_memfd);
 
 static char *slurmd_config_files[] = {
-	"slurm.conf", "acct_gather.conf", "cgroup.conf",
-	"cli_filter.lua", "gres.conf", "helpers.conf",
-	"job_container.conf", "mpi.conf", "oci.conf",
-	"plugstack.conf", "scrun.lua", "topology.conf", NULL
+	"acct_gather.conf",
+	"cgroup.conf",
+	"cli_filter.lua",
+	"gres.conf",
+	"helpers.conf",
+	"job_container.conf",
+	"mpi.conf",
+	"namespace.conf",
+	"oci.conf",
+	"plugstack.conf",
+	"scrun.lua",
+	"slurm.conf",
+	"topology.conf",
+	"topology.yaml",
+	NULL,
 };
 
 static char *client_config_files[] = {
-	"slurm.conf", "cli_filter.lua", "plugstack.conf", "topology.conf",
-	"oci.conf", "scrun.lua", NULL
+	"cli_filter.lua",
+	"oci.conf",
+	"plugstack.conf",
+	"scrun.lua",
+	"slurm.conf",
+	"topology.conf",
+	"topology.yaml",
+	NULL,
 };
 
 
@@ -121,6 +138,9 @@ rwfail:
 static void _fetch_child(list_t *controllers, uint32_t flags, uint16_t port,
 			 char *ca_cert_file)
 {
+	slurm_msg_t msg_wrap = {
+		.protocol_version = SLURM_PROTOCOL_VERSION,
+	};
 	config_response_msg_t *config;
 	ctl_entry_t *ctl = NULL;
 	buf_t *buffer = init_buf(1024 * 1024);
@@ -174,7 +194,8 @@ static void _fetch_child(list_t *controllers, uint32_t flags, uint16_t port,
 		_exit(1);
 	}
 
-	pack_config_response_msg(config, buffer, SLURM_PROTOCOL_VERSION);
+	msg_wrap.data = config;
+	pack_config_response_msg(&msg_wrap, buffer);
 
 	len = buffer->processed;
 	safe_write(to_parent[1], &len, sizeof(int));
@@ -262,8 +283,14 @@ extern config_response_msg_t *fetch_config(char *conf_server, uint32_t flags,
 	list_for_each(controllers, _get_controller_addr_type, NULL);
 
 	/* If the slurm.key file exists, assume we're using auth/slurm */
-	sack_jwks = get_extra_conf_path("slurm.jwks");
-	sack_key = get_extra_conf_path("slurm.key");
+	sack_jwks = xstrdup(getenv("SLURM_SACK_JWKS"));
+	sack_key = xstrdup(getenv("SLURM_SACK_KEY"));
+
+	if (!sack_jwks)
+		sack_jwks = get_extra_conf_path("slurm.jwks");
+	if (!sack_key)
+		sack_key = get_extra_conf_path("slurm.key");
+
 	if (!stat(sack_jwks, &statbuf))
 		setenv("SLURM_SACK_JWKS", sack_jwks, 1);
 	else if (!stat(sack_key, &statbuf))
@@ -610,7 +637,7 @@ extern config_response_msg_t *new_config_response(bool to_slurmd)
 	}
 
 	/*
-	 * Load Prolog and Epilog scripts.
+	 * Load Prolog, Epilog, TaskProlog, and TaskEpilog scripts.
 	 * Only load if a non-absolute path is provided, this is our
 	 * indication that the file should be sent out, and matches
 	 * configuration semantics for the Include lines.
@@ -626,6 +653,12 @@ extern config_response_msg_t *new_config_response(bool to_slurmd)
 				_load_conf2list(msg, slurm_conf.epilog[i],
 						true);
 		}
+		if ((slurm_conf.task_prolog) &&
+		    (slurm_conf.task_prolog[0] != '/'))
+			_load_conf2list(msg, slurm_conf.task_prolog, true);
+		if ((slurm_conf.task_epilog) &&
+		    (slurm_conf.task_epilog[0] != '/'))
+			_load_conf2list(msg, slurm_conf.task_epilog, true);
 	}
 
 	return msg;

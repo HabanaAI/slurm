@@ -284,6 +284,7 @@ static void _build_parts(void)
 	int num_parts;
 
 	FREE_NULL_LIST(gs_part_list);
+	gs_part_list = list_create(_destroy_parts); /* always allocate */
 
 	/* reset the sorted list, since it's currently
 	 * pointing to partitions we just destroyed */
@@ -293,7 +294,6 @@ static void _build_parts(void)
 	if (num_parts == 0)
 		return;
 
-	gs_part_list = list_create(_destroy_parts);
 	part_iterator = list_iterator_create(part_list);
 	while ((p_ptr = list_next(part_iterator))) {
 		gs_part_ptr = xmalloc(sizeof(struct gs_part));
@@ -503,7 +503,7 @@ static int _suspend_job(job_record_t *job_ptr)
 	suspend_msg_t msg;
 
 	memset(&msg, 0, sizeof(msg));
-	msg.job_id = job_ptr->job_id;
+	msg.step_id = STEP_ID_FROM_JOB_RECORD(job_ptr);
 	msg.job_id_str = NULL;
 	msg.op = SUSPEND_JOB;
 	rc = job_suspend(NULL, &msg, 0, false, NO_VAL16);
@@ -525,7 +525,7 @@ static void _resume_job(job_record_t *job_ptr)
 	suspend_msg_t msg;
 
 	memset(&msg, 0, sizeof(msg));
-	msg.job_id = job_ptr->job_id;
+	msg.step_id = STEP_ID_FROM_JOB_RECORD(job_ptr);
 	msg.job_id_str = NULL;
 	msg.op = RESUME_JOB;
 	rc = job_suspend(NULL, &msg, 0, false, NO_VAL16);

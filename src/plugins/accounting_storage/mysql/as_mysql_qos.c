@@ -222,7 +222,7 @@ static int _setup_qos_limits(slurmdb_qos_rec_t *qos,
 		*/
 		if (!qos->description)
 			qos->description = xstrdup("");
-		if (qos->flags & QOS_FLAG_NOTSET)
+		if (qos->flags & (QOS_FLAG_NOTSET | QOS_FLAG_REMOVE))
 			qos->flags = 0;
 		if (qos->grace_time == NO_VAL)
 			qos->grace_time = 0;
@@ -1161,7 +1161,7 @@ extern list_t *as_mysql_remove_qos(mysql_conn_t *mysql_conn, uint32_t uid,
 				     qos_table);
 		}
 
-		xstrfmtcatat(removed_ids, &rmid_pos, ",%s[[:>:]]|", row[0]);
+		xstrfmtcatat(removed_ids, &rmid_pos, ",%s\\\\b|", row[0]);
 
 		qos_rec = xmalloc(sizeof(slurmdb_qos_rec_t));
 		/* we only need id when removing no real need to init */

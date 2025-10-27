@@ -181,6 +181,12 @@ typedef enum {
 	DATA_PARSER_JOB_LIST, /* list of slurmdb_job_rec_t* */
 	DATA_PARSER_JOB, /* slurmdb_job_rec_t */
 	DATA_PARSER_JOB_PTR, /* slurmdb_job_rec_t* */
+	DATA_PARSER_JOB_MODIFY, /* slurmdb_job_rec_t */
+	DATA_PARSER_JOB_MODIFY_PTR, /* slurmdb_job_rec_t */
+	DATA_PARSER_OPENAPI_JOB_MODIFY_REQ, /* openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_JOB_MODIFY_REQ_PTR, /* openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_JOB_MODIFY_RESP, /* list of strings in openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_JOB_MODIFY_RESP_PTR, /* list of strings in openapi_resp_single_t */
 	DATA_PARSER_JOB_ASSOC_ID, /* slurmdb_job_rec_t->associd,cluster */
 	DATA_PARSER_JOB_CONDITION, /* slurmdb_job_cond_t */
 	DATA_PARSER_JOB_CONDITION_FLAGS, /* uint32_t - JOBCOND_FLAG_* */
@@ -456,6 +462,11 @@ typedef enum {
 	DATA_PARSER_ALLOCATED_CPUS, /* DEPRECATED v41: uint32_t if slurm_conf.select_type_param & SELECT_CPU */
 	DATA_PARSER_HOSTLIST, /* hostlist_t* */
 	DATA_PARSER_HOSTLIST_STRING, /* char * - acts like hostlist_t* */
+	DATA_PARSER_HOSTLIST_STRING_TO_STRING, /* char * - parse/dump string */
+	DATA_PARSER_OPENAPI_HOSTNAMES_REQ_RESP, /* openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_HOSTNAMES_REQ_RESP_PTR, /* openapi_resp_single_t* */
+	DATA_PARSER_OPENAPI_HOSTLIST_REQ_RESP, /* openapi_resp_single_t */
+	DATA_PARSER_OPENAPI_HOSTLIST_REQ_RESP_PTR, /* openapi_resp_single_t* */
 	DATA_PARSER_POWER_FLAGS, /* REMOVED 24.05: uint8_t & SLURM_POWER_FLAGS_* */
 	DATA_PARSER_PARTITION_INFO, /* partition_info_t */
 	DATA_PARSER_PARTITION_INFO_PTR, /* partition_info_t* */
@@ -645,6 +656,11 @@ typedef enum {
 	DATA_PARSER_H_LAYER_PTR, /* hierarchy_layer_t* */
 	DATA_PARSER_H_LAYER_LIST, /* list_t* hierarchy_layer_t* */
 	DATA_PARSER_H_RESOURCES_AS_LICENSE_LIST, /* parse H_RESOURCE_LIST to list_t* of licenses_t*  */
+	DATA_PARSER_H_VARIABLE, /* hierarchy_layer_t */
+	DATA_PARSER_H_VARIABLE_PTR, /* hierarchy_layer_t* */
+	DATA_PARSER_H_VARIABLE_LIST, /* list_t* hierarchy_layer_t* */
+	DATA_PARSER_SLUID, /* sluid_t */
+	DATA_PARSER_SLUID_PTR, /* sluid_t* */
 	DATA_PARSER_TYPE_MAX
 } data_parser_type_t;
 
@@ -1022,14 +1038,6 @@ extern int data_parser_dump_cli_stdout(data_parser_type_t type, void *obj,
 		FREE_NULL_DATA(parent_path);                                   \
 		FREE_NULL_DATA_PARSER(parser);                                 \
 	} while (false)
-
-/*
- * Populate OpenAPI schema for each parser
- * IN parser - parser to add schemas from
- * IN/OUT dst - OpenAPI specification to populate
- * RET SLURM_SUCCESS or ESLURM_NOT_SUPPORTED (to skip) or error
- */
-extern int data_parser_g_specify(data_parser_t *parser, data_t *dst);
 
 /*
  * Create data_parser instance for CLI

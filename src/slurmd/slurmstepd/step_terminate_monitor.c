@@ -35,12 +35,13 @@
 
 #include "src/common/macros.h"
 #include "src/common/parse_time.h"
+#include "src/common/read_config.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
-#include "src/common/read_config.h"
-#include "src/interfaces/job_container.h"
-#include "src/slurmd/slurmstepd/step_terminate_monitor.h"
+#include "src/interfaces/namespace.h"
+#include "src/slurmd/slurmstepd/mgr.h"
 #include "src/slurmd/slurmstepd/slurmstepd.h"
+#include "src/slurmd/slurmstepd/step_terminate_monitor.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -52,9 +53,9 @@ static uint32_t recorded_jobid = NO_VAL;
 static uint32_t recorded_stepid = NO_VAL;
 
 static void *_monitor(void *);
-static int _call_external_program(stepd_step_rec_t *step);
+static int _call_external_program(void);
 
-void step_terminate_monitor_start(stepd_step_rec_t *step)
+extern void step_terminate_monitor_start(void)
 {
 	slurm_conf_t *conf;
 
@@ -70,7 +71,7 @@ void step_terminate_monitor_start(stepd_step_rec_t *step)
 	program_name = xstrdup(conf->unkillable_program);
 	slurm_conf_unlock();
 
-	slurm_thread_create(&tid, _monitor, step);
+	slurm_thread_create(&tid, _monitor, NULL);
 
 	recorded_jobid = step->step_id.job_id;
 	recorded_stepid = step->step_id.step_id;
@@ -80,6 +81,7 @@ void step_terminate_monitor_start(stepd_step_rec_t *step)
 
 void step_terminate_monitor_stop(void)
 {
+	pthread_t tmp_tid;
 	slurm_mutex_lock(&lock);
 
 	if (!tid) {
@@ -87,20 +89,19 @@ void step_terminate_monitor_stop(void)
 		slurm_mutex_unlock(&lock);
 		return;
 	}
-
+	tmp_tid = tid;
+	tid = 0;
 	debug("signaling condition");
 	slurm_cond_signal(&cond);
 	signaled = true;
 	slurm_mutex_unlock(&lock);
-	slurm_thread_join(tid);
+	slurm_thread_join(tmp_tid);
 
 	xfree(program_name);
 }
 
-
-static void *_monitor(void *arg)
+static void *_monitor(void *ignored)
 {
-	stepd_step_rec_t *step = (stepd_step_rec_t *)arg;
 	struct timespec ts = {0, 0};
 	int rc = 0;
 
@@ -117,7 +118,7 @@ static void *_monitor(void *arg)
 		char stepid_str[33];
 		time_t now = time(NULL);
 
-		_call_external_program(step);
+		_call_external_program();
 
 		if (step->step_id.step_id == SLURM_BATCH_SCRIPT) {
 			snprintf(entity, sizeof(entity),
@@ -162,20 +163,21 @@ static void *_monitor(void *arg)
 		if (!step->batch) {
 			/* Notify waiting sruns */
 			if (step->step_id.step_id != SLURM_EXTERN_CONT)
-				while (stepd_send_pending_exit_msgs(step)) {;}
+				while (stepd_send_pending_exit_msgs()) {
+					;
+				}
 
 			if ((step_complete.rank > -1)) {
 				if (step->aborted)
 					info("unkillable stepd exiting with aborted job");
 				else
-					stepd_wait_for_children_slurmstepd(
-						step);
+					stepd_wait_for_children_slurmstepd();
 			}
 			/* Notify parent stepd or ctld directly */
-			stepd_send_step_complete_msgs(step);
+			stepd_send_step_complete_msgs();
 		}
 
-		stepd_cleanup(NULL, step, NULL, rc, false);
+		stepd_cleanup(NULL, NULL, rc, false);
 	} else if (rc != 0) {
 		error("Error waiting on condition in _monitor: %m");
 	}
@@ -185,8 +187,7 @@ static void *_monitor(void *arg)
 	return NULL;
 }
 
-
-static int _call_external_program(stepd_step_rec_t *step)
+static int _call_external_program(void)
 {
 	int status, rc, opt;
 	pid_t cpid;
@@ -215,15 +216,15 @@ static int _call_external_program(stepd_step_rec_t *step)
 		char *argv[2];
 		char **env = NULL;
 
-		/* container_g_join needs to be called in the
+		/* namespace_g_join needs to be called in the
 		   forked process part of the fork to avoid a race
 		   condition where if this process makes a file or
 		   detacts itself from a child before we add the pid
 		   to the container in the parent of the fork.
 		*/
-		if (container_g_join(&step->step_id, getuid(), false) !=
+		if (namespace_g_join(&step->step_id, getuid(), false) !=
 		    SLURM_SUCCESS)
-			error("container_g_join(%u): %m", recorded_jobid);
+			error("namespace_g_join(%u): %m", recorded_jobid);
 		env = env_array_create();
 		env_array_append_fmt(&env, "SLURM_JOBID", "%u", recorded_jobid);
 		env_array_append_fmt(&env, "SLURM_JOB_ID", "%u", recorded_jobid);

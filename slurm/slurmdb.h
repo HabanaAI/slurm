@@ -143,8 +143,6 @@ typedef enum {
 	QOS_FLAG_NOTSET = SLURM_BIT(28),
 	QOS_FLAG_ADD = SLURM_BIT(29),
 	QOS_FLAG_REMOVE = SLURM_BIT(30),
-
-	QOS_FLAG_INVALID,
 } slurmdb_qos_flags_t;
 
 /* Define QOS Cond flags */
@@ -195,6 +193,9 @@ enum cluster_fed_states {
 #define SLURMDB_JOB_FLAG_BACKFILL SLURM_BIT(3) /* Job was started from
 						* backfill */
 #define SLURMDB_JOB_FLAG_START_R  SLURM_BIT(4) /* Job start rpc was received */
+#define SLURMDB_JOB_FLAG_ALTERED  SLURM_BIT(5) /* Mainly for runaway fix: if
+						* set, the job record has been
+						* altered at some point */
 
 /*
  * Slurm job condition flags
@@ -254,7 +255,6 @@ typedef enum {
 	/* SLURM_BIT(10) empty */
 	CLUSTER_FLAG_FED = SLURM_BIT(11), /* This cluster is in a federation. */
 	CLUSTER_FLAG_EXT = SLURM_BIT(12), /* This cluster is external */
-	CLUSTER_FLAG_INVALID
 }  slurmdb_cluster_flags_t;
 
 /* Assoc flags */
@@ -274,8 +274,6 @@ typedef enum {
 
 	ASSOC_FLAG_USER_COORD = SLURM_BIT(16),
 	ASSOC_FLAG_BLOCK_ADD = SLURM_BIT(17),
-
-	ASSOC_FLAG_INVALID
 } slurmdb_assoc_flags_t;
 
 /* Assoc Cond flags */
@@ -311,6 +309,9 @@ typedef struct {
 	uint64_t count; /* Count of TRES on a given cluster, 0 if
 			 * listed generically. */
 	uint32_t id;    /* Database ID for the TRES */
+	char modifier; /* Only used for amending TRES: '-' for negative values,
+			* '+' for positive values. Normal TRES should just
+			* have this set to 0 ('\0') (DON'T PACK) */
 	char *name;     /* Name of TRES if type is generic like GRES
 			 * or License. Make include optional GRES type
 			 * (e.g. "gpu" or "gpu:tesla") */
@@ -412,8 +413,6 @@ typedef enum {
 	SLURMDB_ACCT_FLAG_BASE = 0x0000ffff,
 
 	SLURMDB_ACCT_FLAG_USER_COORD = SLURM_BIT(16),
-
-	SLURMDB_ACCT_FLAG_INVALID
 } slurmdb_acct_flags_t;
 
 typedef struct {
@@ -1302,6 +1301,7 @@ struct slurmdb_user_rec {
 	slurmdb_bf_usage_t *bf_usage; /* data for backfill scheduler,
 				       * (DON'T PACK) */
 	list_t *coord_accts; /* list of slurmdb_coord_rec_t *'s */
+	uint32_t def_qos_id; /* Which QOS id is this user's default */
 	char *default_acct;
 	char *default_wckey;
 	uint32_t flags;		/* SLURMDB_USER_FLAG_* */

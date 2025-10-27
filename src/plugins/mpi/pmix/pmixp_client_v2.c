@@ -58,20 +58,26 @@ static int _client_connected(const pmix_proc_t *proc, void *server_object,
 			     pmix_op_cbfunc_t cbfunc, void *cbdata)
 {
 	/*
-	 * Call the callback function. The status will be set in cbdata and we
-	 * only return PMIX_SUCCESS indicating we called it.
+	 * Before PMIx v6, a return of PMIX_SUCCESS was always excepted.
+	 * (Note: PMIx v3.1.0rc2+ would also treat PMIX_OPERATION_SUCCEEDED the
+	 *  same as PMIX_SUCCESS. Also cbfunc was always NULL before PMIx v6)
+	 *
+	 * Starting in PMIx v6, PMIX_SUCCESS and PMIX_OPERATION_SUCCEEDED are
+	 * treated differently. In v6+ only return PMIX_SUCCESS to indicate
+	 * cbfunc was called.
+	 *
+	 * Also, guarding PMIX_OPERATION_SUCCEEDED in PMIx v6+ allows Slurm to
+	 * compile against PMIx v2 - v3.0.0 since it didn't exist yet.
 	 */
-	if (cbfunc) {
-		cbfunc(PMIX_SUCCESS, cbdata);
-		return PMIX_SUCCESS;
-	}
+#if (HAVE_PMIX_VER >= 6)
+	if (!cbfunc)
+		return PMIX_OPERATION_SUCCEEDED;
 
-	return PMIX_OPERATION_SUCCEEDED;
-}
+	/* Call the callback function. The status will be set in cbdata */
+	cbfunc(PMIX_SUCCESS, cbdata);
+#endif
 
-static void _op_callbk(pmix_status_t status, void *cbdata)
-{
-	PMIXP_DEBUG("op callback is called with status=%d", status);
+	return PMIX_SUCCESS;
 }
 
 static void _errhandler_reg_callbk(pmix_status_t status,
@@ -218,8 +224,7 @@ static void _errhandler(size_t evhdlr_registration_id,
 	/* FIXME: use proper specificator for nranges */
 	PMIXP_ERROR("Error handler invoked: status = %d, source = [%s:%d]",
 		    (int) status, source->nspace, source->rank);
-	slurm_kill_job_step(pmixp_info_jobid(), pmixp_info_stepid(), SIGKILL,
-			    0);
+	slurm_kill_job_step(pmixp_info_step_id(), SIGKILL, 0);
 }
 
 static pmix_server_module_t slurm_pmix_cb = {
@@ -253,6 +258,23 @@ int pmixp_lib_init(void)
 		      pmixp_info_tmpdir_lib(), PMIX_STRING);
 #endif
 
+#if (HAVE_PMIX_VER > 3)
+	/*
+	 * (PMIx v4+) If share_topology is true tell the server to make the
+	 * HWLOC topology it grabs available to clients via job-level key-value
+	 * pairs. This results in the following keys being stored in PMIx's GDS:
+	 * PMIX_HWLOC_XML_V2, PMIX_HWLOC_XML_V1, and PMIX_LOCAL_TOPO
+	 *
+	 * Also instruct the server NOT to share the topology via shared memory
+	 * due to permission issues.
+	 */
+	if (slurm_pmix_conf.share_topology) {
+		PMIXP_KVP_ADD(kvp, PMIX_SERVER_SHARE_TOPOLOGY,
+			      &slurm_pmix_conf.share_topology, PMIX_BOOL);
+		setenv("PMIX_MCA_pmix_hwloc_hole_kind", "none", 1);
+	}
+#endif
+
 	/* setup the server library */
 	if (PMIX_SUCCESS != (rc = PMIx_server_init(&slurm_pmix_cb, kvp,
 						   PMIXP_INFO_SIZE(kvp)))) {
@@ -271,8 +293,6 @@ int pmixp_lib_init(void)
 int pmixp_lib_finalize(void)
 {
 	int rc = SLURM_SUCCESS;
-	/* deregister the errhandler */
-	PMIx_Deregister_event_handler(0, _op_callbk, NULL);
 
 	if (PMIX_SUCCESS != PMIx_server_finalize()) {
 		rc = SLURM_ERROR;

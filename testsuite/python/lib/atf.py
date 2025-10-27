@@ -20,16 +20,19 @@ import subprocess
 import sys
 import time
 import traceback
+import copy
 
 # slurmrestd
 import requests
 import signal
 
 import json
+import jsondiff
 
 # This module will be (un)imported in require_openapi_generator()
 openapi_client = None
 import importlib
+import threading
 
 ##############################################################################
 # ATF module functions
@@ -125,6 +128,7 @@ def run_command(
     input=None,
     xfail=False,
     env_vars=None,
+    background=False,
 ):
     """Executes a command and returns a dictionary result.
 
@@ -144,6 +148,9 @@ def run_command(
        xfail (boolean): If True, the command is expected to fail.
        env_vars (string): A string to set environmental variables that is
             prepended to the command when run.
+       background (boolean): If True, runs command in background and returns
+            immediately. Process can be accessed via results["process"]. Cannot
+            be used with fatal, xfail, timeout, capture_output, or check.
 
     Returns:
         A dictionary containing the following keys:
@@ -182,6 +189,10 @@ def run_command(
     if env_vars is not None:
         command = env_vars.strip() + " " + command
 
+    # If user is not specified but test-user is set, then set user to test-user
+    if not user and properties["test-user-set"]:
+        user = properties["test-user"]
+
     start_time = time.time()
     invocation_message = "Running command"
     if user is not None:
@@ -189,29 +200,89 @@ def run_command(
     invocation_message += f": {command}"
     logging.log(log_command_level, invocation_message)
     try:
-        if user is not None and user != properties["test-user"]:
+        if user is not None:
             if not properties["sudo-rights"]:
                 pytest.skip(
                     "This test requires the test user to have unprompted sudo rights",
                     allow_module_level=True,
                 )
+            # Use su to honor ulimits, specially core
+            cmd = [
+                "sudo",
+                "--preserve-env=PATH",
+                "-u",
+                user,
+                "/bin/bash",
+                "-lc",
+                command,
+            ]
+        else:
+            cmd = command
+
+        # Run in background mode and return before completion if requested
+        if background:
+            # Create kwargs for Popen, excluding unsupported run() params
+            background_run_kwargs = additional_run_kwargs.copy()
+            # Check that parameters that don't make sense haven't been specified
+            if background_run_kwargs["timeout"] != default_command_timeout:
+                pytest.fail("Unsupported: timeout cannot be used with background=True")
+            del background_run_kwargs["timeout"]
+            if fatal:
+                pytest.fail("Unsupported: fatal cannot be used with background=True")
+            if xfail:
+                pytest.fail("Unsupported: xfail cannot be used with background=True")
+            if "input" in background_run_kwargs:
+                input_str = background_run_kwargs.pop("input")
+            else:
+                input_str = None
+
+            # Run command differently depending on if using sudo for security
+            if isinstance(cmd, list):
+                process = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    **background_run_kwargs,
+                )
+            else:
+                process = subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    executable="/bin/bash",
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    universal_newlines=True,
+                    **background_run_kwargs,
+                )
+
+            # Handle input if provided
+            if input_str is not None:
+                process.stdin.write(input_str)
+                process.stdin.close()
+
+            # Return early with process object
+            results = {
+                "command": command,
+                "start_time": float(int(start_time * 1000)) / 1000,
+                "duration": float(int((time.time() - start_time) * 1000)) / 1000,
+                "exit_code": None,
+                "stdout": "",
+                "stderr": "",
+                "process": process,
+            }
+            return results
+
+        # Synchronous code path
+        if isinstance(cmd, list):
             cp = subprocess.run(
-                [
-                    "sudo",
-                    "--preserve-env=PATH",
-                    "-u",
-                    user,
-                    "/bin/bash",
-                    "-lc",
-                    command,
-                ],
-                capture_output=True,
-                text=True,
-                **additional_run_kwargs,
+                cmd, capture_output=True, text=True, **additional_run_kwargs
             )
         else:
             cp = subprocess.run(
-                command,
+                cmd,
                 shell=True,
                 executable="/bin/bash",
                 capture_output=True,
@@ -553,7 +624,7 @@ def gcore(component, pid=None, sbin=True):
         pids = [pid]
 
     if not pids:
-        logging.warning("Process {prefix}/{component} not found")
+        logging.warning(f"Process {prefix}/{component} not found")
     logging.debug(f"Getting gcores for PIDs: {pids}")
     for pid in pids:
         run_command(
@@ -657,9 +728,11 @@ def start_slurmctld(clean=False, quiet=False, also_slurmds=False):
                 )
 
         # Verify that the slurmd is registered correctly
+        timeout = 30 + 5 * len(slurmd_list)
         if not repeat_until(
             lambda: get_nodes(quiet=True),
             lambda nodes: all(nodes[name]["state"] == ["IDLE"] for name in slurmd_list),
+            timeout=timeout,
         ):
             nodes = get_nodes(quiet=True)
             non_idle = [
@@ -699,8 +772,10 @@ def start_slurmdbd(clean=False, quiet=False):
         run_command_exit(
             "sacctmgr show cluster", user=properties["slurm-user"], quiet=quiet
         )
-        != 0
+        == 0
     ):
+        logging.warning("slurmdbd was already running")
+    else:
         # Start slurmdbd
         results = run_command(
             f"{properties['slurm-sbin-dir']}/slurmdbd",
@@ -1034,6 +1109,20 @@ def require_slurm_running():
 
     if properties["auto-config"]:
         if not is_slurmctld_running(quiet=True):
+
+            # Check and report the mixed components
+            versions = dict()
+            versions["slurmdbd"] = get_version("sbin/slurmdbd")
+            versions["slurmctld"] = get_version("sbin/slurmctld")
+            versions["slurmd"] = get_version("sbin/slurmd")
+            versions["scontrol"] = get_version("bin/scontrol")
+            if len(set(versions.values())) == 1:
+                logging.info(
+                    f"Starting Slurm with all components in the same version: {versions['slurmctld']}"
+                )
+            else:
+                logging.info(f"Starting Slurm in a mixed version setup: {versions}")
+
             properties["slurm-started"] = True
             start_slurm(clean=True, quiet=True)
     else:
@@ -1045,9 +1134,53 @@ def require_slurm_running():
     # As a side effect, build up initial nodes dictionary
     nodes = get_nodes(quiet=True)
 
+    config = get_config()
+    properties["slurmctld_host"] = config["SlurmctldHost[0]"].split("(")[0]
+    properties["slurmctld_port"] = config["SlurmctldPort"]
+
+
+def is_upgrade_setup(
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=False,
+):
+    """
+    Return True if we have two Slurms configured in the system.
+    """
+
+    if not os.path.exists(old_slurm_prefix):
+        logging.debug(f"Old prefix {old_slurm_prefix} not exists.")
+        return False
+
+    if not os.path.exists(new_slurm_prefix):
+        logging.debug(f"New prefix {new_slurm_prefix} not exists.")
+        return False
+
+    # Add the right properties
+    setup_upgrades(
+        old_slurm_prefix,
+        new_slurm_prefix,
+        old_build_prefix,
+        new_build_prefix,
+        old_source_prefix,
+        new_source_prefix,
+        force_old,
+    )
+    return True
+
 
 def require_upgrades(
-    old_slurm_prefix="/opt/slurm-old", new_slurm_prefix="/opt/slurm-new"
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=True,
 ):
     """Checks if has two different versions installed.
 
@@ -1056,15 +1189,16 @@ def require_upgrades(
     if not properties["auto-config"]:
         require_auto_config("to change/upgrade Slurm setup")
 
-    if not os.path.exists(old_slurm_prefix):
-        pytest.skip(
-            f"This test needs the upgrade setup. Old prefix {old_slurm_prefix} not exists."
-        )
-
-    if not os.path.exists(new_slurm_prefix):
-        pytest.skip(
-            f"This test needs the upgrade setup. New prefix {new_slurm_prefix} not exists."
-        )
+    if not is_upgrade_setup(
+        old_slurm_prefix,
+        new_slurm_prefix,
+        old_build_prefix,
+        new_build_prefix,
+        old_source_prefix,
+        new_source_prefix,
+        force_old,
+    ):
+        pytest.skip("This test needs an upgrade setup")
 
     # Double-check that old_version <= new_version
     old_version = get_version(slurm_prefix=old_slurm_prefix)
@@ -1075,37 +1209,71 @@ def require_upgrades(
         )
     logging.info(f"Required upgrade setup found: {old_version} and {new_version}")
 
+
+def setup_upgrades(
+    old_slurm_prefix="/opt/slurm-old",
+    new_slurm_prefix="/opt/slurm-new",
+    old_build_prefix="",
+    new_build_prefix="",
+    old_source_prefix="",
+    new_source_prefix="",
+    force_old=False,
+):
+    """
+    Adds the necessary atf.properties[] with the old/new paths.
+    If force_old is specified itt also update the links pointing to the old
+    paths, and they will be restored in the global teardown.
+    """
+    # TODO: We should use slurm-new(-build) instead of slurm-git(-build)
+    if old_build_prefix == "":
+        old_build_prefix = properties["slurm-build-dir"]
+    if new_build_prefix == "":
+        new_build_prefix = f"{properties['slurm-build-dir']}/../slurm-git-build"
+    if old_source_prefix == "":
+        old_source_prefix = properties["slurm-source-dir"]
+    if new_source_prefix == "":
+        new_source_prefix = f"{properties['slurm-source-dir']}/../slurm-git"
+
     properties["old-slurm-prefix"] = old_slurm_prefix
     properties["new-slurm-prefix"] = new_slurm_prefix
 
-    logging.debug(
-        "Setting bin/ and sbin/ pointing to old version and saving a backup..."
-    )
-    run_command(
-        f"sudo mv {properties['slurm-sbin-dir']} {module_tmp_path}/upgrade-sbin",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo mv {properties['slurm-bin-dir']} {module_tmp_path}/upgrade-bin",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo mkdir {properties['slurm-sbin-dir']} {properties['slurm-bin-dir']}",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo ln -s {properties['old-slurm-prefix']}/sbin/* {properties['slurm-sbin-dir']}/",
-        quiet=True,
-        fatal=True,
-    )
-    run_command(
-        f"sudo ln -s {properties['old-slurm-prefix']}/bin/* {properties['slurm-bin-dir']}/",
-        quiet=True,
-        fatal=True,
-    )
+    properties["old-build-prefix"] = old_build_prefix
+    properties["new-build-prefix"] = new_build_prefix
+
+    properties["old-source-prefix"] = old_source_prefix
+    properties["new-source-prefix"] = new_source_prefix
+
+    properties["forced_upgrade_setup"] = force_old
+
+    if force_old:
+        logging.debug(
+            "Setting bin/ and sbin/ pointing to old version and saving a backup..."
+        )
+        run_command(
+            f"sudo mv {properties['slurm-sbin-dir']} {module_tmp_path}/upgrade-sbin",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo mv {properties['slurm-bin-dir']} {module_tmp_path}/upgrade-bin",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo mkdir {properties['slurm-sbin-dir']} {properties['slurm-bin-dir']}",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo ln -s {properties['old-slurm-prefix']}/sbin/* {properties['slurm-sbin-dir']}/",
+            quiet=True,
+            fatal=True,
+        )
+        run_command(
+            f"sudo ln -s {properties['old-slurm-prefix']}/bin/* {properties['slurm-bin-dir']}/",
+            quiet=True,
+            fatal=True,
+        )
 
 
 def upgrade_component(component, new_version=True):
@@ -1166,40 +1334,67 @@ def get_version(component="sbin/slurmctld", slurm_prefix=""):
 
     Args:
         component (string): The bin/ or sbin/ component of Slurm to check.
+                            It also supports "config.h" to obtain the VERSION in the header.
         slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+                               If component is "config.h", then it's the build dir.
 
     Returns:
         A tuple representing the version. E.g. (25.05.0).
     """
-    if slurm_prefix == "":
-        slurm_prefix = f"{properties['slurm-sbin-dir']}/.."
+    if component == "config.h":
+        if slurm_prefix == "":
+            slurm_prefix = properties["slurm-build-dir"]
+        header = pathlib.Path(f"{slurm_prefix}/config.h")
+        if not header.exists():
+            pytest.fail("Unable to access to config.h to get Slurm version")
 
-    return tuple(
-        int(part) if part.isdigit() else 0
-        for part in run_command_output(
-            f"sudo {slurm_prefix}/{component} -V", quiet=True
+        version_str = re.search(
+            r'#define\s+VERSION\s+"([^"]+)"', header.read_text()
+        ).group(1)
+
+    else:
+        if slurm_prefix == "":
+            slurm_prefix = f"{properties['slurm-sbin-dir']}/.."
+
+        version_str = (
+            run_command_output(
+                f"{slurm_prefix}/{component} -V", quiet=True, user="root"
+            )
+            .strip()
+            .replace("slurm ", "")
         )
-        .replace("slurm ", "")
-        .split(".")
-    )
+
+    return tuple(int(part) if part.isdigit() else 0 for part in version_str.split("."))
 
 
-def require_version(version, component="sbin/slurmctld", slurm_prefix=""):
+def require_version(version, component="sbin/slurmctld", slurm_prefix="", reason=None):
     """Checks if the component is at least the required version, or skips.
 
     Args:
         version (tuple): The tuple representing the version.
         component (string): The bin/ or sbin/ component of Slurm to check.
         slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
+        reason (string): The reason why the version of the component is required.
 
     Returns:
         A tuple representing the version. E.g. (25.05.0).
     """
     component_version = get_version(component, slurm_prefix)
     if component_version < version:
-        pytest.skip(
-            f"The version of {component} is {component_version}, required is {version}"
-        )
+        if not reason:
+            reason = f"The version of {component} is {component_version}, required is {version}"
+        pytest.skip(reason)
+
+
+def request_slurmctld(request):
+    """
+    Returns the slurmctld response of a given request.
+    It needs slurmctld >= 25.11 listening HTTP requests.
+    """
+
+    return requests.get(
+        f"http://{properties['slurmctld_host']}:{properties['slurmctld_port']}/{request}",
+    )
 
 
 def request_slurmrestd(request):
@@ -1210,6 +1405,63 @@ def request_slurmrestd(request):
         f"{properties['slurmrestd_url']}/{request}",
         headers=properties["slurmrestd-headers"],
     )
+
+
+def assert_openapi_spec_eq(spec_a, spec_b):
+    """
+    Asserts that two OpenAPI specifications are equal, ignoring some info and
+    description fields.
+
+    Note that atf.properties["openapi_spec"] saves the specs used to generate
+    the python openapi_client from slurmrestd and we have some json specs in
+    the testsuite_data_dir that can be read with the openapi_spec feature.
+    Usually we want to assert both are equal.
+
+    Args:
+        spec_a: one loaded json spec
+        spec_b: the other loaded json spec
+
+    Returns:
+        None, but a pytest assert call.
+    """
+
+    # Copy specs so we can change some things
+    _spec_a = copy.deepcopy(spec_a)
+    _spec_b = copy.deepcopy(spec_b)
+
+    # Avoid checking versions that change with each new release
+    _spec_a["info"]["x-slurm"] = None
+    _spec_b["info"]["x-slurm"] = None
+
+    _spec_a["info"]["version"] = None
+    _spec_b["info"]["version"] = None
+
+    # Recursively remove all description fields
+    def _strip_descriptions(oas):
+        """Recursively removes all description fields in oas
+        Returns:
+            oas with all description fields set to None
+        """
+
+        if type(oas) is dict:
+            for key, value in oas.items():
+                if key.casefold() == "description".casefold():
+                    oas[key] = None
+                else:
+                    oas[key] = _strip_descriptions(value)
+        elif type(oas) is list:
+            for value in oas:
+                value = _strip_descriptions(value)
+
+        return oas
+
+    _spec_a = _strip_descriptions(_spec_a)
+    _spec_b = _strip_descriptions(_spec_b)
+
+    d = jsondiff.diff(_spec_a, _spec_b)
+    assert (
+        len(d) == 0
+    ), f"OpenAPI specs should be equal(equivalent, but these differences were found: {d}"
 
 
 def require_openapi_generator(version="7.3.0"):
@@ -1257,6 +1509,10 @@ def require_openapi_generator(version="7.3.0"):
         if r.status_code != 200:
             pytest.fail(f"Error requesting openapi specs from slurmrestd: {r}")
 
+        properties["openapi_spec"] = json.loads(r.text)
+        if properties["openapi_spec"] is None:
+            pytest.fail(f"Error parsing OpenAPI specs from slurmrestd: {r.text}")
+
         with open(spec_path, "w") as f:
             f.write(r.text)
             f.close()
@@ -1286,6 +1542,16 @@ def require_openapi_generator(version="7.3.0"):
     properties["openapi_config"].access_token = properties["slurmrestd-headers"][
         "X-SLURM-USER-TOKEN"
     ]
+
+
+def openapi_util():
+    """
+    Returns a UtilApi client from OpenAPI.
+    It needs require_openapi_generator() to be run first.
+    """
+    return openapi_client.UtilApi(
+        openapi_client.ApiClient(properties["openapi_config"])
+    )
 
 
 def openapi_slurm():
@@ -1483,14 +1749,15 @@ def get_config(live=True, source="slurm", quiet=False, delimiter="="):
             f"cat {config_file}", user=properties["slurm-user"], quiet=quiet
         )
         for line in output.splitlines():
-            if match := re.search(rf"^\s*(\S+)\s*{re.escape(delimiter)}\s*(.*)$", line):
+            if match := re.search(
+                rf"^\s*(\S+?)\s*{re.escape(delimiter)}\s*(.*)$", line
+            ):
                 parameter_name, parameter_value = (
                     match.group(1),
                     match.group(2).rstrip(),
                 )
                 if parameter_name.lower() in [
                     "downnodes",
-                    "frontendname",
                     "name",
                     "nodename",
                     "nodeset",
@@ -1836,6 +2103,54 @@ def require_mpi(mpi_option="pmix", mpi_compiler="mpicc"):
             f"This test needs to be able to use --mpi={mpi_option}",
             allow_module_level=True,
         )
+
+
+def require_influxdb(influx_client="influx", jobacct_gather="jobacct_gather/cgroup"):
+    """Require the influx client available and the right config.
+    With auto-config the default values would work. Without you may need to setup the acct_gather values in the testsuite.conf file.
+
+    Args:
+        influx_client (string): The name of the influxdb client. Default: influx.
+        jobacct_gather (string): To use influxdb we need to set some JobAcctGatherType. Default: cgroup.
+
+    Returns:
+        None
+    """
+
+    require_tool(influx_client)
+
+    require_config_parameter("JobAcctGatherType", jobacct_gather)
+    require_config_parameter("AcctGatherProfileType", "acct_gather_profile/influxdb")
+
+    require_config_parameter(
+        "ProfileInfluxDBHost",
+        f"{properties['influxdb_host']}:{properties['influxdb_port']}",
+        source="acct_gather",
+    )
+    require_config_parameter(
+        "ProfileInfluxDBDatabase", properties["influxdb_db"], source="acct_gather"
+    )
+    require_config_parameter("ProfileInfluxDBDefault", "ALL", source="acct_gather")
+    require_config_parameter("ProfileInfluxDBRTPolicy", "autogen", source="acct_gather")
+
+    request_influxdb(f"CREATE DATABASE {properties['influxdb_db']}")
+    properties["influxdb-started"] = True
+
+
+def request_influxdb(query):
+    """Send a query using the influx client. Requires to run require_influxdb first.
+
+    Args:
+        query (string): The query to send,
+
+    Returns:
+        The stdout returned by the influxdb client.
+        If the clients fails somehow, this function will fatal.
+    """
+    return run_command_output(
+        f"influx -host {properties['influxdb_host']} -port {properties['influxdb_port']} -database {properties['influxdb_db']} -format column -execute \"{query}\"",
+        fatal=True,
+    )
 
 
 def require_whereami():
@@ -2331,7 +2646,7 @@ def cancel_all_jobs(
         False
     """
 
-    user_name = get_user_name()
+    user_name = properties["test-user"]
 
     run_command(f"scancel -u {user_name}", fatal=fatal, quiet=quiet)
 
@@ -2754,12 +3069,20 @@ def submit_job_sbatch(sbatch_args='--wrap "sleep 60"', **run_command_kwargs):
     Returns:
         The job id.
 
+    Note:
+        The background parameter is ignored and always treated as False, since
+        sbatch is already non-blocking and the function needs to capture the
+        job ID from output.
+
     Example:
         >>> submit_job_sbatch('--wrap "echo Hello"')
         1234
         >>> submit_job_sbatch('-J myjob --wrap "echo World"', fatal=True)
         5678
     """
+
+    # Since sbatch is non-blocking anyway, make sure we're not in the background
+    run_command_kwargs["background"] = False
 
     output = run_command_output(f"sbatch {sbatch_args}", **run_command_kwargs)
 
@@ -2882,21 +3205,101 @@ def submit_job_srun(srun_args, **run_command_kwargs):
         srun_args (string): The arguments to srun.
 
     Returns:
-        The job id from srun.
+        The job id (int) or 0 if failed.
 
     Example:
         >>> submit_job_srun('-n 4 --output=output.txt ./my_executable')
         12345
         >>> submit_job_srun('-n 2 --output=output.txt ./my_executable', timeout=60)
         67890
+        >>> submit_job_srun('-n 2 --output=output.txt ./my_executable', background=True)
+        34567
     """
+    verbose_arg = "-v"
 
-    results = run_job(" ".join(["-v", srun_args]), **run_command_kwargs)
+    if run_command_kwargs.get("background", False):
+        # Use timeout for finding job id
+        timeout = run_command_kwargs.pop("timeout", 30)
+        # Extract fatal/xfail to handle at job submission level
+        fatal = run_command_kwargs.pop("fatal", False)
+        xfail = run_command_kwargs.pop("xfail", False)
 
-    if match := re.search(r"jobid (\d+)", results["stderr"]):
-        return int(match.group(1))
+        if get_version("bin/srun") < (25, 11):
+            # Older versions may not print the jobid with -v until job is scheduled
+            verbose_arg = "--begin=now+1"
+            logging.warning(
+                "Using {verbose_arg} to be able to extract jobid when using srun background"
+            )
+
+    results = run_command(f"srun {verbose_arg} {srun_args}", **run_command_kwargs)
+
+    if run_command_kwargs.get("background", False):
+        job_id = None
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            line = _readline_with_timeout(results["process"].stderr, timeout=5)
+            if line is None:
+                # Timeout or EOF
+                if results["process"].poll() is not None:
+                    break
+                continue
+
+            if match := re.search(r"job(id)?[ =](\d+)", line, re.IGNORECASE):
+                job_id = int(match.group(2))
+                break
+
+            if results["process"].poll() is not None:
+                break
     else:
-        return 0
+        if match := re.search(r"job(id)?[ =](\d+)", results["stderr"], re.IGNORECASE):
+            job_id = int(match.group(2))
+        else:
+            job_id = None
+
+    if job_id is not None:
+        properties["submitted-jobs"].append(job_id)
+
+    # Handle fatal/xfail for background jobs
+    if run_command_kwargs.get("background", False):
+        if fatal:
+            if xfail and job_id is not None:
+                pytest.fail(
+                    f'Command "srun -v {srun_args}" was expected to fail but got job id {job_id}'
+                )
+            elif not xfail and job_id is None:
+                pytest.fail(f'Command "srun -v {srun_args}" failed to get job id')
+
+    return job_id if job_id else 0
+
+
+def _readline_with_timeout(stream, timeout=default_command_timeout):
+    """Read a line from a stream with a timeout.
+
+    Args:
+        stream: The stream to read from (e.g., process.stderr)
+        timeout: Maximum seconds to wait for a line
+
+    Returns:
+        The line read from the stream, or None if timeout/EOF
+    """
+    result = [None]
+
+    def read_line():
+        try:
+            result[0] = stream.readline()
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=read_line)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout)
+
+    if thread.is_alive():
+        # Timeout occurred
+        return None
+    return result[0]
 
 
 # Return job id (command should not be interactive/shell)
@@ -2909,22 +3312,63 @@ def submit_job_salloc(salloc_args, **run_command_kwargs):
         salloc_args (string): The arguments to salloc.
 
     Returns:
-        The job id.
+        The job id (int) or 0 if failed.
 
     Example:
         >>> submit_job_salloc('-N 1 -t 60 --output=output.txt ./my_executable')
         12345
         >>> submit_job_salloc('-N 2 -t 120 --output=output.txt ./my_executable', timeout=60)
         67890
+        >>> submit_job_salloc('-N 2 -t 120 --output=output.txt ./my_executable', background=True)
+        34567
     """
+    # If background=True, use timeout for finding job id
+    if run_command_kwargs.get("background", False):
+        timeout = run_command_kwargs.pop("timeout", 30)
+        # Extract fatal/xfail to handle at job submission level
+        fatal = run_command_kwargs.pop("fatal", False)
+        xfail = run_command_kwargs.pop("xfail", False)
 
     results = run_command(f"salloc {salloc_args}", **run_command_kwargs)
-    if match := re.search(r"Granted job allocation (\d+)", results["stderr"]):
-        job_id = int(match.group(1))
-        properties["submitted-jobs"].append(job_id)
-        return job_id
+
+    if run_command_kwargs.get("background", False):
+        job_id = None
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            line = _readline_with_timeout(results["process"].stderr, timeout=5)
+            if line is None:
+                # Timeout or EOF
+                if results["process"].poll() is not None:
+                    break
+                continue
+
+            if match := re.search(r"job allocation (\d+)", line):
+                job_id = int(match.group(1))
+                break
+
+            if results["process"].poll() is not None:
+                break
     else:
-        return 0
+        if match := re.search(r"Granted job allocation (\d+)", results["stderr"]):
+            job_id = int(match.group(1))
+        else:
+            job_id = None
+
+    if job_id is not None:
+        properties["submitted-jobs"].append(job_id)
+
+    # Handle fatal/xfail for background jobs
+    if run_command_kwargs.get("background", False):
+        if fatal:
+            if xfail and job_id is not None:
+                pytest.fail(
+                    f'Command "salloc {salloc_args}" was expected to fail but got job id {job_id}'
+                )
+            elif not xfail and job_id is None:
+                pytest.fail(f'Command "salloc {salloc_args}" failed to get job id')
+
+    return job_id if job_id else 0
 
 
 # Return job id
@@ -3058,8 +3502,19 @@ def get_jobs(job_id=None, dbd=False, **run_command_kwargs):
         command = "scontrol -d -o show jobs"
         if job_id is not None:
             command += f" {job_id}"
-        output = run_command_output(command, fatal=True, **run_command_kwargs)
+        # TODO: Remove extra debug info for t22858 instead of fatal
+        result = run_command(command, fatal=False, **run_command_kwargs)
+        if result["exit_code"]:
+            logging.debug(
+                f"Fatal failure of {command}, probably due 'Unable to contact slurm controller' (t22858)"
+            )
+            logging.debug("Getting gcore from slurmctld before fatal.")
+            gcore("slurmctld")
+            pytest.fail(
+                f"Command {command} failed with rc={result['exit_code']}: {result['stderr']}"
+            )
 
+        output = result["stdout"]
         job_dict = {}
         for line in output.splitlines():
             if line == "":
@@ -3964,7 +4419,9 @@ def require_nodes(requested_node_count, requirements_list=[]):
                         augmentation_dict[parameter_name] = parameter_value
             elif parameter_name == "Features":
                 required_features = set(parameter_value.split(","))
-                node_features = set(lower_node_dict.get("features", "").split(","))
+                features = lower_node_dict.get("features", [])
+                features = features[0] if features else ""
+                node_features = set(features.split(","))
                 if not required_features.issubset(node_features):
                     if node_qualifies:
                         node_qualifies = False
@@ -4063,7 +4520,16 @@ def make_bash_script(script_name, script_contents):
     with open(script_name, "w") as f:
         f.write("#!/bin/bash\n")
         f.write(script_contents)
-    os.chmod(script_name, 0o0700)
+
+    run_command(f"chmod 777 {script_name}", user="root", fatal=True, quiet=True)
+
+    if properties["test-user-set"]:
+        run_command(
+            f"chown {properties['test-user']} {script_name}",
+            user="root",
+            fatal=True,
+            quiet=True,
+        )
 
 
 def wait_for_file(file_name, **repeat_until_kwargs):
@@ -4262,25 +4728,49 @@ def run_check_test(source_file, build_args=""):
         build_args (string): Additional string to be appended to the build command.
     """
 
+    import xmltodict
+
     check_test = (
-        f"{module_tmp_path}/{os.path.splitext(os.path.basename(source_file))[0]}.exe"
+        f"{module_tmp_path}/{os.path.splitext(os.path.basename(source_file))[0]}"
     )
+    xml_test = check_test + ".xml"
 
     compile_against_libslurm(
         f"{properties['testsuite_check_dir']}/{source_file}",
         check_test,
         full=True,
         build_args=build_args + "-lcheck -lm -lsubunit",
+        fatal=True,
+        quiet=True,
     )
 
-    result = run_command(check_test, quiet=True)
-    logging.info(f"{result['stdout']}")
+    # Run the libcheck test setting an xml output
+    result = run_command(
+        check_test, quiet=True, env_vars=f"CK_XML_LOG_FILE_NAME={xml_test}"
+    )
 
-    assert not result["exit_code"]
+    # Parse the xml output
+    if not os.path.exists(xml_test):
+        pytest.fail(f"Test results not found: {xml_test}")
+
+    with open(xml_test) as f:
+        xml_data = xmltodict.parse(f.read())
+
+    logging.info(f"{result['stdout']}")
+    if result["exit_code"]:
+        logging.error(f"\n{result['stderr']}")
+
+    return xml_data["testsuites"]["suite"]
 
 
 def compile_against_libslurm(
-    source_file, dest_file, build_args="", full=False, shared=False
+    source_file,
+    dest_file,
+    build_args="",
+    full=False,
+    shared=False,
+    new_prefixes=False,
+    **run_command_kwargs,
 ):
     """Compiles a test program against either libslurm.so or libslurmfull.so.
 
@@ -4294,6 +4784,8 @@ def compile_against_libslurm(
         full (boolean): Use libslurmfull.so instead of libslurm.so.
         shared (boolean): Produces a shared library (adds the -shared compiler option
             and adds a .so suffix to the output file name).
+        **run_command_kwargs: Auxiliary arguments to be passed to the
+            run_command function (e.g., quiet, fatal, timeout, etc.).
 
     Returns:
         None
@@ -4302,29 +4794,35 @@ def compile_against_libslurm(
         >>> compile_against_libslurm("my_test.c", "my_test", build_args="-Wall -Werror")
     """
 
+    slurm_prefix = properties["slurm-prefix"]
+    slurm_source = properties["slurm-source-dir"]
+    slurm_build = properties["slurm-build-dir"]
+    if new_prefixes:
+        slurm_prefix = properties["new-slurm-prefix"]
+        slurm_source = properties["new-source-prefix"]
+        slurm_build = properties["new-build-prefix"]
+
     if full:
         slurm_library = "slurmfull"
     else:
         slurm_library = "slurm"
-    if os.path.isfile(
-        f"{properties['slurm-prefix']}/lib64/slurm/lib{slurm_library}.so"
-    ):
+    if os.path.isfile(f"{slurm_prefix}/lib64/slurm/lib{slurm_library}.so"):
         lib_dir = "lib64"
     else:
         lib_dir = "lib"
     if full:
-        lib_path = f"{properties['slurm-prefix']}/{lib_dir}/slurm"
+        lib_path = f"{slurm_prefix}/{lib_dir}/slurm"
     else:
-        lib_path = f"{properties['slurm-prefix']}/{lib_dir}"
+        lib_path = f"{slurm_prefix}/{lib_dir}"
 
     command = f"gcc {source_file} -g -pthread"
     if shared:
         command += " -fPIC -shared"
     command += f" -o {dest_file}"
-    command += f" -I{properties['slurm-source-dir']} -I{properties['slurm-build-dir']} -I{properties['slurm-prefix']}/include -Wl,-rpath={lib_path} -L{lib_path} -l{slurm_library} -lresolv"
+    command += f" -I{slurm_source} -I{slurm_build} -I{slurm_prefix}/include -Wl,-rpath={lib_path} -L{lib_path} -l{slurm_library} -lresolv"
     if build_args != "":
         command += f" {build_args}"
-    run_command(command, fatal=True)
+    run_command(command, **run_command_kwargs)
 
 
 def get_partitions(**run_command_kwargs):
@@ -4620,7 +5118,11 @@ properties["slurm-prefix"] = "/usr/local"
 properties["testsuite_scripts_dir"] = (
     properties["testsuite_base_dir"] + "/python/scripts"
 )
+properties["testsuite_data_dir"] = properties["testsuite_base_dir"] + "/python/data"
 properties["testsuite_check_dir"] = properties["testsuite_base_dir"] + "/python/check"
+properties["influxdb_host"] = "localhost"
+properties["influxdb_port"] = 8086
+properties["influxdb_db"] = "slurm"
 
 # Override directory properties with values from testsuite.conf file
 testsuite_config = {}
@@ -4645,6 +5147,13 @@ if "slurminstalldir" in testsuite_config:
     properties["slurm-prefix"] = testsuite_config["slurminstalldir"]
 if "slurmconfigdir" in testsuite_config:
     properties["slurm-config-dir"] = testsuite_config["slurmconfigdir"]
+
+if "influxdb_host" in testsuite_config:
+    properties["influxdb_host"] = testsuite_config["influxdb_host"]
+if "influxdb_port" in testsuite_config:
+    properties["influxdb_port"] = testsuite_config["influxdb_port"]
+if "influxdb_db" in testsuite_config:
+    properties["influxdb_db"] = testsuite_config["influxdb_db"]
 
 # Set derived directory properties
 # The environment (e.g. PATH, SLURM_CONF) overrides the configuration.
@@ -4680,7 +5189,7 @@ if os.access(slurm_config_file, os.R_OK):
             if match := re.search(r"^\s*(?i:SlurmUser)\s*=\s*(.*)$", line):
                 properties["slurm-user"] = match.group(1)
 else:
-    # slurm.conf is not readable as test-user. We will try reading it as root
+    # slurm.conf is not readable, we will try reading it as root
     results = run_command(
         f"grep -i SlurmUser {slurm_config_file}", user="root", quiet=True
     )
@@ -4691,7 +5200,16 @@ else:
             properties["slurm-user"] = match.group(1)
 
 properties["submitted-jobs"] = []
-properties["test-user"] = pwd.getpwuid(os.getuid()).pw_name
+if "slurmtestuser" in testsuite_config:
+    properties["test-user"] = testsuite_config["slurmtestuser"]
+    properties["test-user-set"] = True
+else:
+    properties["test-user"] = pwd.getpwuid(os.getuid()).pw_name
+    properties["test-user-set"] = False
+
+properties["test-user-uid"] = pwd.getpwnam(properties["test-user"]).pw_uid
+properties["test-user-gid"] = pwd.getpwnam(properties["test-user"]).pw_gid
+
 properties["auto-config"] = False
 properties["allow-slurmdbd-modify"] = False
 properties["slurmrestd-started"] = False

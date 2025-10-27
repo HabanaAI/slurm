@@ -102,6 +102,8 @@ static void _parse_args(int argc, char **argv)
 		LONG_OPT_CA_CERT_FILE,
 		LONG_OPT_CONF_SERVER,
 		LONG_OPT_DISABLE_RECONFIG,
+		LONG_OPT_JWKS_FILE,
+		LONG_OPT_KEY_FILE,
 		LONG_OPT_PORT,
 		LONG_OPT_SYSTEMD,
 	};
@@ -110,6 +112,8 @@ static void _parse_args(int argc, char **argv)
 		{"ca-cert-file", required_argument, 0, LONG_OPT_CA_CERT_FILE},
 		{"conf-server", required_argument, 0, LONG_OPT_CONF_SERVER},
 		{ "disable-reconfig", no_argument, 0, LONG_OPT_DISABLE_RECONFIG },
+		{ "jwks-file", required_argument, 0, LONG_OPT_JWKS_FILE },
+		{ "key-file", required_argument, 0, LONG_OPT_KEY_FILE },
 		{ "port", required_argument, 0, LONG_OPT_PORT },
 		{"systemd", no_argument, 0, LONG_OPT_SYSTEMD},
 		{NULL, no_argument, 0, 'v'},
@@ -189,6 +193,12 @@ static void _parse_args(int argc, char **argv)
 			break;
 		case LONG_OPT_DISABLE_RECONFIG:
 			disable_reconfig = true;
+			break;
+		case LONG_OPT_JWKS_FILE:
+			setenv("SLURM_SACK_JWKS", optarg, 0);
+			break;
+		case LONG_OPT_KEY_FILE:
+			setenv("SLURM_SACK_KEY", optarg, 0);
 			break;
 		case LONG_OPT_PORT:
 			if (parse_uint16(optarg, &port))
@@ -349,7 +359,7 @@ static void _listen_for_reconf(void)
 		return;
 	}
 
-	if (tls_enabled())
+	if (conn_tls_enabled())
 		flags |= CON_FLAG_TLS_SERVER;
 
 	if ((rc = conmgr_process_fd_listen(listen_fd, CON_TYPE_RPC, &events,
@@ -360,23 +370,35 @@ static void _listen_for_reconf(void)
 
 static void _on_sigint(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	if (conmgr_args.status == CONMGR_WORK_STATUS_CANCELLED)
+		return;
+
 	info("Caught SIGINT. Shutting down.");
 	conmgr_request_shutdown();
 }
 
 static void _on_sighup(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	if (conmgr_args.status == CONMGR_WORK_STATUS_CANCELLED)
+		return;
+
 	info("Caught SIGHUP. Reconfiguring.");
 	slurm_thread_create_detached(_try_to_reconfig, NULL);
 }
 
 static void _on_sigusr2(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	if (conmgr_args.status == CONMGR_WORK_STATUS_CANCELLED)
+		return;
+
 	info("Caught SIGUSR2. Ignoring.");
 }
 
 static void _on_sigpipe(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	if (conmgr_args.status == CONMGR_WORK_STATUS_CANCELLED)
+		return;
+
 	info("Caught SIGPIPE. Ignoring.");
 }
 
@@ -492,7 +514,6 @@ rwfail:
 
 extern int main(int argc, char **argv)
 {
-	conmgr_callbacks_t callbacks = {NULL, NULL};
 	main_argv = argv;
 	_parse_args(argc, argv);
 
@@ -503,7 +524,7 @@ extern int main(int argc, char **argv)
 		if (xdaemon())
 			error("daemon(): %m");
 
-	conmgr_init(0, 0, callbacks);
+	conmgr_init(0, 0, 0);
 
 	conmgr_add_work_signal(SIGINT, _on_sigint, NULL);
 	conmgr_add_work_signal(SIGHUP, _on_sighup, NULL);
@@ -538,11 +559,11 @@ extern int main(int argc, char **argv)
 		xsystemd_change_mainpid(getpid());
 
 	/* Periodically renew TLS certificate indefinitely */
-	if (tls_enabled()) {
+	if (conn_tls_enabled()) {
 		if (conn_g_own_cert_loaded()) {
 			log_flag(AUDIT_TLS, "Loaded static certificate key pair, will not do any certificate renewal.");
 		} else if (certmgr_enabled()) {
-			certmgr_client_daemon_init(NULL);
+			certmgr_client_daemon_init(NULL, NULL);
 		} else {
 			fatal("No static TLS certificate key pair loaded, and the certmgr plugin is not enabled to get signed certificates.");
 		}

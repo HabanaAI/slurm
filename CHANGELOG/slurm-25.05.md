@@ -1,3 +1,137 @@
+## Changes in 25.05.4
+
+* scontrol/sacct/sacctmgr - Prevent hitting a double free when slurm is compiled with --enable-memory-leak-debug and using the --json or --yaml options.
+* Prevent possible truncation of the CPU_IDs list in "scontrol --details show job" on high-core-count systems.
+* slurmd - Fix potential memory leak when incoming RPC is rejected or fails to unpack successfully.
+* Demote certain plugin loading "error" messages to "debug" messages. This prevents unnecessary errors from being logged when slurmrestd tries to load the tls/s2n plugin to handle https requests. Failures to load any other plugins will still result in informative "error" messages being logged.
+* Respect time_min_as_soft_limit when calculating the projected job end time.
+* Fix a regression added in 25.05.2 that broke compatibility with PMIx v2.x through v3.1.0rc1.
+* slurmrestd - Fix a bug in the "GET /slurm/v0.0.4*/node/{node_name}" endpoint where the node's `partitions` field would be incorrectly populated.
+* Fix regression that caused slurmctld to wait forever on shutdown until all powersave scripts completed. Now the slurmctld waits up to 10 seconds, as documented.
+* Improve consistency of invalid node name errors.
+* Prevent potential memory corruption while forwarding messages that require addresses to be packed.
+* slurmctld - Increased the default maximum number of incoming connections from 50 to 512 as configured in slurm.conf with SlurmctldParameters=conmgr_max_connections=512 to reduce amount of connections getting deferred responses.
+* Avoid allowing one extra connection above the configured conmgr_max_connections limit.
+* Docs - Change man page footer to display the current Slurm release instead of the last-changed "Month Year".
+* Docs - Remove "Last modified" dates from HTML documentation.
+* slurmstepd - Fix deadlock when PMIx receives an event during step termination, which caused stuck stepd processes after job completion.
+
+## Changes in 25.05.3
+
+* slurmctld.service - Set LimitMEMLOCK=infinity by default to avoid slurmctld crashes due to default for locked memory being too low.
+* slurmdbd.service - Set LimitMEMLOCK=infinity by default to avoid slurmdbd crashes due to default for locked memory being too low.
+* slurmrestd.service - Set LimitMEMLOCK=infinity by default to avoid slurmrestd crashes due to default for locked memory being too low.
+* Fix a segfault in the slurmctld caused by invalid core affinity for GPUs on a node.
+* Fix a node not being set to the invalid state when GPU core affinity is invalid.
+* A cluster will start the MaxJobCount of jobs and not one less.
+* Allow QOS usage to be purged and optionally archived as part of a Usage purge and optional archive.
+* Fix slurmctld crash caused by accessing job_desc.assoc_qos in job_submit.lua for an association that doesn't exist.
+* Fix slurmctld segfault when SIGUSR2 is received early and jobcomp plugin is enabled.
+* Fix use-cases incorrectly rejecting job requests when MaxCPUsPer[Socket|Node] applied and CPUSpecList/CoreSpecCount configured.
+* tls/s2n - Fix heterogeneous jobs failing to run in a TLS enabled environment.
+* sbatch - Fix a regression where SLURM_NETWORK would not be exported for non-Cray systems when using --network.
+* REGEX_REPLACE() was not supported before MySQL 8.0.4 and MariaDB 10, and the regex syntax used previously was not supported for both MySQL and MariaDB (not all POSIX syntax is supported in both)
+* fatal() if the SQL server does not support REGEXP_REPLACE(). This was introduced in MySQL 8.0.4 or MariaDB 10.0.5.
+* Pass environment variables to container when using Apptainer/Singularity OCI runtimes.
+* slurmscriptd,slurmstepd - Fix use-after-free issue with the "ident" string when logging to syslog.
+* Fix bug where the backfill scheduler changed the specified --time of a job and incorrectly reset it to --time-min.
+* Prevent healthy nodes being marked as unresponsive due to forwarding message timeouts increasing as the tree is traversed. The issue occurred if Slurm was running with a mix of 24.05- and 24.11+ slurmds. This only fixes 25.05+ slurmds.
+* Fix crash while using the wckeys rest endpoint.
+* Fix cases of job updates incorrectly rejected when specifying modifications on fields unrelated to tasks computation (i.e. changing JobName).
+* slurmrestd - Prevent triggering a fatal abort when parasing a non-empty group id string by replacing it with an error. This affects all endpoints with request bodies containing openapi_meta_client group field. It also affects the following endpoints: 'GET /slurmdb/v0.0.4[1-3]/jobs' 'POST /slurm/v0.0.4[1-3]/job/submit' 'POST /slurm/v0.0.4[1-3]/job/{job_id}' 'POST /slurm/v0.0.4[1-3]/job/allocate'
+* slurmrestd - Fix memory leak that happened when submitting a request body containing the meta.plugin.accounting_storage field.
+* slurmrestd - Fix memory leak that happened when submitting a request body containing the "warnings", "errors", or "meta" field. This affects the following endpoints: 'POST /slurmdb/v0.0.4*/qos'
+* slurmctld - Fix how gres with cores or a type defined are selected to prevent jobs not using reservations from being allocated reserved gres and vice versa.
+
+## Changes in 25.05.2
+
+* sbatch - Fix case where --get-user-env and some --export flags could make a job fail and get requeued+held if Slurm's installation path was too long.
+* srun - Increase --multi-prog configuration file size limit from 60 kB to 512 MiB.
+* sreport - Fix Planned being printed instead of Planned Down by default in the cluster utilization report.
+* slurmstepd - Avoid regression requiring slurmstepd (and all library dependencies) needing to exist inside of job container's mount namespace to execute TaskProlog and TaskEpilog.
+* Fix issue with shared gres_per_task.
+* Fix issue with --wait-for-children incorrectly implying --gres-flags=allow-task-sharing and vice-versa. These options are now handled independently as originally intended. Note that upgraded daemons will not honor the --wait-for-children option from older clients, and clients will need to be upgraded immediately alongside daemons in order to use --wait-for-children.
+* Log case-insensitive collation exceptions in the slurm database to alert admins and to aid in investigating collation issues.
+* Fix new QOS getting in bad state when attempting to remove flags at QOS at creation.
+* Fix potential segfault of slurmstepd when acct_gather_profile/influxdb plugin fails to send data.
+* Fix potential segfault when jobcomp/elasticsearch fails to send data.
+* Fix parsing SlurmctldParameters=node_reg_mem_percent when it is followed by other comma-separated parameters.
+* Fix stepmgr enabled srun allocations failing when excluding nodes.
+* Fix bug where tres-per-task is ignored.
+* Add topology.yaml to the list of files sent with configless
+* Increase default thread stack size to 8 MB.
+* When using --wait-for-children, a task's behavior in regards to the parent process exit will now depend on --kill-on-bad-exit. If --kill-on-bad-exit=1 and the parent process exits non-zero, the task will end. If --kill-on-bad-exit=0 and the parent process exits with an error, the task will continue.  Note that default KillOnBadExit setting in slurm.conf is 0, which will result in different behavior for --wait-for-children as described above.
+* Fix x11 forwarding issues causing applications (e.g. matlab) to intermittently crash on startup.
+* Print errors for write failures in half_duplex code used for x11 forwarding connections
+* tls/s2n - Do not print S2N_ERR_IO_BLOCKED error when it is expected.
+* tls/s2n - Fix x11 forwarding issues
+* Fix slurmdbd crash when failing to open a persistent connection to slurmctld
+* Fix missing error logs for failures to send messages on persistent connections.
+* Add support for PMIx v6.x
+
+## Changes in 25.05.1
+
+* slurmd - Fixed a few minor memory leaks
+* sackd - Fix successive fetch and reconfiguration in configless mode used via DNS SRV records.
+* slurmstepd - Correct memory leak for --container steps before executing job.
+* slurmrestd - Set "deprecated: true" property for all "v0.0.40" versioned endpoints.
+* Prevent slurmd -C from potentially crashing.
+* slurmdbd - Fix memory leak resulting from adding accounts.
+* slurmdbd - Prevent account associations from being incorrectly marked as default.
+* slurmrestd - Correct crash when empty request submitted to 'POST slurm/*/job/submit' endpoints.
+* Fix slurmctld crash when updating a partition's QOS with an invalid QOS and not having AccountingStorageEnforce=QOS.
+* slurmrestd - Remove need to set both become_user and disable_user_check in SLURMRESTD_SECURITY when running slurmrestd as root in  become_user mode.
+* Fix a race that could incorrectly drain nodes due to "Kill task failed"
+* slurmrestd - Prevent potential crash when using the 'POST /slurmdb/*/accounts_association' endpoints.
+* squeue - Add support for multi-reservation filtering when --reservation specified.
+* Fix jobs requesting --ntasks-per-gpu and --cpus-per-task staying in pending state forever.
+* Fix interactive step being rejected by incorrect validation of SLURM_TRES_PER_TASK and NTASKS_PER_GPUS environment variables.
+* slurmctld - Prevent crash on start up if SelectType is invalid.
+* Fix memory leak in slurmctld agent when TLS is enabled
+* Fix memory leak when DebugFlags=TLS is configured
+* slurmctld - Prevent segfault when freeing job arrays that request one partition and a QOS list.
+* tls/s2n - Fix various malformed s2n-tls error messages
+* tls/s2n - Disable generating error backtrace unless configured in developer mode.
+* preempt/partition_prio - Prevent partition PreemptMode defaulting to PRIORITY which caused jobs on higher priority tier partitions to not preempt jobs on lower priority tier partitions.
+* Fix "undefined symbol" errors when using libslurm built with the tls/s2n plugin. This affected anything using libslurm, including seff.
+* tls/s2n - Fix leaked file descriptors after failed connection creation.
+* Fix race condition during extern step termination when external pids were being added to or removed from the step. This could cause a segfault in the extern slurmstepd.
+* Avoid potentially waiting forever while attempting to establish new TLS connection due to race condition during TLS negotiation.
+* Avoid delayed response during TLS negotiation due to socket being closed by remote side while expecting more incoming data.
+* tls/s2n - Fix segfault when running scontrol shutdown
+* Avoid incorrect error logging during CPU frequency cpuset validation when no CPU binding is enforced.
+* Remove undocumented gen_self_signed_cert/gen_private_key scripts from certmgr. This functionality is covered by the certgen plugin interface, and these scripts were already unused.
+* sched/backfill - Prevent running jobs from delaying the start of pending jobs planned for nodes not used by the running jobs.
+* Make the --test-only job option completely ignore hierarchical resources used by running jobs instead of partially ignoring them.
+* When specifying TaskPluginParam=SlurmdSpecOverride, the slurmd will register with the CpuSpecList and MemSpecLimit, not MemSpecList as was stated in the 25.05.0 changelog.
+* slurmrestd - Fix support for https when slurm.conf has TLSType=None or lacks TLSType entirely.
+* topology/tree - Insure the number of nodes selected when scheduling a job does not exceed the job's maximum nodes limit.
+* Fix allowing job submission to empty partitions when EnforcePartLimits=NO.
+* accounting_storage/mysql - Speed up account deletion by optimizing underlying sql query.
+* Fix slurmstepd unintentionally killing itself if proctrack/cgroup and cgroup/v2 configured while deferring killing tasks due to any still core dumping.
+* When a coordinator is altering association's parents make sure they are a coordinator over both the current and new parent account.
+* Remove the ability to allow moving a child to be a parent in the same association tree.
+* Correctly set lineage on all affected associations when reordering the association hierarchy.
+* Lower rpm libyaml version requirement to version in RHEL 8
+* Fix infinite loop in sacctmgr when prompting with invalid stdin, such as when run from cron or with input redirected from /dev/null.
+* Fix regression introduced in 24.05 for srun --bcast=<path> when libraries are also sent and <path> ends with a '/' (slash).
+* certmgr - Change several messages from "TLS" debug flag to the "AUDIT_TLS" debug flag. This includes logging for CSR generation and token validation.
+* tls/s2n - Suppress benign error messages for messages sent by slurmctld to srun clients that may have already exited.
+* certmgr - Retrieve signed certificate on slurmd/sackd before processing any RPCs.
+* Add SALLOC_SEGMENT_SIZE input variable for salloc.
+* Add SBATCH_SEGMENT_SIZE input variable for sbatch.
+* Add SRUN_SEGMENT_SIZE input variable for srun.
+* Fix slurmdbd crash when preparing to return a list of jobs that include ones that have been suspended.
+* Prevent slurmd crash at startup when tmpfs job containers configured but no job_container.conf file exists.
+* slurmctld - Fix a regression that allowed the same gres to be allocated to multiple jobs.
+* slurmctld - Prevent fatalling with "Resource deadlock avoided" when array jobs start being able to accrue age priority.
+* Fix rpmbuild when specifying a custom prefix.
+* Fix potential incorrect group listing when using nss_slurm and requesting info for a single group.
+* Fix orphaning pending federated jobs when using scancel --clusters/-M to a non-origin cluster.
+* Fix QOS Relative flag printing as Relative and Deleted flags.
+* certmgr - slurmd will now save signed certificates and corresponding private keys in the spooldir, and reload them on startup.
+* Allow '_' in scrontab environment variables.
+
 ## Changes in 25.05.0
 
 * Prevent slurmctld from allocating to many MPI ports to jobs using the stepmgr.

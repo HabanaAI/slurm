@@ -183,10 +183,6 @@ static void _check_allocatable_sockets(node_record_t *node_ptr)
 		      node_ptr->name, node_ptr->core_spec_cnt);
 }
 
-/*
- * init() is called when the plugin is loaded, before any other functions
- * are called.  Put global initialization here.
- */
 extern int init(void)
 {
 	if (slurm_conf.preempt_mode & PREEMPT_MODE_GANG)
@@ -199,7 +195,7 @@ extern int init(void)
 	return SLURM_SUCCESS;
 }
 
-extern int fini(void)
+extern void fini(void)
 {
 	if (slurm_conf.debug_flags & DEBUG_FLAG_SELECT_TYPE)
 		info("%s shutting down ...", plugin_type);
@@ -211,15 +207,13 @@ extern int fini(void)
 	part_data_destroy_res(select_part_record);
 	select_part_record = NULL;
 	cr_fini_global_core_data();
-
-	return SLURM_SUCCESS;
 }
 
 /* This is Part 1 of a 2-part procedure which can be found in
  * src/slurmctld/read_config.c. The whole story goes like this:
  *
  * Step 1: select_g_node_init          : initializes the global node arrays
- * Step 2: select_g_select_nodeinfo_set: called from reset_job_bitmaps() with
+ * Step 2: select_g_select_nodeinfo_set: called from _sync_jobs_to_conf() with
  *                                       each valid recovered job_ptr AND from
  *                                       select_nodes(), this procedure adds
  *                                       job data to the 'select_part_record'
@@ -260,6 +254,10 @@ extern int select_p_node_init(void)
 		      preempt_reorder_cnt);
 		preempt_reorder_cnt = 1;	/* Use default value */
 	}
+
+	soft_time_limit = false;
+	if (xstrcasestr(slurm_conf.sched_params, "time_min_as_soft_limit"))
+		soft_time_limit = true;
 
 	if ((tmp_ptr = xstrcasestr(slurm_conf.sched_params,
 				   "bf_window_linear="))) {

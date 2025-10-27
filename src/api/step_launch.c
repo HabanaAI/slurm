@@ -109,7 +109,6 @@ static int    task_exit_signal = 0;
 
 static int  _msg_thr_create(struct step_launch_state *sls, int num_nodes);
 static void _handle_msg(void *arg, slurm_msg_t *msg);
-static int  _cr_notify_step_launch(slurm_step_ctx_t *ctx);
 static void *_check_io_timeout(void *_sls);
 
 static struct io_operations message_socket_ops = {
@@ -333,6 +332,8 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 		launch.flags |= LAUNCH_GRES_ALLOW_TASK_SHARING;
 	if (ctx->step_req->flags & SSF_WAIT_FOR_CHILDREN)
 		launch.flags |= LAUNCH_WAIT_FOR_CHILDREN;
+	if (ctx->step_req->flags & SSF_KILL_ON_BAD_EXIT)
+		launch.flags |= LAUNCH_KILL_ON_BAD_EXIT;
 
 	launch.task_dist	= params->task_dist;
 	if (params->pty)
@@ -364,7 +365,7 @@ extern int slurm_step_launch(slurm_step_ctx_t *ctx,
 
 	io_key = slurm_cred_get_signature(ctx->step_resp->cred);
 
-	if (tls_enabled()) {
+	if (conn_tls_enabled()) {
 		if (!(launch.alloc_tls_cert = conn_g_get_own_public_cert())) {
 			error("Could not get self signed certificate for step IO");
 			rc = SLURM_ERROR;
@@ -619,8 +620,7 @@ static void _step_abort(slurm_step_ctx_t *ctx)
 	struct step_launch_state *sls = ctx->launch_state;
 
 	if (!sls->abort_action_taken) {
-		slurm_kill_job_step(ctx->job_id, ctx->step_resp->job_step_id,
-				    SIGKILL, 0);
+		slurm_kill_job_step(&ctx->step_resp->step_id, SIGKILL, 0);
 		sls->abort_action_taken = true;
 	}
 }
@@ -659,8 +659,6 @@ int slurm_step_launch_wait_start(slurm_step_ctx_t *ctx)
 		}
 	}
 
-	_cr_notify_step_launch(ctx);
-
 	slurm_mutex_unlock(&sls->lock);
 	return SLURM_SUCCESS;
 }
@@ -687,9 +685,7 @@ void slurm_step_launch_wait_finish(slurm_step_ctx_t *ctx)
 			slurm_cond_wait(&sls->cond, &sls->lock);
 		} else {
 			if (!sls->abort_action_taken) {
-				slurm_kill_job_step(ctx->job_id,
-						    ctx->step_resp->
-						    job_step_id,
+				slurm_kill_job_step(&ctx->step_resp->step_id,
 						    SIGKILL, 0);
 				sls->abort_action_taken = true;
 			}
@@ -719,8 +715,7 @@ void slurm_step_launch_wait_finish(slurm_step_ctx_t *ctx)
 				 *   be made smart enough to really ensure
 				 *   that a killed step never starts.
 				 */
-				slurm_kill_job_step(ctx->job_id,
-						    ctx->step_resp->job_step_id,
+				slurm_kill_job_step(&ctx->step_resp->step_id,
 						    SIGKILL, 0);
 				client_io_handler_abort(sls->io);
 				break;
@@ -876,8 +871,8 @@ RESEND:	slurm_msg_t_init(&req);
 	req.msg_type = REQUEST_SIGNAL_TASKS;
 	req.data     = &msg;
 
-	if (ctx->step_resp->use_protocol_ver)
-		req.protocol_version = ctx->step_resp->use_protocol_ver;
+	if (ctx->step_req->use_protocol_ver)
+		req.protocol_version = ctx->step_req->use_protocol_ver;
 
 	debug2("sending signal %d to %ps on hosts %s",
 	       signo, &ctx->step_req->step_id, name);
@@ -963,29 +958,6 @@ struct step_launch_state *step_launch_state_create(slurm_step_ctx_t *ctx)
 }
 
 /*
- * If a steps size has changed update the launch_state structure for a
- * specified step context, "ctx".
- */
-void step_launch_state_alter(slurm_step_ctx_t *ctx)
-{
-	struct step_launch_state *sls = ctx->launch_state;
-	slurm_step_layout_t *layout = ctx->step_resp->step_layout;
-	int ii;
-
-	xassert(sls);
-	sls->tasks_requested = layout->task_cnt;
-	bit_realloc(sls->tasks_started, layout->task_cnt);
-	bit_realloc(sls->tasks_exited, layout->task_cnt);
-	bit_realloc(sls->node_io_error, layout->node_cnt);
-	xrealloc(sls->io_deadline, sizeof(time_t) * layout->node_cnt);
-	sls->layout = sls->mpi_step->step_layout = layout;
-
-	for (ii = 0; ii < layout->node_cnt; ii++) {
-		sls->io_deadline[ii] = (time_t)NO_VAL;
-	}
-}
-
-/*
  * Free the memory associated with the a launch state structure.
  */
 void step_launch_state_destroy(struct step_launch_state *sls)
@@ -1002,69 +974,6 @@ void step_launch_state_destroy(struct step_launch_state *sls)
 	if (sls->resp_port != NULL) {
 		xfree(sls->resp_port);
 	}
-}
-
-/**********************************************************************
- * CR functions
- **********************************************************************/
-
-/* connect to srun_cr */
-static int _connect_srun_cr(char *addr)
-{
-	int fd = -1, rc;
-
-	if (!addr) {
-		error("%s: socket path name is NULL", __func__);
-		return -1;
-	}
-	if ((rc = slurm_open_unix_stream(addr, 0, &fd))) {
-		debug2("failed connecting cr socket: %s", slurm_strerror(rc));
-		return -1;
-	}
-	return fd;
-}
-
-/* send job_id, step_id, node_list to srun_cr */
-static int _cr_notify_step_launch(slurm_step_ctx_t *ctx)
-{
-	int fd, len, rc = 0;
-	char *cr_sock_addr = NULL;
-
-	cr_sock_addr = getenv("SLURM_SRUN_CR_SOCKET");
-	if (cr_sock_addr == NULL) { /* not run under srun_cr */
-		return 0;
-	}
-
-	if ((fd = _connect_srun_cr(cr_sock_addr)) < 0) {
-		debug2("failed connecting srun_cr. take it not running under "
-		       "srun_cr.");
-		return 0;
-	}
-	if (write(fd, &ctx->job_id, sizeof(uint32_t)) != sizeof(uint32_t)) {
-		error("failed writing job_id to srun_cr: %m");
-		rc = -1;
-		goto out;
-	}
-	if (write(fd, &ctx->step_resp->job_step_id, sizeof(uint32_t)) !=
-	    sizeof(uint32_t)) {
-		error("failed writing job_step_id to srun_cr: %m");
-		rc = -1;
-		goto out;
-	}
-	len = strlen(ctx->step_resp->step_layout->node_list);
-	if (write(fd, &len, sizeof(int)) != sizeof(int)) {
-		error("failed writing nodelist length to srun_cr: %m");
-		rc = -1;
-		goto out;
-	}
-	if (write(fd, ctx->step_resp->step_layout->node_list, len + 1) !=
-	    (len + 1)) {
-		error("failed writing nodelist to srun_cr: %m");
-		rc = -1;
-	}
- out:
-	close (fd);
-	return rc;
 }
 
 /**********************************************************************
@@ -1228,10 +1137,9 @@ _job_complete_handler(struct step_launch_state *sls, slurm_msg_t *complete_msg)
 	}
 
 	if (step_msg->step_id == NO_VAL) {
-		verbose("Complete job %u received",
-			step_msg->job_id);
+		verbose("Complete %pI received", step_msg);
 	} else {
-		verbose("Complete %ps received", step_msg);
+		verbose("Complete %pI %ps received", step_msg, step_msg);
 	}
 
 	if (sls->callback.step_complete)
@@ -1605,8 +1513,8 @@ static int _fail_step_tasks(slurm_step_ctx_t *ctx, char *node, int ret_code)
 	req.msg_type = REQUEST_STEP_COMPLETE;
 	req.data = &msg;
 
-	if (ctx->step_resp->use_protocol_ver)
-		req.protocol_version = ctx->step_resp->use_protocol_ver;
+	if (ctx->step_req->use_protocol_ver)
+		req.protocol_version = ctx->step_req->use_protocol_ver;
 
 	if (slurm_send_recv_controller_rc_msg(&req, &rc,
 					      working_cluster_rec) < 0)
@@ -1653,8 +1561,8 @@ static int _launch_tasks(slurm_step_ctx_t *ctx,
 	msg.data = launch_msg;
 	msg.forward.tree_width = tree_width;
 
-	if (ctx->step_resp->use_protocol_ver)
-		msg.protocol_version = ctx->step_resp->use_protocol_ver;
+	if (ctx->step_req->use_protocol_ver)
+		msg.protocol_version = ctx->step_req->use_protocol_ver;
 	else
 		msg.protocol_version = SLURM_PROTOCOL_VERSION;
 

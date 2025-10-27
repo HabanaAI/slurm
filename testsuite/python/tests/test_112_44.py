@@ -8,6 +8,7 @@ import json
 import random
 import logging
 import time
+import os
 
 random.seed()
 
@@ -39,7 +40,7 @@ def setup():
     atf.require_config_parameter("TrackWCKey", "Yes")
     atf.require_config_parameter("AuthAltTypes", "auth/jwt")
     atf.require_config_parameter("AuthAltTypes", "auth/jwt", source="slurmdbd")
-    atf.require_slurmrestd("slurmctld,slurmdbd", "v0.0.44")
+    atf.require_slurmrestd("slurmctld,slurmdbd,util", "v0.0.44")
     atf.require_version((25, 11), "sbin/slurmdbd")
     atf.require_version((25, 11), "sbin/slurmctld")
     atf.require_version((25, 11), "sbin/slurmrestd")
@@ -80,6 +81,22 @@ def admin_level(setup):
         fatal=True,
     )
     yield
+    atf.cancel_all_jobs()
+    atf.run_command(
+        f"sacctmgr -i delete user {local_cluster_name}",
+        user=atf.properties["slurm-user"],
+    )
+
+
+@pytest.fixture(scope="function")
+def non_admin(setup):
+    atf.run_command(
+        f"sacctmgr -i add user {local_cluster_name} defaultaccount=root",
+        user=atf.properties["slurm-user"],
+        fatal=True,
+    )
+    yield
+    atf.cancel_all_jobs()
     atf.run_command(
         f"sacctmgr -i delete user {local_cluster_name}",
         user=atf.properties["slurm-user"],
@@ -123,6 +140,7 @@ def create_users(create_accounts):
 
     yield
 
+    atf.cancel_all_jobs()
     atf.run_command(
         f"sacctmgr -i delete user {user_name} cluster={local_cluster_name} account={account_name}",
         user=atf.properties["slurm-user"],
@@ -140,6 +158,7 @@ def create_coords(create_users):
 
     yield
 
+    atf.cancel_all_jobs()
     atf.run_command(
         f"sacctmgr -i delete user {coord_name} cluster={local_cluster_name} account={account2_name}",
         user=atf.properties["slurm-user"],
@@ -162,6 +181,7 @@ def create_wckeys():
 
     yield
 
+    atf.cancel_all_jobs()
     atf.run_command(
         f"sacctmgr -i delete user {user_name} cluster={local_cluster_name} wckey={wckey_name}",
         user=atf.properties["slurm-user"],
@@ -224,6 +244,14 @@ def test_loaded_versions():
     # verify current plugins are loaded
     assert "/slurm/v0.0.44/jobs/" in spec["paths"].keys()
     assert "/slurmdb/v0.0.44/jobs/" in spec["paths"].keys()
+
+
+@pytest.mark.skipif(
+    atf.get_version() <= (25, 11, 0), reason="Specs may change until .0 is released"
+)
+@pytest.mark.parametrize("openapi_spec", ["44"], indirect=True)
+def test_specification(openapi_spec):
+    atf.assert_openapi_spec_eq(openapi_spec, atf.properties["openapi_spec"])
 
 
 def test_db_accounts(slurm, slurmdb, create_wckeys, admin_level):
@@ -1018,13 +1046,27 @@ def test_db_config(slurmdb, admin_level):
     assert len(resp.errors) == 0
 
 
-def test_jobs(slurm, slurmdb):
+def test_jobs(slurm, slurmdb, non_admin):
     from openapi_client.models.v0044_job_submit_req import V0044JobSubmitReq
     from openapi_client.models.v0044_job_desc_msg import V0044JobDescMsg
     from openapi_client.models.v0044_job_info import V0044JobInfo
+    from openapi_client.models.v0044_job_modify import V0044JobModify
+    from openapi_client.models.v0044_job_comment import V0044JobComment
+    from openapi_client.models.v0044_process_exit_code_verbose import (
+        V0044ProcessExitCodeVerbose,
+    )
+    from openapi_client.models.v0044_job_modify_tres import V0044JobModifyTres
+    from openapi_client.models.v0044_tres import V0044Tres
+    from openapi_client.models.v0044_uint32_no_val_struct import V0044Uint32NoValStruct
+    from openapi_client.models.v0044_process_exit_code_verbose_signal import (
+        V0044ProcessExitCodeVerboseSignal,
+    )
 
     from openapi_client.models.v0044_uint32_no_val_struct import (
         V0044Uint32NoValStruct as V0044Uint32NoVal,
+    )
+    from openapi_client.models.v0044_openapi_job_modify_req import (
+        V0044OpenapiJobModifyReq,
     )
 
     script = "#!/bin/bash\n/bin/true"
@@ -1034,7 +1076,7 @@ def test_jobs(slurm, slurmdb):
         script=script,
         job=V0044JobDescMsg(
             partition=partition_name,
-            name="test job",
+            name="runjob",
             environment=env,
             current_working_directory="/tmp/",
         ),
@@ -1045,19 +1087,48 @@ def test_jobs(slurm, slurmdb):
     assert len(resp.errors) == 0
     assert resp.job_id
     assert resp.step_id
-    jobid = int(resp.job_id)
+    jobid1 = int(resp.job_id)
 
     resp = slurm.slurm_v0044_get_jobs()
-
-    assert len(resp.warnings) == 0
-    assert len(resp.errors) == 0
-
-    resp = slurm.slurm_v0044_get_job(str(jobid))
     assert len(resp.warnings) == 0
     assert len(resp.errors) == 0
     for job in resp.jobs:
-        assert job.job_id == jobid
-        assert job.name == "test job"
+        assert job.job_id == jobid1
+        assert job.name == "runjob"
+        assert job.partition == partition_name
+
+    resp = slurm.slurm_v0044_get_job(str(jobid1))
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+    for job in resp.jobs:
+        assert job.job_id == jobid1
+        assert job.name == "runjob"
+        assert job.partition == partition_name
+
+    job = V0044JobSubmitReq(
+        script=script,
+        job=V0044JobDescMsg(
+            partition=partition_name,
+            name="runjob",
+            environment=env,
+            current_working_directory="/tmp/",
+        ),
+    )
+
+    resp = slurm.slurm_v0044_post_job_submit(job)
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+    assert resp.job_id
+    assert resp.step_id
+    jobid2 = int(resp.job_id)
+
+    resp = slurm.slurm_v0044_get_job(str(jobid2))
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+    assert len(resp.jobs) == 1
+    for job in resp.jobs:
+        assert job.job_id == jobid2
+        assert job.name == "runjob"
         assert job.partition == partition_name
 
     # submit a HELD job to be able to update it
@@ -1077,7 +1148,7 @@ def test_jobs(slurm, slurmdb):
     assert len(resp.errors) == 0
     assert resp.job_id
     assert resp.step_id
-    jobid = int(resp.job_id)
+    jobid3 = int(resp.job_id)
 
     job = V0044JobDescMsg(
         environment=env,
@@ -1086,48 +1157,48 @@ def test_jobs(slurm, slurmdb):
         priority=V0044Uint32NoVal(number=0, set=True),
     )
 
-    resp = slurm.slurm_v0044_post_job(str(jobid), v0044_job_desc_msg=job)
+    resp = slurm.slurm_v0044_post_job(str(jobid3), v0044_job_desc_msg=job)
     assert not len(resp.warnings)
     assert not len(resp.errors)
     if resp.results:
         for result in resp.results:
-            assert result.job_id == jobid
+            assert result.job_id == jobid3
             assert result.error_code == 0
 
-    resp = slurm.slurm_v0044_get_job(str(jobid))
+    resp = slurm.slurm_v0044_get_job(str(jobid3))
     assert len(resp.warnings) == 0
     assert len(resp.errors) == 0
     for job in resp.jobs:
-        assert job.job_id == jobid
+        assert job.job_id == jobid3
         assert job.name == "updated test job"
         assert job.partition == partition_name
         assert job.priority.set
         assert job.priority.number == 0
         assert job.user_name == local_user_name
 
-    resp = slurm.slurm_v0044_delete_job(str(jobid))
+    resp = slurm.slurm_v0044_delete_job(str(jobid3))
     assert len(resp.warnings) == 0
     assert len(resp.errors) == 0
 
-    resp = slurm.slurm_v0044_get_job(str(jobid))
+    resp = slurm.slurm_v0044_get_job(str(jobid3))
     assert len(resp.warnings) == 0
     assert len(resp.errors) == 0
     for job in resp.jobs:
-        assert job.job_id == jobid
+        assert job.job_id == jobid3
         assert job.name == "updated test job"
         assert job.partition == partition_name
         assert job.user_name == local_user_name
         assert job.job_state == ["CANCELLED"]
 
     # Ensure that job is in the DB before querying it
-    atf.wait_for_job_accounted(jobid, fatal=True)
+    atf.wait_for_job_accounted(jobid3, fatal=True)
 
     resp = slurmdb.slurmdb_v0044_get_jobs()
     assert len(resp.errors) == 0
 
     requery = True
     while requery:
-        resp = slurmdb.slurmdb_v0044_get_job(str(jobid))
+        resp = slurmdb.slurmdb_v0044_get_job(str(jobid3))
         assert len(resp.warnings) == 0
         assert len(resp.errors) == 0
         assert resp.jobs
@@ -1137,7 +1208,7 @@ def test_jobs(slurm, slurmdb):
                 requery = True
             else:
                 requery = False
-                assert job.job_id == jobid
+                assert job.job_id == jobid3
                 assert job.name == "updated test job"
                 assert job.partition == partition_name
 
@@ -1147,6 +1218,102 @@ def test_jobs(slurm, slurmdb):
     assert resp.jobs
     for job in resp.jobs:
         assert job.user == local_user_name
+
+    # Update job in db -- posting to /job/jobid/
+    atf.wait_for_job_accounted(jobid1, fatal=True)
+    atf.wait_for_job_accounted(jobid2, fatal=True)
+
+    WIFEXIT_CODE = V0044Uint32NoValStruct(
+        set=True, infinite=False, number=4  # 1024 >> 8
+    )
+
+    job_modify = V0044JobModify(
+        comment=V0044JobComment(
+            administrator="admin1",
+            job="job1",
+            system="system1",
+        ),
+        derived_exit_code=V0044ProcessExitCodeVerbose(
+            return_code=V0044Uint32NoValStruct(set=True, infinite=False, number=1024),
+        ),
+        extra="extra1",
+        tres=V0044JobModifyTres(
+            allocated=[V0044Tres(type="energy", count=12345, id=3)]
+        ),
+        wckey="mywckey1",
+    )
+
+    atf.run_command(
+        f"sacctmgr -i mod user {local_cluster_name} set AdminLevel=Admin",
+        user=atf.properties["slurm-user"],
+        fatal=True,
+    )
+    resp = slurmdb.slurmdb_v0044_post_job(str(jobid1), v0044_job_modify=job_modify)
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+
+    resp = slurmdb.slurmdb_v0044_get_jobs(step=str(jobid1))
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+    assert len(resp.jobs) == 1
+    for job in resp.jobs:
+        logging.debug(job)
+        assert job.comment == job_modify.comment
+        assert job.derived_exit_code.return_code == WIFEXIT_CODE
+        assert job.extra == job_modify.extra
+        found_tres = False
+        for tres in job.tres.allocated:
+            if tres.type == "energy":
+                found_tres = True
+                tres == job_modify.tres.allocated[0]
+        assert found_tres
+        assert job.wckey.wckey == job_modify.wckey
+
+    # Update jobs in db -- posting to /jobs/
+    # Update values to be different
+    WIFEXIT_CODE = V0044Uint32NoValStruct(
+        set=True, infinite=False, number=8  # 2048 >> 8
+    )
+
+    job_modify = V0044JobModify(
+        comment=V0044JobComment(
+            administrator="admin2",
+            job="job2",
+            system="system2",
+        ),
+        derived_exit_code=V0044ProcessExitCodeVerbose(
+            return_code=V0044Uint32NoValStruct(set=True, infinite=False, number=2048),
+        ),
+        extra="extra2",
+        tres=V0044JobModifyTres(
+            allocated=[V0044Tres(type="energy", count=54321, id=3)]
+        ),
+        wckey="mywckey2",
+    )
+
+    job_modify_req = V0044OpenapiJobModifyReq(
+        job_id_list=[str(jobid1), str(jobid2)], job_rec=job_modify
+    )
+    resp = slurmdb.slurmdb_v0044_post_jobs(v0044_openapi_job_modify_req=job_modify_req)
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+
+    resp = slurmdb.slurmdb_v0044_get_jobs(job_name="runjob")
+    assert len(resp.warnings) == 0
+    assert len(resp.errors) == 0
+    assert len(resp.jobs) == 2
+    for job in resp.jobs:
+        logging.debug(job)
+        assert job.comment == job_modify.comment
+        assert job.derived_exit_code.return_code == WIFEXIT_CODE
+        assert job.extra == job_modify.extra
+        found_tres = False
+        for tres in job.tres.allocated:
+            if tres.type == "energy":
+                found_tres = True
+                tres == job_modify.tres.allocated[0]
+        found_tres = True
+        assert job.wckey.wckey == job_modify.wckey
 
 
 @pytest.fixture(scope="function")
@@ -1424,3 +1591,42 @@ def test_reservations(slurm, flags, admin_level):
     assert resv_name not in [
         r.name for r in slurm.slurm_v0044_get_reservations().reservations
     ], f"Reservation {resv_name} should be deleted"
+
+
+# Test until endpoints
+@pytest.fixture
+def util_api(setup):
+    yield atf.openapi_util()
+
+
+def test_util_hostnames(util_api):
+    from openapi_client.models.v0044_openapi_hostlist_req_resp import (
+        V0044OpenapiHostlistReqResp,
+    )
+
+    hostnames = ["node01", "node02", "node03"]
+    request_body = V0044OpenapiHostlistReqResp(hostlist="node[01-03]")
+
+    response = util_api.util_v0044_post_hostnames(
+        v0044_openapi_hostlist_req_resp=request_body
+    )
+    assert response.hostnames is not None
+    assert isinstance(response.hostnames, list)
+    assert all(isinstance(host, str) for host in response.hostnames)
+    assert hostnames == response.hostnames
+
+
+def test_util_hostlist(util_api):
+    from openapi_client.models.v0044_openapi_hostnames_req_resp import (
+        V0044OpenapiHostnamesReqResp,
+    )
+
+    request_body = V0044OpenapiHostnamesReqResp(
+        hostnames=["node01", "node02", "node03"]
+    )
+    response = util_api.util_v0044_post_hostlist(
+        v0044_openapi_hostnames_req_resp=request_body
+    )
+    assert response.hostlist is not None
+    assert isinstance(response.hostlist, str)
+    assert "node[01-03]" == response.hostlist

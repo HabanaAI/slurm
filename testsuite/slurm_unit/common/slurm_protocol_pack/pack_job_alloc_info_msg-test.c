@@ -18,7 +18,6 @@ START_TEST(invalid_protocol)
 }
 END_TEST
 
-#ifndef NDEBUG
 START_TEST(pack_null_req)
 {
 	buf_t *buf = init_buf(1024);
@@ -30,8 +29,8 @@ START_TEST(pack_null_req)
 
 	free_buf(buf);
 }
+
 END_TEST
-#endif
 
 START_TEST(pack_back2_req_null_ptrs)
 {
@@ -39,8 +38,8 @@ START_TEST(pack_back2_req_null_ptrs)
 	buf_t *buf = init_buf(1024);
 
 	slurm_msg_t msg = {{0}};
-	job_alloc_info_msg_t pack_req = {0};
-	pack_req.job_id = 12345;
+	job_alloc_info_msg_t pack_req = {{0}};
+	pack_req.step_id.job_id = 12345;
 
 	msg.msg_type         = REQUEST_JOB_ALLOCATION_INFO;
 	msg.protocol_version = SLURM_MIN_PROTOCOL_VERSION;
@@ -60,7 +59,7 @@ START_TEST(pack_back2_req_null_ptrs)
 	ck_assert_int_eq(rc, SLURM_SUCCESS);
 	ck_assert(unpack_req != NULL);
 	ck_assert(!unpack_req->req_cluster);
-	ck_assert(unpack_req->job_id == pack_req.job_id);
+	ck_assert(unpack_req->step_id.job_id == pack_req.step_id.job_id);
 
 	free_buf(buf);
 	slurm_free_msg_data(msg.msg_type, msg.data);
@@ -73,8 +72,8 @@ START_TEST(pack_back2_req)
 	buf_t *buf = init_buf(1024);
 
 	slurm_msg_t msg = {{0}};
-	job_alloc_info_msg_t pack_req = {0};
-	pack_req.job_id = 12345;
+	job_alloc_info_msg_t pack_req = {{0}};
+	pack_req.step_id.job_id = 12345;
 	pack_req.req_cluster = xstrdup("blah");
 
 	msg.msg_type         = REQUEST_JOB_ALLOCATION_INFO;
@@ -95,7 +94,7 @@ START_TEST(pack_back2_req)
 	ck_assert_int_eq(rc, SLURM_SUCCESS);
 	ck_assert(unpack_req != NULL);
 	//ck_assert(!unpack_req->req_cluster); /* >= 17.11 */
-	ck_assert(unpack_req->job_id == pack_req.job_id);
+	ck_assert(unpack_req->step_id.job_id == pack_req.step_id.job_id);
 
 	free_buf(buf);
 	xfree(pack_req.req_cluster);
@@ -109,8 +108,8 @@ START_TEST(pack_back1_req_null_ptrs)
 	buf_t *buf = init_buf(1024);
 
 	slurm_msg_t msg = {{0}};
-	job_alloc_info_msg_t pack_req = {0};
-	pack_req.job_id = 12345;
+	job_alloc_info_msg_t pack_req = {{0}};
+	pack_req.step_id.job_id = 12345;
 
 	msg.msg_type         = REQUEST_JOB_ALLOCATION_INFO;
 	msg.protocol_version = SLURM_ONE_BACK_PROTOCOL_VERSION;
@@ -129,7 +128,7 @@ START_TEST(pack_back1_req_null_ptrs)
 	ck_assert_int_eq(rc, SLURM_SUCCESS);
 	ck_assert(unpack_req != NULL);
 	ck_assert(!unpack_req->req_cluster);
-	ck_assert(unpack_req->job_id == pack_req.job_id);
+	ck_assert(unpack_req->step_id.job_id == pack_req.step_id.job_id);
 
 	free_buf(buf);
 	slurm_free_msg_data(msg.msg_type, msg.data);
@@ -142,8 +141,8 @@ START_TEST(pack_back1_req)
 	buf_t *buf = init_buf(1024);
 
 	slurm_msg_t msg = {{0}};
-	job_alloc_info_msg_t pack_req = {0};
-	pack_req.job_id = 12345;
+	job_alloc_info_msg_t pack_req = {{0}};
+	pack_req.step_id.job_id = 12345;
 	pack_req.req_cluster = xstrdup("blah");
 
 	msg.msg_type         = REQUEST_JOB_ALLOCATION_INFO;
@@ -165,7 +164,7 @@ START_TEST(pack_back1_req)
 	ck_assert(unpack_req != NULL);
 	ck_assert(unpack_req->req_cluster != pack_req.req_cluster);
 	ck_assert_str_eq(unpack_req->req_cluster, pack_req.req_cluster);
-	ck_assert(unpack_req->job_id == pack_req.job_id);
+	ck_assert(unpack_req->step_id.job_id == pack_req.step_id.job_id);
 
 	free_buf(buf);
 	xfree(pack_req.req_cluster);
@@ -182,12 +181,8 @@ Suite *suite(SRunner *sr)
 	Suite *s = suite_create("Pack job_alloc_info_msg_t");
 	TCase *tc_core = tcase_create("Pack pack_job_alloc_info_msg_t");
 	tcase_add_test(tc_core, invalid_protocol);
-#ifdef NDEBUG
-       printf("Can't perform pack_null_req test with NDEBUG set.\n");
-#else
-       if (srunner_fork_status(sr) != CK_NOFORK)
-               tcase_add_test_raise_signal(tc_core, pack_null_req, SIGABRT);
-#endif
+	if (srunner_fork_status(sr) != CK_NOFORK)
+		tcase_add_test_raise_signal(tc_core, pack_null_req, SIGSEGV);
 	tcase_add_test(tc_core, pack_back2_req_null_ptrs);
 	tcase_add_test(tc_core, pack_back2_req);
 	tcase_add_test(tc_core, pack_back1_req_null_ptrs);

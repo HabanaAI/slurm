@@ -714,14 +714,16 @@ static void _notify_slurmctld_jobs(agent_info_t *agent_ptr)
 	} else if (agent_ptr->msg_type == RESPONSE_RESOURCE_ALLOCATION) {
 		resource_allocation_response_msg_t *msg =
 			*agent_ptr->msg_args_pptr;
-		step_id.job_id = msg->job_id;
+		step_id.job_id = msg->step_id.job_id;
+		step_id.sluid = msg->step_id.sluid;
 	} else if (agent_ptr->msg_type == RESPONSE_HET_JOB_ALLOCATION) {
 		list_t *het_alloc_list = *agent_ptr->msg_args_pptr;
 		resource_allocation_response_msg_t *msg;
 		if (!het_alloc_list || (list_count(het_alloc_list) == 0))
 			return;
 		msg = list_peek(het_alloc_list);
-		step_id.job_id  = msg->job_id;
+		step_id.job_id = msg->step_id.job_id;
+		step_id.sluid = msg->step_id.sluid;
 	} else if ((agent_ptr->msg_type == SRUN_JOB_COMPLETE)		||
 		   (agent_ptr->msg_type == SRUN_REQUEST_SUSPEND)	||
 		   (agent_ptr->msg_type == SRUN_STEP_MISSING)		||
@@ -760,7 +762,6 @@ static void _notify_slurmctld_nodes(agent_info_t *agent_ptr,
 			/* Requeue the request */
 			batch_job_launch_msg_t *launch_msg_ptr =
 					*agent_ptr->msg_args_pptr;
-			uint32_t job_id = launch_msg_ptr->job_id;
 			/* Locks: Write job, write node, read federation */
 			slurmctld_lock_t job_write_lock =
 				{ .job  = WRITE_LOCK,
@@ -768,8 +769,8 @@ static void _notify_slurmctld_nodes(agent_info_t *agent_ptr,
 				  .fed  = READ_LOCK };
 
 			lock_slurmctld(job_write_lock);
-			job_complete(job_id, slurm_conf.slurm_user_id,
-				     true, false, 0);
+			job_complete(&launch_msg_ptr->step_id,
+				     slurm_conf.slurm_user_id, true, false, 0);
 			unlock_slurmctld(job_write_lock);
 		}
 	}
@@ -1075,10 +1076,16 @@ static void *_thread_per_group_rpc(void *args)
 			kill_job_msg_t *kill_job;
 			kill_job = (kill_job_msg_t *)
 				task_ptr->msg_args_ptr;
+			job_record_t *job_ptr = NULL;
 			rc = SLURM_SUCCESS;
 			lock_slurmctld(job_write_lock);
-			if (job_epilog_complete(kill_job->step_id.job_id,
-						ret_data_info->node_name, rc))
+			if (!(job_ptr = find_job(&kill_job->step_id)))
+				debug("%s: unable to find %pI to mark epilog completed on node=%s with return_code=%u",
+				      __func__, &kill_job->step_id,
+				      ret_data_info->node_name, rc);
+			else if (job_epilog_complete(job_ptr,
+						     ret_data_info->node_name,
+						     rc))
 				run_scheduler = true;
 			unlock_slurmctld(job_write_lock);
 		}
@@ -1099,14 +1106,14 @@ static void *_thread_per_group_rpc(void *args)
 		    (ret_data_info->type != RESPONSE_FORWARD_FAILED)) {
 			batch_job_launch_msg_t *launch_msg_ptr =
 				task_ptr->msg_args_ptr;
-			job_id = launch_msg_ptr->job_id;
-			info("Killing non-startable batch JobId=%u: %s",
-			     job_id, slurm_strerror(rc));
+			info("Killing non-startable batch %pI: %s",
+			     &launch_msg_ptr->step_id, slurm_strerror(rc));
 			thread_state = DSH_DONE;
 			ret_data_info->err = thread_state;
 			lock_slurmctld(job_write_lock);
-			job_complete(job_id, slurm_conf.slurm_user_id,
-			             false, false, _wif_status());
+			job_complete(&launch_msg_ptr->step_id,
+				     slurm_conf.slurm_user_id, false, false,
+				     _wif_status());
 			unlock_slurmctld(job_write_lock);
 			continue;
 		} else if ((msg_type == RESPONSE_RESOURCE_ALLOCATION) &&
@@ -1116,13 +1123,13 @@ static void *_thread_per_group_rpc(void *args)
 			 * behind on the allocated nodes. */
 			resource_allocation_response_msg_t *msg_ptr =
 				task_ptr->msg_args_ptr;
-			job_id = msg_ptr->job_id;
-			info("Killing interactive JobId=%u: %s",
-			     job_id, slurm_strerror(rc));
+			info("Killing interactive %pI: %s",
+			     &msg_ptr->step_id, slurm_strerror(rc));
 			thread_state = DSH_FAILED;
 			lock_slurmctld(job_write_lock);
-			job_complete(job_id, slurm_conf.slurm_user_id,
-			             false, false, _wif_status());
+			job_complete(&msg_ptr->step_id,
+				     slurm_conf.slurm_user_id, false, false,
+				     _wif_status());
 			unlock_slurmctld(job_write_lock);
 			continue;
 		} else if ((msg_type == RESPONSE_HET_JOB_ALLOCATION) &&
@@ -1136,13 +1143,13 @@ static void *_thread_per_group_rpc(void *args)
 			    (list_count(het_alloc_list) == 0))
 				continue;
 			msg_ptr = list_peek(het_alloc_list);
-			job_id = msg_ptr->job_id;
-			info("Killing interactive JobId=%u: %s",
-			     job_id, slurm_strerror(rc));
+			info("Killing interactive %pI: %s",
+			     &msg_ptr->step_id, slurm_strerror(rc));
 			thread_state = DSH_FAILED;
 			lock_slurmctld(job_write_lock);
-			job_complete(job_id, slurm_conf.slurm_user_id,
-			             false, false, _wif_status());
+			job_complete(&msg_ptr->step_id,
+				     slurm_conf.slurm_user_id, false, false,
+				     _wif_status());
 			unlock_slurmctld(job_write_lock);
 			continue;
 		}
@@ -2293,11 +2300,11 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 	}
 
 	launch_msg_ptr = (batch_job_launch_msg_t *)agent_arg_ptr->msg_args;
-	job_ptr = find_job_record(launch_msg_ptr->job_id);
+	job_ptr = find_job_record(launch_msg_ptr->step_id.job_id);
 	if ((job_ptr == NULL) ||
 	    (!IS_JOB_RUNNING(job_ptr) && !IS_JOB_SUSPENDED(job_ptr))) {
-		info("agent(batch_launch): removed pending request for cancelled JobId=%u",
-		     launch_msg_ptr->job_id);
+		info("agent(batch_launch): removed pending request for cancelled %pI",
+		     &launch_msg_ptr->step_id);
 		return -1;	/* job cancelled while waiting */
 	}
 
@@ -2309,7 +2316,7 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 	}
 
 	if (job_ptr->wait_all_nodes) {
-		(void) job_node_ready(launch_msg_ptr->job_id, &tmp);
+		(void) job_node_ready(&launch_msg_ptr->step_id, &tmp);
 		if (tmp ==
 		    (READY_JOB_STATE | READY_NODE_STATE | READY_PROLOG_STATE)) {
 			nodes_ready = 1;
@@ -2322,8 +2329,8 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 					agent_arg_ptr->hostlist);
 		node_ptr = find_node_record(hostname);
 		if (node_ptr == NULL) {
-			error("agent(batch_launch) removed pending request for JobId=%u, missing node %s",
-			      launch_msg_ptr->job_id, hostname);
+			error("agent(batch_launch) removed pending request for %pI, missing node %s",
+			      &launch_msg_ptr->step_id, hostname);
 			xfree(hostname);
 			return -1;	/* invalid request?? */
 		}
@@ -2403,8 +2410,8 @@ static int _signal_defer(queued_request_t *queued_req_ptr)
 		queued_req_ptr->first_attempt = now;
 	} else if (difftime(now, queued_req_ptr->first_attempt) >=
 	           (2 * slurm_conf.batch_start_timeout)) {
-		error("agent waited too long for nodes to respond, abort signal of JobId=%u",
-		      job_ptr->job_id);
+		error("agent waited too long for nodes to respond, abort signal of %pJ",
+		      job_ptr);
 		return -1;
 	}
 

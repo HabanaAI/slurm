@@ -107,23 +107,15 @@ typedef struct topoinfo_tree {
 	topoinfo_switch_t *topo_array;	/* the switch topology records */
 } topoinfo_tree_t;
 
-/*
- * init() is called when the plugin is loaded, before any other functions
- *	are called.  Put global initialization here.
- */
 extern int init(void)
 {
 	verbose("%s loaded", plugin_name);
 	return SLURM_SUCCESS;
 }
 
-/*
- * fini() is called when the plugin is removed. Clear any allocated
- *	storage here.
- */
-extern int fini(void)
+extern void fini(void)
 {
-	return SLURM_SUCCESS;
+	return;
 }
 
 extern int topology_p_add_rm_node(node_record_t *node_ptr, char *unit,
@@ -303,7 +295,7 @@ extern bool topology_p_generate_node_ranking(topology_ctx_t *tctx)
 		if (ctx->switch_table[sw].level != 0)
 			continue;
 
-		for (int n = 0; n < node_record_count; n++) {
+		for (int n = 0; next_node(&n); n++) {
 			if (!bit_test(ctx->switch_table[sw].node_bitmap, n))
 				continue;
 			node_record_table_ptr[n]->node_rank = switch_rank;
@@ -620,24 +612,6 @@ extern int topology_p_split_hostlist(hostlist_t *hl, hostlist_t ***sp_hl,
 	return depth;
 }
 
-extern int topology_p_topology_free(void *topoinfo_ptr)
-{
-	int i = 0;
-	topoinfo_tree_t *topoinfo = topoinfo_ptr;
-	if (topoinfo) {
-		if (topoinfo->topo_array) {
-			for (i = 0; i < topoinfo->record_count; i++) {
-				xfree(topoinfo->topo_array[i].name);
-				xfree(topoinfo->topo_array[i].nodes);
-				xfree(topoinfo->topo_array[i].switches);
-			}
-			xfree(topoinfo->topo_array);
-		}
-		xfree(topoinfo);
-	}
-	return SLURM_SUCCESS;
-}
-
 extern int topology_p_get(topology_data_t type, void *data, void *tctx)
 {
 	int rc = SLURM_SUCCESS;
@@ -693,7 +667,25 @@ extern int topology_p_get(topology_data_t type, void *data, void *tctx)
 	return rc;
 }
 
-extern int topology_p_topology_pack(void *topoinfo_ptr, buf_t *buffer,
+extern int topology_p_topoinfo_free(void *topoinfo_ptr)
+{
+	int i = 0;
+	topoinfo_tree_t *topoinfo = topoinfo_ptr;
+	if (topoinfo) {
+		if (topoinfo->topo_array) {
+			for (i = 0; i < topoinfo->record_count; i++) {
+				xfree(topoinfo->topo_array[i].name);
+				xfree(topoinfo->topo_array[i].nodes);
+				xfree(topoinfo->topo_array[i].switches);
+			}
+			xfree(topoinfo->topo_array);
+		}
+		xfree(topoinfo);
+	}
+	return SLURM_SUCCESS;
+}
+
+extern int topology_p_topoinfo_pack(void *topoinfo_ptr, buf_t *buffer,
 				    uint16_t protocol_version)
 {
 	int i;
@@ -732,7 +724,7 @@ void _print_topo_record(topoinfo_switch_t * topo_ptr, char **out)
 
 }
 
-extern int topology_p_topology_print(void *topoinfo_ptr, char *nodes_list,
+extern int topology_p_topoinfo_print(void *topoinfo_ptr, char *nodes_list,
 				     char *unit, char **out)
 {
 	int i, match, match_cnt = 0;;
@@ -787,7 +779,7 @@ extern int topology_p_topology_print(void *topoinfo_ptr, char *nodes_list,
 	return SLURM_SUCCESS;
 }
 
-extern int topology_p_topology_unpack(void **topoinfo_pptr, buf_t *buffer,
+extern int topology_p_topoinfo_unpack(void **topoinfo_pptr, buf_t *buffer,
 				      uint16_t protocol_version)
 {
 	int i = 0;
@@ -809,12 +801,82 @@ extern int topology_p_topology_unpack(void **topoinfo_pptr, buf_t *buffer,
 	return SLURM_SUCCESS;
 
 unpack_error:
-	topology_p_topology_free(topoinfo_ptr);
+	topology_p_topoinfo_free(topoinfo_ptr);
 	*topoinfo_pptr = NULL;
 	return SLURM_ERROR;
+}
+
+extern void topology_p_jobinfo_free(
+	void *topo_jobinfo)
+{
+	return;
+}
+
+extern void topology_p_jobinfo_pack(
+	void *topo_jobinfo,
+	buf_t *buffer,
+	uint16_t protocol_version)
+{
+	return;
+}
+
+extern int topology_p_jobinfo_unpack(
+	void **topo_jobinfo,
+	buf_t *buffer,
+	uint16_t protocol_version)
+{
+	return SLURM_SUCCESS;
+}
+
+extern int topology_p_jobinfo_get(
+	topology_jobinfo_type_t type,
+	void *topo_jobinfo,
+	void *data)
+{
+	return ESLURM_NOT_SUPPORTED;
 }
 
 extern uint32_t topology_p_get_fragmentation(bitstr_t *node_mask, void *tcxt)
 {
 	return 0;
+}
+
+extern void topology_p_get_topology_str(node_record_t *node_ptr,
+					char **topology_str_ptr,
+					topology_ctx_t *tctx)
+{
+	tree_context_t *ctx = tctx->plugin_ctx;
+	int idx = -1;
+
+	for (int i = 0; i < ctx->switch_count; i++) {
+		if (SWITCH_NO_PARENT != ctx->switch_table[i].parent)
+			continue;
+
+		if (bit_test(ctx->switch_table[i].node_bitmap,
+			     node_ptr->index)) {
+			idx = i;
+			break;
+		}
+	}
+
+	if (idx < 0)
+		return;
+
+	xstrfmtcat(*topology_str_ptr, "%s%s:%s", *topology_str_ptr ? "," : "",
+		   tctx->name, ctx->switch_table[idx].name);
+	while (ctx->switch_table[idx].num_desc_switches) {
+		int num_desc = ctx->switch_table[idx].num_desc_switches;
+		for (int i = 0; i < num_desc; i++) {
+			int child = ctx->switch_table[idx].switch_desc_index[i];
+			if (bit_test(ctx->switch_table[child].node_bitmap,
+				     node_ptr->index)) {
+				xstrfmtcat(*topology_str_ptr, ":%s",
+					   ctx->switch_table[child].name);
+				idx = child;
+				break;
+			}
+		}
+	}
+
+	return;
 }

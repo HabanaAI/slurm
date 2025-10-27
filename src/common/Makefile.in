@@ -164,15 +164,16 @@ am__DEPENDENCIES_1 =
 libcommon_la_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_libcommon_la_OBJECTS = assoc_mgr.lo bitstring.lo callerid.lo \
 	cbuf.lo core_array.lo cpu_frequency.lo cron.lo daemonize.lo \
-	data.lo eio.lo env.lo extra_constraints.lo fd.lo \
-	fetch_config.lo forward.lo global_defaults.lo group_cache.lo \
-	half_duplex.lo hostlist.lo http.lo identity.lo id_util.lo \
-	io_hdr.lo job_features.lo job_options.lo job_record.lo \
-	job_resources.lo job_state_reason.lo list.lo log.lo \
-	msg_type.lo net.lo node_conf.lo node_features.lo oci_config.lo \
-	openapi.lo optz.lo pack.lo parse_config.lo parse_time.lo \
-	parse_value.lo part_record.lo persist_conn.lo plugin.lo \
-	plugrack.lo port_mgr.lo print_fields.lo proc_args.lo \
+	data.lo dynamic_plugin_data.lo eio.lo env.lo \
+	extra_constraints.lo fd.lo fetch_config.lo forward.lo \
+	global_defaults.lo group_cache.lo half_duplex.lo hostlist.lo \
+	http.lo http_con.lo http_router.lo http_switch.lo identity.lo \
+	id_util.lo io_hdr.lo job_features.lo job_options.lo \
+	job_record.lo job_resources.lo job_state_reason.lo list.lo \
+	log.lo msg_type.lo net.lo node_conf.lo node_features.lo \
+	oci_config.lo openapi.lo optz.lo pack.lo parse_config.lo \
+	parse_time.lo parse_value.lo part_record.lo persist_conn.lo \
+	plugin.lo plugrack.lo port_mgr.lo print_fields.lo proc_args.lo \
 	read_config.lo reverse_tree.lo run_command.lo run_in_daemon.lo \
 	sack_api.lo setproctitle.lo sluid.lo slurm_errno.lo \
 	slurm_opt.lo slurm_protocol_api.lo slurm_protocol_defs.lo \
@@ -218,12 +219,14 @@ am__depfiles_remade = ./$(DEPDIR)/assoc_mgr.Plo \
 	./$(DEPDIR)/cbuf.Plo ./$(DEPDIR)/core_array.Plo \
 	./$(DEPDIR)/cpu_frequency.Plo ./$(DEPDIR)/cron.Plo \
 	./$(DEPDIR)/daemonize.Plo ./$(DEPDIR)/data.Plo \
-	./$(DEPDIR)/eio.Plo ./$(DEPDIR)/env.Plo \
-	./$(DEPDIR)/extra_constraints.Plo ./$(DEPDIR)/fd.Plo \
-	./$(DEPDIR)/fetch_config.Plo ./$(DEPDIR)/forward.Plo \
-	./$(DEPDIR)/global_defaults.Plo ./$(DEPDIR)/group_cache.Plo \
-	./$(DEPDIR)/half_duplex.Plo ./$(DEPDIR)/hostlist.Plo \
-	./$(DEPDIR)/http.Plo ./$(DEPDIR)/id_util.Plo \
+	./$(DEPDIR)/dynamic_plugin_data.Plo ./$(DEPDIR)/eio.Plo \
+	./$(DEPDIR)/env.Plo ./$(DEPDIR)/extra_constraints.Plo \
+	./$(DEPDIR)/fd.Plo ./$(DEPDIR)/fetch_config.Plo \
+	./$(DEPDIR)/forward.Plo ./$(DEPDIR)/global_defaults.Plo \
+	./$(DEPDIR)/group_cache.Plo ./$(DEPDIR)/half_duplex.Plo \
+	./$(DEPDIR)/hostlist.Plo ./$(DEPDIR)/http.Plo \
+	./$(DEPDIR)/http_con.Plo ./$(DEPDIR)/http_router.Plo \
+	./$(DEPDIR)/http_switch.Plo ./$(DEPDIR)/id_util.Plo \
 	./$(DEPDIR)/identity.Plo ./$(DEPDIR)/io_hdr.Plo \
 	./$(DEPDIR)/job_features.Plo ./$(DEPDIR)/job_options.Plo \
 	./$(DEPDIR)/job_record.Plo ./$(DEPDIR)/job_resources.Plo \
@@ -591,6 +594,8 @@ libcommon_la_SOURCES = \
 	daemonize.h				\
 	data.c					\
 	data.h					\
+	dynamic_plugin_data.c			\
+	dynamic_plugin_data.h			\
 	eio.c					\
 	eio.h					\
 	env.c					\
@@ -612,6 +617,12 @@ libcommon_la_SOURCES = \
 	hostlist.h				\
 	http.h					\
 	http.c					\
+	http_con.h				\
+	http_con.c				\
+	http_router.h				\
+	http_router.c				\
+	http_switch.h				\
+	http_switch.c				\
 	identity.h				\
 	identity.c				\
 	id_util.h				\
@@ -840,6 +851,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/cron.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/daemonize.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/data.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/dynamic_plugin_data.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/eio.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/env.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/extra_constraints.Plo@am__quote@ # am--include-marker
@@ -851,6 +863,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/half_duplex.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/hostlist.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/http.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/http_con.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/http_router.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/http_switch.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/id_util.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/identity.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/io_hdr.Plo@am__quote@ # am--include-marker
@@ -1061,6 +1076,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/cron.Plo
 	-rm -f ./$(DEPDIR)/daemonize.Plo
 	-rm -f ./$(DEPDIR)/data.Plo
+	-rm -f ./$(DEPDIR)/dynamic_plugin_data.Plo
 	-rm -f ./$(DEPDIR)/eio.Plo
 	-rm -f ./$(DEPDIR)/env.Plo
 	-rm -f ./$(DEPDIR)/extra_constraints.Plo
@@ -1072,6 +1088,9 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/half_duplex.Plo
 	-rm -f ./$(DEPDIR)/hostlist.Plo
 	-rm -f ./$(DEPDIR)/http.Plo
+	-rm -f ./$(DEPDIR)/http_con.Plo
+	-rm -f ./$(DEPDIR)/http_router.Plo
+	-rm -f ./$(DEPDIR)/http_switch.Plo
 	-rm -f ./$(DEPDIR)/id_util.Plo
 	-rm -f ./$(DEPDIR)/identity.Plo
 	-rm -f ./$(DEPDIR)/io_hdr.Plo
@@ -1202,6 +1221,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/cron.Plo
 	-rm -f ./$(DEPDIR)/daemonize.Plo
 	-rm -f ./$(DEPDIR)/data.Plo
+	-rm -f ./$(DEPDIR)/dynamic_plugin_data.Plo
 	-rm -f ./$(DEPDIR)/eio.Plo
 	-rm -f ./$(DEPDIR)/env.Plo
 	-rm -f ./$(DEPDIR)/extra_constraints.Plo
@@ -1213,6 +1233,9 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/half_duplex.Plo
 	-rm -f ./$(DEPDIR)/hostlist.Plo
 	-rm -f ./$(DEPDIR)/http.Plo
+	-rm -f ./$(DEPDIR)/http_con.Plo
+	-rm -f ./$(DEPDIR)/http_router.Plo
+	-rm -f ./$(DEPDIR)/http_switch.Plo
 	-rm -f ./$(DEPDIR)/id_util.Plo
 	-rm -f ./$(DEPDIR)/identity.Plo
 	-rm -f ./$(DEPDIR)/io_hdr.Plo

@@ -145,7 +145,6 @@ int _do_stat(slurm_step_id_t *step_id, char *nodelist, uint32_t req_cpufreq_min,
 
 	step.job_ptr = &job;
 	memcpy(&step.step_id, step_id, sizeof(step.step_id));
-	step.nodes = xmalloc(BUF_SIZE);
 	step.req_cpufreq_min = req_cpufreq_min;
 	step.req_cpufreq_max = req_cpufreq_max;
 	step.req_cpufreq_gov = req_cpufreq_gov;
@@ -216,6 +215,7 @@ int _do_stat(slurm_step_id_t *step_id, char *nodelist, uint32_t req_cpufreq_min,
 		goto getout;
 
 	hostlist_sort(hl);
+	step.nodes = xmalloc(BUF_SIZE);
 	hostlist_ranged_string(hl, BUF_SIZE, step.nodes);
 	hostlist_destroy(hl);
 	tot_tasks += ntasks;
@@ -279,10 +279,8 @@ int main(int argc, char **argv)
 
 		memcpy(&step_id, &selected_step->step_id, sizeof(step_id));
 
-		if (slurm_get_job_steps(0, step_id.job_id, step_id.step_id,
-					&step_info, SHOW_ALL)) {
-			error("couldn't get steps for job %u",
-			      selected_step->step_id.job_id);
+		if (slurm_get_job_steps(&step_id, &step_info, SHOW_ALL)) {
+			error("couldn't get steps for %pI", &step_id);
 			continue;
 		} else if (!step_info->job_step_count) {
 			if (step_id.step_id == NO_VAL)

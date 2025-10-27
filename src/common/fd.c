@@ -94,6 +94,7 @@ strong_alias(fd_close, slurm_fd_close);
 strong_alias(fd_set_blocking,	slurm_fd_set_blocking);
 strong_alias(fd_set_nonblocking,slurm_fd_set_nonblocking);
 strong_alias(fd_get_socket_error, slurm_fd_get_socket_error);
+strong_alias(fd_get_readable_bytes, slurm_fd_get_readable_bytes);
 strong_alias(send_fd_over_socket, slurm_send_fd_over_socket);
 strong_alias(receive_fd_over_socket, slurm_receive_fd_over_socket);
 strong_alias(rmdir_recursive, slurm_rmdir_recursive);
@@ -101,8 +102,14 @@ strong_alias(rmdir_recursive, slurm_rmdir_recursive);
 static int fd_get_lock(int fd, int cmd, int type);
 static pid_t fd_test_lock(int fd, int type);
 
-static bool _is_fd_skipped(int fd, int *skipped)
+static bool _is_fd_skipped(int fd, int *skipped, log_closeall_skip_t log_skip)
 {
+	if (fd == log_skip.log_fd)
+		return true;
+
+	if (fd == log_skip.sched_log_fd)
+		return true;
+
 	if (!skipped)
 		return false;
 
@@ -113,7 +120,7 @@ static bool _is_fd_skipped(int fd, int *skipped)
 	return false;
 }
 
-static void _slow_closeall(int fd, int *skipped)
+static void _slow_closeall(int fd, int *skipped, log_closeall_skip_t log_skip)
 {
 	struct rlimit rlim;
 
@@ -123,7 +130,7 @@ static void _slow_closeall(int fd, int *skipped)
 	}
 
 	for (; fd < rlim.rlim_cur; fd++)
-		if (!_is_fd_skipped(fd, skipped))
+		if (!_is_fd_skipped(fd, skipped, log_skip))
 			close(fd);
 }
 
@@ -132,6 +139,7 @@ extern void closeall_except(int fd, int *skipped)
 	char *name = "/proc/self/fd";
 	DIR *d;
 	struct dirent *dir;
+	log_closeall_skip_t log_skip = log_closeall_pre();
 
 	/*
 	 * Blindly closing all file descriptors is slow.
@@ -142,7 +150,8 @@ extern void closeall_except(int fd, int *skipped)
 	if (!(d = opendir(name))) {
 		debug("Could not read open files from %s: %m, closing all potential file descriptors",
 		      name);
-		_slow_closeall(fd, skipped);
+		_slow_closeall(fd, skipped, log_skip);
+		log_closeall_post();
 		return;
 	}
 
@@ -152,11 +161,13 @@ extern void closeall_except(int fd, int *skipped)
 			int open_fd = atoi(dir->d_name);
 
 			if ((open_fd >= fd) &&
-			    !_is_fd_skipped(open_fd, skipped))
+			    !_is_fd_skipped(open_fd, skipped, log_skip))
 				close(open_fd);
 		}
 	}
 	closedir(d);
+
+	log_closeall_post();
 }
 
 extern void closeall(int fd)
@@ -214,6 +225,18 @@ void fd_set_blocking(int fd)
 	if (fcntl(fd, F_SETFL, fval & ~O_NONBLOCK) < 0)
 		error("fcntl(F_SETFL) failed: %m");
 	return;
+}
+
+bool fd_is_nonblocking(int fd)
+{
+	int fval = 0;
+
+	xassert(fd >= 0);
+
+	if ((fval = fcntl(fd, F_GETFL, 0)) < 0)
+		error("fcntl(F_GETFL) failed: %m");
+
+	return (fval & O_NONBLOCK);
 }
 
 int fd_get_readw_lock(int fd)
@@ -329,44 +352,6 @@ on_timeout:
 			return -1;
 		}
 	}
-}
-
-/*
- * Check if a file descriptor is writable now.
- *
- * This function assumes that O_NONBLOCK is set already, if it is not this
- * function will block!
- *
- * Return 1 when writeable or 0 on error
- */
-extern bool fd_is_writable(int fd)
-{
-	bool rc = true;
-	char temp[2];
-	struct pollfd ufd;
-
-	/* setup call to poll */
-	ufd.fd = fd;
-	ufd.events = POLLOUT;
-
-	while (true) {
-		if (poll(&ufd, 1, 0) == -1) {
-			if ((errno == EINTR) || (errno == EAGAIN))
-				continue;
-			debug2("%s: poll error: %m", __func__);
-			rc = false;
-			break;
-		}
-		if ((ufd.revents & POLLHUP) ||
-		    (recv(fd, &temp, 1, MSG_PEEK) == 0)) {
-			debug2("%s: socket is not writable", __func__);
-			rc = false;
-			break;
-		}
-		break;
-	}
-
-	return rc;
 }
 
 /*
@@ -526,6 +511,34 @@ extern void send_fd_over_socket(int socket, int fd)
 
 	if (sendmsg(socket, &msg, 0) < 0)
 		error("%s: failed to send fd: %m", __func__);
+}
+
+extern void send_fd_over_socket_payload(int socket, int fd, char *payload)
+{
+	struct msghdr msg = { 0 };
+	struct cmsghdr *cmsg;
+	char buf[CMSG_SPACE(sizeof(fd))];
+	struct iovec iov[1];
+
+	memset(buf, '\0', sizeof(buf));
+
+	iov[0].iov_base = payload;
+	iov[0].iov_len = strlen(payload);
+	msg.msg_iov = iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = buf;
+	msg.msg_controllen = sizeof(buf);
+
+	cmsg = CMSG_FIRSTHDR(&msg);
+	cmsg->cmsg_level = SOL_SOCKET;
+	cmsg->cmsg_type = SCM_RIGHTS;
+	cmsg->cmsg_len = CMSG_LEN(sizeof(fd));
+
+	memmove(CMSG_DATA(cmsg), &fd, sizeof(fd));
+	msg.msg_controllen = cmsg->cmsg_len;
+
+	if (sendmsg(socket, &msg, 0) < 0)
+		error("%s: failed to send fd and payload: %m", __func__);
 }
 
 /* receive an open file descriptor over unix socket */
@@ -808,7 +821,7 @@ extern int fd_get_buffered_output_bytes(int fd, int *bytes_ptr,
 extern int fd_get_maxmss(int fd, const char *con_name)
 {
 	int mss = NO_VAL;
-	socklen_t tmp_socklen = { 0 };
+	socklen_t tmp_socklen = sizeof(mss);
 
 	if (getsockopt(fd, IPPROTO_TCP, TCP_MAXSEG, &mss, &tmp_socklen))
 		log_net(fd, con_name,

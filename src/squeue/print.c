@@ -42,22 +42,24 @@
 #include <pwd.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include "src/common/cpu_frequency.h"
 #include "src/common/hostlist.h"
 #include "src/common/list.h"
 #include "src/common/macros.h"
 #include "src/common/parse_time.h"
-#include "src/interfaces/select.h"
-#include "src/interfaces/acct_gather_profile.h"
+#include "src/common/print_fields.h"
+#include "src/common/sluid.h"
 #include "src/common/uid.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
 
+#include "src/interfaces/acct_gather_profile.h"
+#include "src/interfaces/select.h"
+
 #include "src/squeue/print.h"
-#include "src/common/print_fields.h"
 #include "src/squeue/squeue.h"
 
 static void _combine_pending_array_tasks(list_t *l);
@@ -555,7 +557,7 @@ int _print_job_array_job_id(job_info_t * job, int width, bool right,
 		snprintf(id, FORMAT_STRING_SIZE, "%u", job->array_job_id);
 		_print_str(id, width, right, true);
 	} else {
-		snprintf(id, FORMAT_STRING_SIZE, "%u", job->job_id);
+		snprintf(id, FORMAT_STRING_SIZE, "%u", job->step_id.job_id);
 		_print_str(id, width, right, true);
 	}
 	if (suffix)
@@ -719,7 +721,7 @@ int _print_job_job_id(job_info_t * job, int width, bool right, char* suffix)
 			 job->het_job_id, job->het_job_offset);
 		_print_str(id, width, right, true);
 	} else {
-		snprintf(id, FORMAT_STRING_SIZE, "%u", job->job_id);
+		snprintf(id, FORMAT_STRING_SIZE, "%u", job->step_id.job_id);
 		_print_str(id, width, right, true);
 	}
 	if (suffix)
@@ -733,7 +735,7 @@ int _print_job_job_id2(job_info_t * job, int width, bool right, char* suffix)
 		_print_str("JOBID", width, right, true);
 	} else {
 		char id[FORMAT_STRING_SIZE];
-		snprintf(id, FORMAT_STRING_SIZE, "%u", job->job_id);
+		snprintf(id, FORMAT_STRING_SIZE, "%u", job->step_id.job_id);
 		_print_str(id, width, right, true);
 	}
 	if (suffix)
@@ -1330,6 +1332,21 @@ int _print_pn_min_cpus(job_info_t * job, int width, bool right_justify,
 	return SLURM_SUCCESS;
 }
 
+int _print_sluid(job_info_t *job, int width, bool right_justify, char *suffix)
+{
+	if (!job) {
+		_print_str("SLUID", width, right_justify, true);
+	} else {
+		char *sluid = sluid2str(job->step_id.sluid);
+		_print_str(sluid, width, right_justify, true);
+		xfree(sluid);
+	}
+
+	if (suffix)
+		printf("%s", suffix);
+	return SLURM_SUCCESS;
+}
+
 int _print_sockets(job_info_t * job, int width, bool right_justify,
 		       char* suffix)
 {
@@ -1846,7 +1863,7 @@ int _print_job_fed_origin_raw(job_info_t * job, int width, bool right_justify,
 	if (job == NULL)
 		_print_str("ORIGIN_RAW", width, right_justify, true);
 	else {
-		int id = job->job_id >> 26;
+		int id = job->step_id.job_id >> 26;
 		if (id)
 			_print_int(id, width, right_justify, true);
 		else
@@ -2223,18 +2240,6 @@ int _print_job_std_in(job_info_t * job, int width,
 int _print_job_std_out(job_info_t * job, int width,
 		       bool right_justify, char* suffix)
 {
-	/*
-	 * Populate the default patterns in std_out for batch jobs.
-	 */
-	if (job && !job->std_out && job->batch_flag) {
-		if (job->array_job_id)
-			xstrfmtcat(job->std_out, "%s/slurm-%%A_%%a.out",
-				   job->work_dir);
-                else
-			xstrfmtcat(job->std_out, "%s/slurm-%%j.out",
-				   job->work_dir);
-	}
-
 	if (job == NULL)
 		_print_str("STDOUT", width, right_justify, true);
 	else if (params.expand_patterns) {
@@ -3021,18 +3026,18 @@ static bool _filter_job(job_info_t *job)
 	squeue_job_step_t *job_step_id;
 	bool partial_array = false;
 
-	if (job->job_id == 0)
+	if (job->step_id.job_id == 0)
 		return true;
 
 	if (params.job_list) {
 		bool filter = true;
 		iterator = list_iterator_create(params.job_list);
 		while ((job_step_id = list_next(iterator))) {
-			if (((job_step_id->array_id == NO_VAL)             &&
+			if (((job_step_id->array_id == NO_VAL) &&
 			     ((job_step_id->step_id.job_id ==
 			       job->array_job_id) ||
 			      (job_step_id->step_id.job_id ==
-			       job->job_id))) ||
+			       job->step_id.job_id))) ||
 			    ((job_step_id->array_id == job->array_task_id) &&
 			     (job_step_id->step_id.job_id ==
 			      job->array_job_id))) {
@@ -3241,6 +3246,18 @@ static bool _filter_job(job_info_t *job)
 			(void) bit_fmt(job->array_task_str, i,
 				       job->array_bitmap);
 		}
+	}
+
+	if (params.time_running_over) {
+		if (!IS_JOB_RUNNING(job) ||
+		    (job_time_used(job) < params.time_running_over))
+			return true;
+	}
+
+	if (params.time_running_under) {
+		if (!IS_JOB_RUNNING(job) ||
+		    (job_time_used(job) >= params.time_running_under))
+			return true;
 	}
 
 	return false;

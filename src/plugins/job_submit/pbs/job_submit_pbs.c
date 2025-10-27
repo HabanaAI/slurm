@@ -85,14 +85,14 @@ const uint32_t plugin_version   = SLURM_VERSION_NUMBER;
 
 static pthread_mutex_t depend_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-int init (void)
+extern int init(void)
 {
 	return SLURM_SUCCESS;
 }
 
-int fini (void)
+extern void fini(void)
 {
-	return SLURM_SUCCESS;
+	return;
 }
 
 static void _add_env(job_desc_msg_t *job_desc, char *new_env)
@@ -158,7 +158,7 @@ static void *_dep_agent(void *args)
 	    job_ptr->comment && strstr(job_ptr->comment, "on:")) {
 		char *new_depend = job_ptr->details->dependency;
 		job_ptr->details->dependency = NULL;
-		update_job_dependency(job_ptr, new_depend);
+		update_job_dependency(job_ptr, new_depend, false);
 		xfree(new_depend);
 		tok = strstr(job_ptr->comment, "on:");
 		cnt = strtol(tok + 3, &end_ptr, 10);

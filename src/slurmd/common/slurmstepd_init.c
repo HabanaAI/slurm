@@ -196,6 +196,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* health_check_interval */
 	/* health_check_node_state */
 	/* health_check_program */
+	/* http_parser_type */
 	/* inactive_limit */
 	/* interactive_step_opts */
 	packstr(slurm_conf.job_acct_gather_freq, buffer);
@@ -209,7 +210,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	/* job_comp_port */
 	/* job_comp_type */
 	/* job_comp_user */
-	packstr(slurm_conf.job_container_plugin, buffer);
+	packstr(slurm_conf.namespace_plugin, buffer);
 	/* job_defaults_list */
 	pack16(slurm_conf.job_file_append, buffer);
 	/* job_requeue */
@@ -235,6 +236,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	pack16(slurm_conf.max_tasks_per_node, buffer);
 	/* mcs_plugin */
 	/* mcs_plugin_params */
+	/* metrics_type */
 	/* min_job_age */
 	/* mpi_conf */
 	packstr(slurm_conf.mpi_default, buffer);
@@ -348,6 +350,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	pack32(slurm_conf.task_plugin_param, buffer);
 	packstr(slurm_conf.task_prolog, buffer);
 	pack16(slurm_conf.tcp_timeout, buffer);
+	packstr(slurm_conf.tls_params, buffer);
 	packstr(slurm_conf.tls_type, buffer);
 	packstr(slurm_conf.tmp_fs, buffer);
 	packstr(slurm_conf.topology_param, buffer);
@@ -355,6 +358,7 @@ extern void pack_slurm_conf_lite(buf_t *buffer)
 	pack16(slurm_conf.tree_width, buffer);
 	packstr(slurm_conf.unkillable_program, buffer);
 	pack16(slurm_conf.unkillable_timeout, buffer);
+	/* url_parser_type */
 	/* version */
 	pack16(slurm_conf.vsize_factor, buffer);
 	pack16(slurm_conf.wait_time, buffer);
@@ -441,7 +445,7 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	/* job_comp_port */
 	/* job_comp_type */
 	/* job_comp_user */
-	safe_unpackstr(&slurm_conf.job_container_plugin, buffer);
+	safe_unpackstr(&slurm_conf.namespace_plugin, buffer);
 	/* job_defaults_list */
 	safe_unpack16(&slurm_conf.job_file_append, buffer);
 	/* job_requeue */
@@ -581,6 +585,7 @@ extern int unpack_slurm_conf_lite_no_alloc(buf_t *buffer)
 	safe_unpack32(&slurm_conf.task_plugin_param, buffer);
 	safe_unpackstr(&slurm_conf.task_prolog, buffer);
 	safe_unpack16(&slurm_conf.tcp_timeout, buffer);
+	safe_unpackstr(&slurm_conf.tls_params, buffer);
 	safe_unpackstr(&slurm_conf.tls_type, buffer);
 	safe_unpackstr(&slurm_conf.tmp_fs, buffer);
 	safe_unpackstr(&slurm_conf.topology_param, buffer);

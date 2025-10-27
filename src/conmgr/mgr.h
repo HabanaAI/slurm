@@ -60,17 +60,6 @@
 #define BUFFER_START_SIZE 4096
 
 typedef struct {
-#define MAGIC_EXTRACT_FD 0xabf8e2a3
-	int magic; /* MAGIC_EXTRACT_FD */
-	int input_fd;
-	int output_fd;
-	void *tls_conn; /* TLS state */
-	conmgr_extract_fd_func_t func;
-	const char *func_name;
-	void *func_arg;
-} extract_fd_t;
-
-typedef struct {
 #define MAGIC_WORK 0xD231444A
 	int magic; /* MAGIC_WORK */
 	conmgr_work_status_t status;
@@ -145,12 +134,14 @@ typedef enum {
 	FLAG_TLS_CLIENT = CON_FLAG_TLS_CLIENT,
 	/* True if conn_g_create() completed */
 	FLAG_IS_TLS_CONNECTED = SLURM_BIT(20),
-	/* True if on_fingerprint() pending */
-	FLAG_WAIT_ON_FINGERPRINT = SLURM_BIT(21),
+	/* @see CON_FLAG_RPC_RECV_FORWARD */
+	FLAG_TLS_FINGERPRINT = CON_FLAG_TLS_FINGERPRINT,
 	/* True if waiting for time delayed close of input_fd&output_fd */
 	FLAG_TLS_WAIT_ON_CLOSE = SLURM_BIT(22),
 	/* @see CON_FLAG_RPC_RECV_FORWARD */
 	FLAG_RPC_RECV_FORWARD = CON_FLAG_RPC_RECV_FORWARD,
+	/* True if on_fingerprint() pending */
+	FLAG_WAIT_ON_EXTRACT = SLURM_BIT(24),
 } con_flags_t;
 
 /* Mask over flags that track connection state */
@@ -218,8 +209,12 @@ struct conmgr_fd_s {
 	/* socket maximum segment size (MSS) or NO_VAL if not known */
 	int mss;
 
-	/* queued extraction of input_fd/output_fd request */
-	extract_fd_t *extract;
+	/* Function to call on connection extraction */
+	struct {
+		conmgr_extract_fd_func_t func;
+		const char *func_name;
+		void *func_arg;
+	} on_extract;
 
 	/*
 	 * Current active polling (if any).
@@ -291,13 +286,8 @@ typedef struct {
 	 * type: conmgr_fd_t
 	 */
 	list_t *complete_conns;
-	/*
-	 * True after conmgr_init() is called, false after conmgr_fini() is
-	 * called.
-	 */
+	/* True after conmgr_init() is called */
 	bool initialized;
-	/* One time per process tasks initialized */
-	bool one_time_initialized;
 	/*
 	 * Thread id of thread running watch()
 	 */
@@ -329,9 +319,6 @@ typedef struct {
 	list_t *delayed_work;
 	/* list of work_t* */
 	list_t *work;
-
-	/* functions to handle host/port parsing */
-	conmgr_callbacks_t callbacks;
 
 	pthread_mutex_t mutex;
 
@@ -520,6 +507,16 @@ extern void con_set_polling(conmgr_fd_t *con, pollctl_fd_type_t type,
  */
 extern void write_output(conmgr_fd_t *con, const int out_count, list_t *out);
 
+/*
+ * Write packed msg to connection
+ * WARNING: caller must not hold mgr.mutex lock
+ * NOTE: type=CON_TYPE_RPC only
+ * IN con conmgr connection ptr
+ * IN msg message to send
+ * RET SLURM_SUCCESS or error
+ */
+extern int write_msg(conmgr_fd_t *con, slurm_msg_t *msg);
+
 extern void handle_write(conmgr_callback_args_t conmgr_args, void *arg);
 
 /*
@@ -582,13 +579,6 @@ extern conmgr_fd_t *con_find_by_fd(int fd);
 extern void wrap_work(work_t *work);
 
 /*
- * Wait for all workers to finish their work
- * WARNING: caller must hold mgr.mutex
- * WARNING: never call from work or call will never return
- */
-extern void wait_for_workers_idle(const char *caller);
-
-/*
  * Notify all worker thread to shutdown.
  * Wait until all work and workers have completed their work (and exited).
  * Note: Caller MUST hold conmgr lock
@@ -598,9 +588,10 @@ extern void workers_shutdown(void);
 /*
  * Initialize worker threads
  * IN count - number of workers to add
+ * IN default_count - default number of workers to add
  * Note: Caller must hold conmgr lock
  */
-extern void workers_init(int count);
+extern void workers_init(int count, int default_count);
 
 /*
  * Release worker threads
@@ -626,7 +617,7 @@ extern void wrap_on_connection(conmgr_callback_args_t conmgr_args, void *arg);
 /*
  * Extract connection file descriptors
  */
-extern void extract_con_fd(conmgr_fd_t *con);
+extern void on_extract(conmgr_callback_args_t conmgr_args, void *arg);
 
 /*
  * Create new connection reference
@@ -657,5 +648,38 @@ extern void handle_connection(bool locked, conmgr_fd_t *con);
  * NOTE: caller must hold mgr->mutex lock
  */
 extern void queue_on_connection(conmgr_fd_t *con);
+
+/*
+ * Log all connections to info()
+ * NOTE: caller must hold conmgr global lock
+ */
+extern void conmgr_log_connections(void);
+
+/* Min buffer size to call printf_work() */
+#define PRINTF_WORK_CHARS 512
+
+/*
+ * Create string description of work
+ * IN work - ptr to work to describe
+ * IN buffer - memory to populate
+ * IN len - number of bytes in buffer to populate (PRINTF_WORK_CHARS)
+ * IN include_connection - true to include con->name (if present)
+ * NOTE: caller must hold conmgr global lock
+ * RET number of bytes written
+ */
+extern size_t printf_work(const work_t *work, char *buffer, size_t len,
+			  bool include_connection);
+
+/*
+ * Log mgr.work and mgr.delayed_work to info()
+ * NOTE: caller must hold conmgr global lock
+ */
+extern void conmgr_log_work(void);
+
+/*
+ * Log mgr.workers to info()
+ * NOTE: caller must hold conmgr global lock
+ */
+extern void conmgr_log_workers(void);
 
 #endif /* _CONMGR_MGR_H */

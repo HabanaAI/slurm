@@ -41,7 +41,11 @@ strong_alias(cgroup_conf_destroy, slurm_cgroup_conf_destroy);
 strong_alias(autodetect_cgroup_version, slurm_autodetect_cgroup_version);
 
 #define DEFAULT_CGROUP_BASEDIR "/sys/fs/cgroup"
+#ifdef WITH_CGROUP
 #define DEFAULT_CGROUP_PLUGIN "autodetect"
+#else
+#define DEFAULT_CGROUP_PLUGIN "disabled"
+#endif
 
 /* Symbols provided by the plugin */
 typedef struct {
@@ -76,6 +80,11 @@ typedef struct {
 	long int (*get_acct_units)	(void);
 	bool (*has_feature) (cgroup_ctl_feature_t f);
 	char *(*get_scope_path)(void);
+	int (*bpf_fsopen)(void);
+	int (*bpf_fsconfig)(int fd);
+	int (*bpf_create_token)(int fd);
+	void (*bpf_set_token)(int fd);
+	int (*bpf_get_token)(void);
 	int (*setup_scope)(char *scope_path);
 	int (*signal)(int signal);
 	char *(*get_task_empty_event_path)(uint32_t taskid, bool *on_modify);
@@ -108,6 +117,11 @@ static const char *syms[] = {
 	"cgroup_p_get_acct_units",
 	"cgroup_p_has_feature",
 	"cgroup_p_get_scope_path",
+	"cgroup_p_bpf_fsopen",
+	"cgroup_p_bpf_fsconfig",
+	"cgroup_p_bpf_create_token",
+	"cgroup_p_bpf_set_token",
+	"cgroup_p_bpf_get_token",
 	"cgroup_p_setup_scope",
 	"cgroup_p_signal",
 	"cgroup_p_get_task_empty_event_path",
@@ -162,6 +176,7 @@ static void _clear_slurm_cgroup_conf(void)
 	xfree(slurm_cgroup_conf.cgroup_mountpoint);
 	xfree(slurm_cgroup_conf.cgroup_plugin);
 	xfree(slurm_cgroup_conf.cgroup_prepend);
+	xfree(slurm_cgroup_conf.cgroup_slice);
 	xfree(slurm_cgroup_conf.enable_extra_controllers);
 
 	memset(&slurm_cgroup_conf, 0, sizeof(slurm_cgroup_conf));
@@ -180,6 +195,7 @@ static void _init_slurm_cgroup_conf(void)
 #else
 	slurm_cgroup_conf.cgroup_prepend = xstrdup("/slurm_%n");
 #endif
+	slurm_cgroup_conf.cgroup_slice = NULL;
 	slurm_cgroup_conf.constrain_cores = false;
 	slurm_cgroup_conf.constrain_devices = false;
 	slurm_cgroup_conf.constrain_ram_space = false;
@@ -211,6 +227,7 @@ static void _pack_cgroup_conf(buf_t *buffer)
 	packstr(slurm_cgroup_conf.cgroup_mountpoint, buffer);
 
 	packstr(slurm_cgroup_conf.cgroup_prepend, buffer);
+	packstr(slurm_cgroup_conf.cgroup_slice, buffer);
 
 	packbool(slurm_cgroup_conf.constrain_cores, buffer);
 
@@ -255,6 +272,7 @@ static int _unpack_cgroup_conf(buf_t *buffer)
 	safe_unpackstr(&slurm_cgroup_conf.cgroup_mountpoint, buffer);
 
 	safe_unpackstr(&slurm_cgroup_conf.cgroup_prepend, buffer);
+	safe_unpackstr(&slurm_cgroup_conf.cgroup_slice, buffer);
 
 	safe_unpackbool(&slurm_cgroup_conf.constrain_cores, buffer);
 
@@ -297,7 +315,7 @@ static void _read_slurm_cgroup_conf(void)
 	s_p_options_t options[] = {
 		{"CgroupAutomount", S_P_BOOLEAN, _defunct_option},
 		{"CgroupMountpoint", S_P_STRING},
-		{"CgroupReleaseAgentDir", S_P_STRING},
+		{"CgroupSlice", S_P_STRING},
 		{"ConstrainCores", S_P_BOOLEAN},
 		{"ConstrainRAMSpace", S_P_BOOLEAN},
 		{"AllowedRAMSpace", S_P_FLOAT},
@@ -350,9 +368,11 @@ static void _read_slurm_cgroup_conf(void)
 			slurm_cgroup_conf.cgroup_mountpoint = tmp_str;
 			tmp_str = NULL;
 		}
-		if (s_p_get_string(&tmp_str, "CgroupReleaseAgentDir", tbl)) {
-			xfree(tmp_str);
-			fatal("Support for CgroupReleaseAgentDir option has been removed.");
+
+		if (s_p_get_string(&tmp_str, "CgroupSlice", tbl)) {
+			xfree(slurm_cgroup_conf.cgroup_slice);
+			slurm_cgroup_conf.cgroup_slice = tmp_str;
+			tmp_str = NULL;
 		}
 
 		/* Cores constraints related conf items */
@@ -491,9 +511,11 @@ extern char *autodetect_cgroup_version(void)
 		error("unsupported cgroup version %d", cgroup_ver);
 		break;
 	}
-#endif
 
 	return NULL;
+#else
+	return "disabled";
+#endif
 }
 
 /*
@@ -580,6 +602,7 @@ extern list_t *cgroup_get_conf_list(void)
 
 	add_key_pair(cgroup_conf_l, "CgroupMountpoint", "%s",
 		     cg_conf->cgroup_mountpoint);
+	add_key_pair(cgroup_conf_l, "CgroupSlice", "%s", cg_conf->cgroup_slice);
 	add_key_pair_bool(cgroup_conf_l, "ConstrainCores",
 			  cg_conf->constrain_cores);
 	add_key_pair_bool(cgroup_conf_l, "ConstrainRAMSpace",
@@ -759,16 +782,16 @@ extern int cgroup_g_init(void)
 
 	type = slurm_cgroup_conf.cgroup_plugin;
 
-	if (!xstrcmp(type, "disabled")) {
-		plugin_inited = PLUGIN_NOOP;
-		goto done;
-	}
-
 	if (!xstrcmp(type, "autodetect")) {
 		if (!(type = autodetect_cgroup_version())) {
 			rc = SLURM_ERROR;
 			goto done;
 		}
+	}
+
+	if (!xstrcmp(type, "disabled")) {
+		plugin_inited = PLUGIN_NOOP;
+		goto done;
 	}
 
 	if (running_in_slurmd())
@@ -1096,4 +1119,53 @@ extern int cgroup_g_is_task_empty(uint32_t taskid)
 		return SLURM_SUCCESS;
 
 	return (*(ops.is_task_empty))(taskid);
+}
+
+extern int cgroup_g_bpf_fsopen()
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_ERROR;
+
+	return (*(ops.bpf_fsopen))();
+}
+
+extern int cgroup_g_bpf_fsconfig(int fd)
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_ERROR;
+
+	return (*(ops.bpf_fsconfig))(fd);
+}
+
+extern int cgroup_g_bpf_create_token(int fd)
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_ERROR;
+
+	return (*(ops.bpf_create_token))(fd);
+}
+
+extern int cgroup_g_bpf_get_token()
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+	if (plugin_inited == PLUGIN_NOOP)
+		return SLURM_ERROR;
+
+	return (*(ops.bpf_get_token))();
+}
+
+extern void cgroup_g_bpf_set_token(int fd)
+{
+	xassert(plugin_inited != PLUGIN_NOT_INITED);
+
+	if (plugin_inited == PLUGIN_NOOP)
+		return;
+
+	(*(ops.bpf_set_token))(fd);
 }

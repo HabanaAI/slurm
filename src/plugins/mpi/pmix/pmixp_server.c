@@ -833,8 +833,7 @@ static void _process_server_request(pmixp_base_hdr_t *hdr, buf_t *buf)
 			PMIXP_ERROR("Bad collective seq. #%d from %s:%u, current is %d",
 				    hdr->seq, nodename, hdr->nodeid, coll->seq);
 			pmixp_debug_hang(0); /* enable hang to debug this! */
-			slurm_kill_job_step(pmixp_info_jobid(),
-					    pmixp_info_stepid(), SIGKILL, 0);
+			slurm_kill_job_step(pmixp_info_step_id(), SIGKILL, 0);
 			xfree(nodename);
 			break;
 		} else if (PMIXP_COLL_REQ_SKIP == rc) {
@@ -1034,13 +1033,13 @@ send_direct:
 
 static int _abort_status = SLURM_SUCCESS;
 
-void pmixp_abort_handle(void *tls_conn)
+void pmixp_abort_handle(void *conn)
 {
 	uint32_t status;
 	int len;
 
 	/* Receive the status from stepd */
-	len = slurm_read_stream(tls_conn, (char *) &status, sizeof(status));
+	len = slurm_read_stream(conn, (char *) &status, sizeof(status));
 	if (len != sizeof(status)) {
 		PMIXP_ERROR("slurm_read_stream() failed: %m");
 		return;
@@ -1051,7 +1050,7 @@ void pmixp_abort_handle(void *tls_conn)
 	}
 
 	/* Reply back to confirm that the status was processed */
-	len = slurm_write_stream(tls_conn, (char *) &status, sizeof(status));
+	len = slurm_write_stream(conn, (char *) &status, sizeof(status));
 	if (len != sizeof(status)) {
 		PMIXP_ERROR("slurm_write_stream() failed: %m");
 		return;
@@ -1060,7 +1059,7 @@ void pmixp_abort_handle(void *tls_conn)
 
 void pmixp_abort_propagate(int status)
 {
-	void *tls_conn = NULL;
+	void *conn = NULL;
 	uint32_t status_net = htonl((uint32_t)status);
 	int len;
 	slurm_addr_t abort_server;
@@ -1080,7 +1079,7 @@ void pmixp_abort_propagate(int status)
 		       pmixp_info_srun_ip());
 
 	/* WARNING - this cannot use encryption currently */
-	if (!(tls_conn = slurm_open_msg_conn(&abort_server, NULL))) {
+	if (!(conn = slurm_open_msg_conn(&abort_server, NULL))) {
 		PMIXP_ERROR("slurm_open_stream() failed: %m");
 		PMIXP_ERROR("Connecting to abort agent failed: %s:%d",
 			    pmixp_info_srun_ip(),
@@ -1088,7 +1087,7 @@ void pmixp_abort_propagate(int status)
 		return;
 	}
 
-	len = slurm_write_stream(tls_conn, (char *) &status_net,
+	len = slurm_write_stream(conn, (char *) &status_net,
 				 sizeof(status_net));
 	if (len != sizeof(status_net)) {
 		PMIXP_ERROR("slurm_write_stream() failed: %m");
@@ -1098,8 +1097,7 @@ void pmixp_abort_propagate(int status)
 		goto close_fd;
 	}
 
-	len = slurm_read_stream(tls_conn, (char *) &status_net,
-				sizeof(status_net));
+	len = slurm_read_stream(conn, (char *) &status_net, sizeof(status_net));
 	if (len != sizeof(status_net)) {
 		PMIXP_ERROR("slurm_read_stream() failed: %m");
 		PMIXP_ERROR("Communicating with abort agent failed: %s:%d",
@@ -1109,7 +1107,7 @@ void pmixp_abort_propagate(int status)
 	}
 	xassert(status_net == htonl((uint32_t)status));
 close_fd:
-	conn_g_destroy(tls_conn, true);
+	conn_g_destroy(conn, true);
 }
 
 int pmixp_abort_code_get(void)

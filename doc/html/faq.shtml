@@ -2067,12 +2067,15 @@ as that described above for the slurmd daemon. If it is running in an
 unprivileged phase, it will be in the spawned job's working directory.</p>
 
 
-<p>Nevertheless, in some operating systems this can vary:</p>
+<p>Nevertheless, in some operating systems this can vary, for example:</p>
 <ul>
 <li>
-I.e. in RHEL the event
-may be captured by abrt daemon and generated in the defined abrt configured
-dump location (i.e. /var/spool/abrt).
+In RHEL the event may be captured by the abrt daemon and generated in the
+configured dump location (e.g., /var/spool/abrt).
+</li>
+<li>
+In Ubuntu the event may be captured by the apport daemon and generated in the
+configured dump location (e.g., /var/lib/apport).
 </li>
 </ul>
 
@@ -2154,7 +2157,7 @@ backtrace of that crash to send to SchedMD for evaluation.</p>
 <p><b>NOTE</b>: Core files must be analyzed by the same binary that was used
 when they were generated. Compile time differences make it almost impossible
 for SchedMD to use a core file from a different system. You should always
-send a backtrace rather than a core file when sumitting a support request.</p>
+send a backtrace rather than a core file when submitting a support request.</p>
 
 <p>In order to generate a backtrace you must use <i>gdb</i>, specify the
 path to the <i>slurm*</i> binary that generated the crash, and specify the
@@ -2422,7 +2425,5 @@ dset TV::parallel_configs {
 	force_env: false;
 }
 !-->
-
-<p style="text-align:center;">Last modified 09 May 2025</p>
 
 <!--#include virtual="footer.txt"-->

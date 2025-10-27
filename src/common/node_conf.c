@@ -268,6 +268,7 @@ static int _check_callback(char *alias, char *hostname,
 	node_rec->cpu_bind  = node_ptr->cpu_bind;
 	node_rec->node_hostname = xstrdup(hostname);
 	node_rec->bcast_address = xstrdup(bcast_address);
+	node_rec->parameters = xstrdup(node_ptr->parameters);
 	node_rec->port      = port;
 	node_rec->features  = xstrdup(node_ptr->feature);
 	node_rec->reason    = xstrdup(node_ptr->reason);
@@ -1266,8 +1267,11 @@ extern int node_name2bitmap(char *node_names, bool test_alias,
 	}
 
 	while ((this_node_name = hostlist_shift(host_list))) {
-		rc = _single_node_name2bitmap(this_node_name, test_alias,
-					      *bitmap, invalid_hostlist);
+		int tmp_rc;
+		if ((tmp_rc = _single_node_name2bitmap(this_node_name,
+						       test_alias, *bitmap,
+						       invalid_hostlist)))
+			rc = tmp_rc;
 		free(this_node_name);
 	}
 	hostlist_destroy(host_list);
@@ -1359,12 +1363,14 @@ extern void purge_node_rec(void *in)
 	xfree(node_ptr->node_hostname);
 	FREE_NULL_BITMAP(node_ptr->node_spec_bitmap);
 	xfree(node_ptr->os);
+	xfree(node_ptr->parameters);
 	xfree(node_ptr->part_pptr);
 	xfree(node_ptr->reason);
 	xfree(node_ptr->resv_name);
 	xfree(node_ptr->version);
 	acct_gather_energy_destroy(node_ptr->energy);
 	xfree(node_ptr->topology_str);
+	xfree(node_ptr->topology_orig_str);
 	xfree(node_ptr->tres_str);
 	xfree(node_ptr->tres_fmt_str);
 	xfree(node_ptr->tres_cnt);
@@ -1629,7 +1635,61 @@ static void _node_record_pack(void *in, uint16_t protocol_version,
 {
 	node_record_t *object = in;
 
-	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		pack_time(object->cert_last_renewal, buffer);
+
+		if (pack_secrets)
+			packstr(object->cert_token, buffer);
+		else if (object->cert_token)
+			packstr("set", buffer);
+		else
+			packnull(buffer);
+
+		packstr(object->comm_name, buffer);
+		packstr(object->name, buffer);
+		packstr(object->node_hostname, buffer);
+		packstr(object->comment, buffer);
+		packstr(object->extra, buffer);
+		packstr(object->reason, buffer);
+		packstr(object->features, buffer);
+		packstr(object->features_act, buffer);
+		packstr(object->gres, buffer);
+		packstr(object->instance_id, buffer);
+		packstr(object->instance_type, buffer);
+		packstr(object->cpu_spec_list, buffer);
+		pack32(object->next_state, buffer);
+		pack32(object->node_state, buffer);
+		pack32(object->cpu_bind, buffer);
+		pack16(object->cpus, buffer);
+		pack16(object->boards, buffer);
+		pack16(object->tot_cores, buffer);
+		pack16(object->tot_sockets, buffer);
+		pack16(object->cores, buffer);
+		pack16(object->core_spec_cnt, buffer);
+		pack64(object->mem_spec_limit, buffer);
+		pack16(object->threads, buffer);
+		pack64(object->real_memory, buffer);
+		pack16(object->res_cores_per_gpu, buffer);
+		pack_bit_str_hex(object->gpu_spec_bitmap, buffer);
+		pack32(object->tmp_disk, buffer);
+		packstr(object->topology_str, buffer);
+		packstr(object->topology_orig_str, buffer);
+		pack32(object->reason_uid, buffer);
+		pack_time(object->reason_time, buffer);
+		pack_time(object->resume_after, buffer);
+		pack_time(object->boot_req_time, buffer);
+		pack_time(object->power_save_req_time, buffer);
+		pack_time(object->last_busy, buffer);
+		pack_time(object->last_response, buffer);
+		packstr(object->parameters, buffer);
+		pack16(object->port, buffer);
+		pack16(object->protocol_version, buffer);
+		pack16(object->tpc, buffer);
+		packstr(object->mcs_label, buffer);
+		(void) gres_node_state_pack(object->gres_list, buffer,
+					    protocol_version);
+		pack32(object->weight, buffer);
+	} else if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
 		pack_time(object->cert_last_renewal, buffer);
 
 		if (pack_secrets)
@@ -1789,7 +1849,57 @@ extern int node_record_unpack(void **out,
 	node_record_t *object = xmalloc(sizeof(*object));
 	object->magic = NODE_MAGIC;
 	*out = object;
-	if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
+
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		safe_unpack_time(&object->cert_last_renewal, buffer);
+		safe_unpackstr(&object->cert_token, buffer);
+		safe_unpackstr(&object->comm_name, buffer);
+		safe_unpackstr(&object->name, buffer);
+		safe_unpackstr(&object->node_hostname, buffer);
+		safe_unpackstr(&object->comment, buffer);
+		safe_unpackstr(&object->extra, buffer);
+		safe_unpackstr(&object->reason, buffer);
+		safe_unpackstr(&object->features, buffer);
+		safe_unpackstr(&object->features_act, buffer);
+		safe_unpackstr(&object->gres, buffer);
+		safe_unpackstr(&object->instance_id, buffer);
+		safe_unpackstr(&object->instance_type, buffer);
+		safe_unpackstr(&object->cpu_spec_list, buffer);
+		safe_unpack32(&object->next_state, buffer);
+		safe_unpack32(&object->node_state, buffer);
+		safe_unpack32(&object->cpu_bind, buffer);
+		safe_unpack16(&object->cpus, buffer);
+		safe_unpack16(&object->boards, buffer);
+		safe_unpack16(&object->tot_cores, buffer);
+		safe_unpack16(&object->tot_sockets, buffer);
+		safe_unpack16(&object->cores, buffer);
+		safe_unpack16(&object->core_spec_cnt, buffer);
+		safe_unpack64(&object->mem_spec_limit, buffer);
+		safe_unpack16(&object->threads, buffer);
+		safe_unpack64(&object->real_memory, buffer);
+		safe_unpack16(&object->res_cores_per_gpu, buffer);
+		unpack_bit_str_hex(&object->gpu_spec_bitmap, buffer);
+		safe_unpack32(&object->tmp_disk, buffer);
+		safe_unpackstr(&object->topology_str, buffer);
+		safe_unpackstr(&object->topology_orig_str, buffer);
+		safe_unpack32(&object->reason_uid, buffer);
+		safe_unpack_time(&object->reason_time, buffer);
+		safe_unpack_time(&object->resume_after, buffer);
+		safe_unpack_time(&object->boot_req_time, buffer);
+		safe_unpack_time(&object->power_save_req_time, buffer);
+		safe_unpack_time(&object->last_busy, buffer);
+		safe_unpack_time(&object->last_response, buffer);
+		safe_unpackstr(&object->parameters, buffer);
+		safe_unpack16(&object->port, buffer);
+		safe_unpack16(&object->protocol_version, buffer);
+		safe_unpack16(&object->tpc, buffer);
+		safe_unpackstr(&object->mcs_label, buffer);
+		if (gres_node_state_unpack(&object->gres_list, buffer,
+					   object->name,
+					   protocol_version) != SLURM_SUCCESS)
+			goto unpack_error;
+		safe_unpack32(&object->weight, buffer);
+	} else if (protocol_version >= SLURM_25_05_PROTOCOL_VERSION) {
 		safe_unpack_time(&object->cert_last_renewal, buffer);
 		safe_unpackstr(&object->cert_token, buffer);
 		safe_unpackstr(&object->comm_name, buffer);

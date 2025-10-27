@@ -120,7 +120,7 @@ static const struct luaL_Reg slurm_functions[] = {
  *   let alone called from multiple threads. Therefore, locking
  *   is unnecessary here.
  */
-int init(void)
+extern int init(void)
 {
 	int rc = SLURM_SUCCESS;
 
@@ -131,7 +131,10 @@ int init(void)
 
 	stored_data = xcalloc(24, sizeof(char *));
 	stored_sz = 24;
-	lua_script_path = get_extra_conf_path("cli_filter.lua");
+
+	if (!(lua_script_path = conf_get_opt_str(slurm_conf.cli_filter_params,
+						 "cli_filter_lua_path=")))
+		lua_script_path = get_extra_conf_path("cli_filter.lua");
 
 	return slurm_lua_loadscript(&L, "cli_filter/lua",
 				    lua_script_path, req_fxns,
@@ -139,7 +142,7 @@ int init(void)
 				    NULL);
 }
 
-int fini(void)
+extern void fini(void)
 {
 	for (int i = 0; i < stored_n; i++)
 		xfree(stored_data[i]);
@@ -149,8 +152,6 @@ int fini(void)
 	lua_close(L);
 
 	slurm_lua_fini();
-
-	return SLURM_SUCCESS;
 }
 
 static int _setup_stringarray(lua_State *st, int limit, char **data) {

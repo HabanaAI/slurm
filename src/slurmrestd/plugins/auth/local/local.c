@@ -54,11 +54,13 @@
 
 #include "src/common/data.h"
 #include "src/common/log.h"
-#include "src/interfaces/auth.h"
+#include "src/common/slurm_protocol_defs.h"
 #include "src/common/uid.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/auth.h"
 
 #include "src/slurmrestd/rest_auth.h"
 
@@ -134,15 +136,16 @@ static int _auth_socket(on_http_request_args_t *args,
 			const char *header_user_name)
 {
 	int rc;
-	const char *name = conmgr_fd_get_name(args->context->con);
-	uid_t cred_uid;
-	gid_t cred_gid;
-	pid_t cred_pid;
+	const char *name = args->name;
+	conmgr_fd_t *con = conmgr_fd_get_ref(args->con);
+	uid_t cred_uid = SLURM_AUTH_NOBODY;
+	gid_t cred_gid = SLURM_AUTH_NOBODY;
+	pid_t cred_pid = 0;
 
 	xassert(!ctxt->user_name);
 
-	if ((rc = conmgr_get_fd_auth_creds(args->context->con, &cred_uid,
-					   &cred_gid, &cred_pid))) {
+	if ((rc = conmgr_get_fd_auth_creds(con, &cred_uid, &cred_gid,
+					   &cred_pid))) {
 		/* socket may be remote, local auth doesn't apply */
 		debug("%s: [%s] unable to get socket ownership: %s",
 		      __func__, name, slurm_strerror(rc));
@@ -245,14 +248,25 @@ extern int slurm_rest_auth_p_authenticate(on_http_request_args_t *args,
 	struct stat status = { 0 };
 	const char *header_user_name = find_http_header(args->headers,
 							HTTP_HEADER_USER_NAME);
-	const conmgr_fd_status_t cstatus =
-		conmgr_fd_get_status(args->context->con);
-	const int input_fd = conmgr_fd_get_input_fd(args->context->con);
-	const int output_fd = conmgr_fd_get_output_fd(args->context->con);
-	const char *name = conmgr_fd_get_name(args->context->con);
+	conmgr_fd_t *con = conmgr_fd_get_ref(args->con);
+	const conmgr_fd_status_t cstatus = conmgr_fd_get_status(con);
+	const char *name = args->name;
+	int rc = EINVAL, input_fd = -1, output_fd = -1;
 
 	xassert(!ctxt->user_name);
 
+	if ((rc = conmgr_con_get_input_fd(args->con, &input_fd))) {
+		debug3("%s: [%s] skipping auth local with invalid input_fd: %s",
+		       __func__, conmgr_con_get_name(args->con),
+		       slurm_strerror(rc));
+		return ESLURM_AUTH_SKIP;
+	}
+	if ((rc = conmgr_con_get_output_fd(args->con, &output_fd))) {
+		debug3("%s: [%s] skipping auth local with invalid output_fd: %s",
+		       __func__, conmgr_con_get_name(args->con),
+		       slurm_strerror(rc));
+		return ESLURM_AUTH_SKIP;
+	}
 	if ((input_fd < 0) || (output_fd < 0)) {
 		/* local auth requires there to be a valid fd */
 		debug3("%s: skipping auth local with invalid input_fd:%u output_fd:%u",

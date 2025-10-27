@@ -3,7 +3,8 @@
 <h1>Advanced Resource Reservation Guide</h1>
 
 <p>Slurm has the ability to reserve resources for jobs
-being executed by select users and/or select bank accounts.
+being executed by select users and/or QOS and/or partitions and/or select
+accounts.
 A resource reservation identifies the resources in that reservation
 and a time period during which the reservation is available.
 The resources which can be reserved include cores, nodes, licenses and/or
@@ -173,8 +174,9 @@ $ scontrol create reservation StartTime=now Duration=60 \
   Nodes=tux8,tux9 CoreCnt=2,4 User=brenda
 </pre>
 
-<p>Reservations can not only be created for the use of specific accounts and
-users, but specific accounts and/or users can be prevented from using them.
+<p>Reservations can not only be created for the use of specific accounts and/or
+QOS and/or partitions and/or users, but specific accounts and/or QOS and/or
+partitions and/or users can be prevented from using them.
 In the following example, a reservation is created for account "foo", but user
 "alan" is prevented from using the reservation even when using the account
 "foo".</p>
@@ -222,6 +224,12 @@ ReservationName=test StartTime=2020-08-28T11:07:09
    State=ACTIVE BurstBuffer=(null)
    MaxStartDelay=(null)
 </pre>
+
+<p>Prior to version 25.05, if a reservation used user- or group-based access
+controls and slurmctld ever failed to validate the user(s) or group(s), it would
+delete the reservation. With the release of 25.05 this behavior was changed to
+leave the reservation in place and wait for the users/groups to be able to be
+validated again, making reservations resilient to temporary validation outages.</p>
 
 <h2 id="use">Reservation Use<a class="slurm_link" href="#use"></a></h2>
 
@@ -505,8 +513,8 @@ of its start time or it will be purged before any jobs have been run.</p>
 </h2>
 
 <p>Jobs executed within a reservation are accounted for using the appropriate
-user and bank account. If resources within a reservation are not used, those
-resources will be accounted for as being used by all users or bank accounts
+user and account. If resources within a reservation are not used, those
+resources will be accounted for as being used by all users or accounts
 associated with the reservation on an equal basis (e.g. if two users are
 eligible to use a reservation and neither does, each user will be reported
 to have used half of the reserved resources).</p>
@@ -528,7 +536,5 @@ the highest level rather than the actual level of time-slicing when
 considering the initiation of jobs.
 This will prevent the initiation of some jobs which would complete execution
 before a reservation given fewer jobs to time-slice with.</p>
-
-<p style="text-align: center;">Last modified 02 August 2024</p>
 
 <!--#include virtual="footer.txt"-->

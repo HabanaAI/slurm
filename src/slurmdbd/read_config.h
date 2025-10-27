@@ -53,6 +53,7 @@
 #define DEFAULT_SLURMDBD_KEEPALIVE_INTERVAL 30
 #define DEFAULT_SLURMDBD_KEEPALIVE_PROBES 3
 #define DEFAULT_SLURMDBD_KEEPALIVE_TIME 30
+#define DEFAULT_SLURMDBD_MAX_PURGE_LIMIT 50000
 //#define DEFAULT_SLURMDBD_STEP_PURGE	1
 
 /* Define slurmdbd_conf_t flags */
@@ -60,6 +61,7 @@
 #define DBD_CONF_FLAG_ALL_RES_ABS SLURM_BIT(1)
 #define DBD_CONF_FLAG_DISABLE_COORD_DBD SLURM_BIT(2)
 #define DBD_CONF_FLAG_GET_DBVER SLURM_BIT(3)
+#define DBD_CONF_FLAG_DISABLE_ARCHIVE_COMMANDS SLURM_BIT(4)
 
 /* SlurmDBD configuration parameters */
 typedef struct {
@@ -78,6 +80,9 @@ typedef struct {
 					 * adding clusters              */
 	uint32_t flags;			/* Various flags see DBD_CONF_FLAG_* */
 	char *		log_file;	/* Log file			*/
+	uint32_t max_purge_limit; /* max number of records that are purged in a
+				   * single query so that locks can be
+				   * periodically released */
 	uint32_t	max_time_range;	/* max time range for user queries */
 	char *		parameters;	/* parameters to change behavior with
 					 * the slurmdbd directly	*/
@@ -99,6 +104,7 @@ typedef struct {
 	uint32_t        purge_usage;    /* purge usage data older
 					 * than this in months or days	*/
 	char *		storage_loc;	/* database name		*/
+	char *storage_pass_script;
 	char *storage_user;
 	uint16_t	syslog_debug;	/* output to both logfile and syslog*/
 	uint16_t        track_wckey;    /* Whether or not to track wckey*/

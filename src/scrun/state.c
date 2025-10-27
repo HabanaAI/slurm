@@ -103,7 +103,7 @@ extern void check_state(void)
 			xassert(state.anchor_socket && state.anchor_socket[0]);
 			break;
 		case CONTAINER_ST_CREATED :
-			xassert(state.jobid > 0);
+			xassert(state.step_id.job_id != NO_VAL);
 			xassert(!stat(state.root_path, &statbuf));
 			xassert(!stat(state.anchor_socket, &statbuf));
 			xassert(!stat(state.config_file, &statbuf));
@@ -119,7 +119,7 @@ extern void check_state(void)
 			/* fall through */
 		case CONTAINER_ST_RUNNING :
 			xassert(state.user_id != SLURM_AUTH_NOBODY);
-			xassert(state.jobid > 0);
+			xassert(state.step_id.job_id != NO_VAL);
 			xassert(!state.srun_rc);
 			xassert(!state.srun_exited);
 			xassert(!state.spool_dir ||
@@ -159,6 +159,8 @@ extern void init_state(void)
 
 	state.status = CONTAINER_ST_UNKNOWN;
 	state.pid_file_fd = -1;
+
+	state.step_id = SLURM_STEP_ID_INITIALIZER;
 }
 
 extern void destroy_state(void)
@@ -199,8 +201,12 @@ static int _get_job_step_state(slurm_job_info_t *job)
 	/* job is running so we must see if there is a step */
 	int rc;
 	job_step_info_response_msg_t *resp = NULL;
+	slurm_step_id_t step_id = job->step_id;
 
-	rc = slurm_get_job_steps(0, job->job_id, 0, &resp, 0);
+	/* maintain existing behavior of always querying step 0 */
+	step_id.step_id = 0;
+
+	rc = slurm_get_job_steps(&step_id, &resp, 0);
 
 	if (rc) {
 		/* query failed...job may have just died */
@@ -285,7 +291,7 @@ static int _get_job_state()
 	xassert(!xstrcmp(job->name, state.id));
 
 	/* note the job id in case we want to kill the job */
-	state.jobid = job->job_id;
+	state.step_id = job->step_id;
 
 	switch (job->job_state)
 	{
@@ -311,8 +317,8 @@ static int _get_job_state()
 		xassert(false);
 	}
 
-	debug2("%s: query slurmctld for %pS for %s found JobId=%u: %s -> %s",
-	       __func__, &step, state.id, job->job_id,
+	debug2("%s: query slurmctld for %pS for %s found %pI: %s -> %s",
+	       __func__, &step, state.id, &job->step_id,
 	       job_state_string(job->job_state),
 	       slurm_container_status_to_str(state.status));
 

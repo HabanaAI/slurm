@@ -87,7 +87,6 @@
 #define	bit_set_count		slurm_bit_set_count
 #define	bit_set_count_range	slurm_bit_set_count_range
 #define	bit_clear_count		slurm_bit_clear_count
-#define	bit_nset_max_count	slurm_bit_nset_max_count
 #define	bit_rotate_copy		slurm_bit_rotate_copy
 #define	bit_rotate		slurm_bit_rotate
 #define	bit_fmt			slurm_bit_fmt
@@ -106,9 +105,6 @@
 #define	bit_copy		slurm_bit_copy
 #define	bit_equal		slurm_bit_equal
 #define	bit_pick_cnt		slurm_bit_pick_cnt
-#define bit_nffc		slurm_bit_nffc
-#define bit_noc			slurm_bit_noc
-#define bit_nffs		slurm_bit_nffs
 #define bit_copybits		slurm_bit_copybits
 #define	bit_get_bit_num		slurm_bit_get_bit_num
 
@@ -118,6 +114,7 @@
 #define fd_set_blocking		slurm_fd_set_blocking
 #define fd_set_nonblocking	slurm_fd_set_nonblocking
 #define fd_get_socket_error	slurm_fd_get_socket_error
+#define fd_get_readable_bytes slurm_fd_get_readable_bytes
 #define send_fd_over_socket	slurm_send_fd_over_socket
 #define receive_fd_over_socket	slurm_receive_fd_over_socket
 #define rmdir_recursive		slurm_rmdir_recursive
@@ -559,6 +556,18 @@
 
 /* run_command.[ch] functions */
 #define run_command slurm_run_command
+
+/* http_parser.[ch] functions */
+#define http_parser_g_init slurm_http_parser_g_init
+#define http_parser_g_fini slurm_http_parser_g_fini
+#define http_parser_g_new_parse_request slurm_http_parser_g_new_parse_request
+#define http_parser_g_free_parse_request slurm_http_parser_g_free_parse_request
+#define http_parser_g_parse_request slurm_http_parser_g_parse_request
+
+/* url_parser.[ch] functions */
+#define url_parser_g_init slurm_url_parser_g_init
+#define url_parser_g_fini slurm_url_parser_g_fini
+#define url_parser_g_parse slurm_url_parser_g_parse
 
 #endif /* USE_ALIAS */
 

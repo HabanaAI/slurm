@@ -408,8 +408,7 @@ extern void deallocate_nodes(job_record_t *job_ptr, bool timeout,
 				     (node_ptr = next_node_bitmap(
 					     job_ptr->node_bitmap_cg, &i));
 			     i++) {
-				job_epilog_complete(job_ptr->job_id,
-						    node_ptr->name, 0);
+				job_epilog_complete(job_ptr, node_ptr->name, 0);
 			}
 		}
 
@@ -1785,17 +1784,19 @@ static int _pick_best_nodes(struct node_set *node_set_ptr, int node_set_size,
 				if (shared) {
 					bit_and(node_set_ptr[i].my_bitmap,
 						share_node_bitmap);
-					bit_and_not(node_set_ptr[i].my_bitmap,
-						    cg_node_bitmap);
 				} else {
 					bit_and(node_set_ptr[i].my_bitmap,
 						idle_node_bitmap);
-					/* IDLE nodes are not COMPLETING */
 				}
-			} else {
-				bit_and_not(node_set_ptr[i].my_bitmap,
-					    cg_node_bitmap);
 			}
+
+			/*
+			 * Always exclude completing nodes. Some nodes may be
+			 * idle, but still completing if a job with expedited
+			 * requeue enabled is waiting for additional epilog
+			 * completions before deciding to requeue or not.
+			 */
+			bit_and_not(node_set_ptr[i].my_bitmap, cg_node_bitmap);
 
 			/*
 			 * We must skip the node *only* in the case it is
@@ -2858,6 +2859,13 @@ extern int select_nodes(job_node_select_t *job_node_select,
 		goto cleanup;
 	}
 
+	if (switch_g_job_start(job_ptr, true) != SLURM_SUCCESS) {
+		error_code = ESLURM_NODES_BUSY;
+		/* switch_g_job_start should set job_ptr->state_reason */
+		xfree(job_ptr->state_desc);
+		goto cleanup;
+	}
+
 	if (test_only) {	/* set if job not highest priority */
 		error_code = SLURM_SUCCESS;
 		goto cleanup;
@@ -3022,7 +3030,7 @@ extern int select_nodes(job_node_select_t *job_node_select,
 	jobacct_storage_g_job_start(acct_db_conn, job_ptr);
 
 	jobcomp_g_record_job_start(job_ptr);
-	switch_g_job_start(job_ptr);
+	(void) switch_g_job_start(job_ptr, false);
 	prolog_slurmctld(job_ptr);
 	reboot_job_nodes(job_ptr);
 	gs_job_start(job_ptr);
@@ -3231,7 +3239,7 @@ extern void launch_prolog(job_record_t *job_ptr)
 	prolog_msg_ptr->job_gres_prep =
 		 gres_g_prep_build_env(job_ptr->gres_list_alloc,
 				       job_ptr->nodes);
-	prolog_msg_ptr->job_id = job_ptr->job_id;
+	prolog_msg_ptr->deprecated.job_id = job_ptr->job_id;
 	prolog_msg_ptr->het_job_id = job_ptr->het_job_id;
 	prolog_msg_ptr->uid = job_ptr->user_id;
 	prolog_msg_ptr->gid = job_ptr->group_id;
@@ -3303,9 +3311,8 @@ extern void launch_prolog(job_record_t *job_ptr)
 	xassert(job_ptr->job_resrcs);
 	job_resrcs_ptr = job_ptr->job_resrcs;
 	setup_cred_arg(&cred_arg, job_ptr);
-	cred_arg.step_id.job_id = job_ptr->job_id;
+	cred_arg.step_id = STEP_ID_FROM_JOB_RECORD(job_ptr);
 	cred_arg.step_id.step_id = SLURM_EXTERN_CONT;
-	cred_arg.step_id.step_het_comp = NO_VAL;
 	if (job_resrcs_ptr->memory_allocated) {
 		slurm_array64_to_value_reps(job_resrcs_ptr->memory_allocated,
 					    job_resrcs_ptr->nhosts,
@@ -3317,11 +3324,18 @@ extern void launch_prolog(job_record_t *job_ptr)
 	cred_arg.step_core_bitmap    = job_resrcs_ptr->core_bitmap;
 	cred_arg.step_hostlist = job_ptr->job_resrcs->nodes;
 
-	switch_g_extern_stepinfo(&cred_arg.switch_step, job_ptr);
+	if (!switch_g_setup_special_steps() ||
+	    (switch_g_stepinfo_build(
+		    (dynamic_plugin_data_t **) &cred_arg.switch_step,
+		    job_ptr->switch_jobinfo,
+		    NULL) == SLURM_SUCCESS)) {
+		prolog_msg_ptr->cred = slurm_cred_create(
+			&cred_arg,
+			false,
+			protocol_version);
+	}
 
-	prolog_msg_ptr->cred = slurm_cred_create(&cred_arg, false,
-						 protocol_version);
-	switch_g_free_stepinfo(cred_arg.switch_step);
+	switch_g_stepinfo_free(cred_arg.switch_step);
 	xfree(cred_arg.job_mem_alloc);
 	xfree(cred_arg.job_mem_alloc_rep_count);
 
