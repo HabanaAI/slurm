@@ -132,8 +132,10 @@ static char *_get_gpu_type(void)
 #endif
 	} else if (autodetect_flags & GRES_AUTODETECT_GPU_HLML) {
 #ifdef HAVE_HLML
-		if (!dlopen("libhlml.so", RTLD_NOW | RTLD_GLOBAL))
-			info("Configured with hlml, but that lib wasn't found.");
+		if (!(ext_lib_handle = dlopen("libhlml.so",
+						RTLD_NOW | RTLD_GLOBAL)))
+			info("Configured with hlml, but that lib wasn't found. %s", 
+			     dlerror());
 		else
 			return "gpu/hlml";
 #else
