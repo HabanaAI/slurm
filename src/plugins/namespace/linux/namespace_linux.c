@@ -77,7 +77,7 @@ const char plugin_name[] = "namespace linux plugin";
 const char plugin_type[] = "namespace/linux";
 const uint32_t plugin_version = SLURM_VERSION_NUMBER;
 
-static slurm_ns_conf_t *ns_conf = NULL;
+static ns_conf_t *ns_conf = NULL;
 static bool plugin_disabled = false;
 
 /* NS_L_NS must be last */
@@ -196,7 +196,7 @@ extern int init(void)
 			return SLURM_ERROR;
 		}
 		plugin_disabled = _is_plugin_disabled(ns_conf->basepath);
-		debug("namespace.conf read successfully");
+		debug("namespace.yaml read successfully");
 	}
 
 	debug("%s loaded", plugin_name);
@@ -209,6 +209,8 @@ extern void fini(void)
 #ifdef MEMORY_LEAK_DEBUG
 	for (int i = 0; i < NS_L_END; i++) {
 		xfree(ns_l_enabled[i].path);
+		if (ns_l_enabled[i].fd >= 0)
+			close(ns_l_enabled[i].fd);
 	}
 	free_ns_conf();
 #endif
@@ -305,15 +307,48 @@ static int _mount_private_dirs(char *path, uid_t uid)
 			      __func__, mount_path);
 			goto private_mounts_exit;
 		}
+		if (mount(mount_path, token, NULL, MS_BIND, NULL)) {
+			error("%s: %s mount failed, %m", __func__, token);
+			rc = -1;
+			goto private_mounts_exit;
+		}
+		token = strtok_r(NULL, ",", &save_ptr);
+		xfree(mount_path);
+	}
+
+private_mounts_exit:
+	xfree(buffer);
+	xfree(mount_path);
+	return rc;
+}
+
+static int _chown_private_dirs(char *path, uid_t uid)
+{
+	char *buffer = NULL, *mount_path = NULL, *save_ptr = NULL, *token;
+	int rc = 0;
+
+	if (!path) {
+		error("%s: no path to private directories specified.",
+		      __func__);
+		return -1;
+	}
+	buffer = xstrdup(ns_conf->dirs);
+	token = strtok_r(buffer, ",", &save_ptr);
+	while (token) {
+		/* skip /dev/shm, this is handled elsewhere */
+		if (!xstrcmp(token, "/dev/shm")) {
+			token = strtok_r(NULL, ",", &save_ptr);
+			continue;
+		}
+		xstrfmtcat(mount_path, "%s/%s", path, token);
+		for (char *t = mount_path + strlen(path) + 1; *t; t++) {
+			if (*t == '/')
+				*t = '_';
+		}
 		rc = lchown(mount_path, uid, -1);
 		if (rc) {
 			error("%s: lchown failed for %s: %m",
 			      __func__, mount_path);
-			goto private_mounts_exit;
-		}
-		if (mount(mount_path, token, NULL, MS_BIND, NULL)) {
-			error("%s: %s mount failed, %m", __func__, token);
-			rc = -1;
 			goto private_mounts_exit;
 		}
 		token = strtok_r(NULL, ",", &save_ptr);
@@ -395,6 +430,9 @@ static char **_setup_script_env(uint32_t job_id, stepd_step_rec_t *step,
 		if (step->cwd)
 			env_array_overwrite_fmt(&env, "SLURM_JOB_WORK_DIR",
 						"%s", step->cwd);
+		if (step->job_mem)
+			env_array_overwrite_fmt(&env, "SLURM_JOB_MEM",
+						"%" PRIu64, step->job_mem);
 	}
 
 	if (ns_base)
@@ -414,18 +452,12 @@ static pid_t sys_clone(unsigned long flags, int *parent_tid, int *child_tid,
 }
 
 static void _create_ns_child(stepd_step_rec_t *step, char *src_bind,
-			     char *job_mount, sem_t *sem1, sem_t *sem2,
-			     sem_t *sem3)
+			     char *job_mount, sem_t *sem1, sem_t *sem2)
 {
 	char *argv[4] = { (char *) conf->stepd_loc, "ns_infinity", NULL, NULL };
 	int rc = 0;
 
-	if (sem_post(sem1) < 0) {
-		error("%s: sem_post failed: %m", __func__);
-		rc = -1;
-		goto child_exit;
-	}
-	if (sem_wait(sem2) < 0) {
+	if (sem_wait(sem1) < 0) {
 		error("%s: sem_wait failed %m", __func__);
 		rc = -1;
 		goto child_exit;
@@ -470,18 +502,6 @@ static void _create_ns_child(stepd_step_rec_t *step, char *src_bind,
 	}
 
 	/*
-	 * this happens when restarting the slurmd, the ownership should
-	 * already be correct here.
-	 */
-	rc = chown(src_bind, step->uid, -1);
-	if (rc) {
-		error("%s: chown failed for %s: %m",
-		      __func__, src_bind);
-		rc = -1;
-		goto child_exit;
-	}
-
-	/*
 	 * switch/nvidia_imex needs to create an ephemeral device
 	 * node under /dev in this new namespace.
 	 */
@@ -496,7 +516,7 @@ static void _create_ns_child(stepd_step_rec_t *step, char *src_bind,
 		goto child_exit;
 	}
 
-	if (sem_post(sem3) < 0) {
+	if (sem_post(sem2) < 0) {
 		error("%s: sem_post failed: %m", __func__);
 		goto child_exit;
 	}
@@ -505,8 +525,6 @@ static void _create_ns_child(stepd_step_rec_t *step, char *src_bind,
 	munmap(sem1, sizeof(*sem1));
 	sem_destroy(sem2);
 	munmap(sem2, sizeof(*sem2));
-	sem_destroy(sem3);
-	munmap(sem3, sizeof(*sem3));
 
 	/* become an infinity process */
 	xstrfmtcat(argv[2], "%u", step->step_id.job_id);
@@ -517,13 +535,11 @@ static void _create_ns_child(stepd_step_rec_t *step, char *src_bind,
 
 child_exit:
 	/* Do a final post to prevent from waiting on errors */
-	sem_post(sem3);
+	sem_post(sem2);
 	sem_destroy(sem1);
 	munmap(sem1, sizeof(*sem1));
 	sem_destroy(sem2);
 	munmap(sem2, sizeof(*sem2));
-	sem_destroy(sem3);
-	munmap(sem3, sizeof(*sem3));
 
 	exit(rc);
 }
@@ -575,7 +591,8 @@ static int _clonens_user_setup(stepd_step_rec_t *step, pid_t pid)
 		rc = SLURM_ERROR;
 		goto end_it;
 	}
-	close(fd);
+	if (fd >= 0)
+		close(fd);
 	xfree(tmpstr);
 
 	xstrfmtcat(tmpstr, "/proc/%d/gid_map", pid);
@@ -592,7 +609,7 @@ static int _clonens_user_setup(stepd_step_rec_t *step, pid_t pid)
 	}
 
 end_it:
-	if (fd)
+	if (fd >= 0)
 		close(fd);
 	xfree(tmpstr);
 	return rc;
@@ -608,7 +625,6 @@ static int _create_ns(stepd_step_rec_t *step)
 	unsigned long tls = 0;
 	sem_t *sem1 = NULL;
 	sem_t *sem2 = NULL;
-	sem_t *sem3 = NULL;
 	pid_t cpid;
 
 	_create_paths(step->step_id.job_id, &job_mount, &ns_base, &src_bind);
@@ -657,6 +673,20 @@ static int _create_ns(stepd_step_rec_t *step)
 		close(fd);
 	}
 
+	/* Create location for bind mounts to go */
+	rc = mkdir(src_bind, 0700);
+	if (rc && (errno != EEXIST)) {
+		error("%s: mkdir failed %s, %m", __func__, src_bind);
+		goto exit2;
+	}
+
+	if (chown(src_bind, step->uid, -1)) {
+		error("%s: chown failed for %s: %m",
+		      __func__, src_bind);
+		rc = -1;
+		goto exit2;
+	}
+
 	/* run any initialization script- if any*/
 	if (ns_conf->initscript) {
 		run_command_args_t run_command_args = {
@@ -681,12 +711,6 @@ static int _create_ns(stepd_step_rec_t *step)
 		}
 	}
 
-	rc = mkdir(src_bind, 0700);
-	if (rc && (errno != EEXIST)) {
-		error("%s: mkdir failed %s, %m", __func__, src_bind);
-		goto exit2;
-	}
-
 	sem1 = mmap(NULL, sizeof(*sem1), PROT_READ | PROT_WRITE,
 		    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	if (sem1 == MAP_FAILED) {
@@ -705,18 +729,6 @@ static int _create_ns(stepd_step_rec_t *step)
 		goto exit2;
 	}
 
-	sem3 = mmap(NULL, sizeof(*sem3), PROT_READ | PROT_WRITE,
-		    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	if (sem3 == MAP_FAILED) {
-		error("%s: mmap failed: %m", __func__);
-		sem_destroy(sem1);
-		munmap(sem1, sizeof(*sem1));
-		sem_destroy(sem2);
-		munmap(sem1, sizeof(*sem2));
-		rc = -1;
-		goto exit2;
-	}
-
 	rc = sem_init(sem1, 1, 0);
 	if (rc) {
 		error("%s: sem_init: %m", __func__);
@@ -727,12 +739,6 @@ static int _create_ns(stepd_step_rec_t *step)
 		error("%s: sem_init: %m", __func__);
 		goto exit1;
 	}
-	rc = sem_init(sem3, 1, 0);
-	if (rc) {
-		error("%s: sem_init: %m", __func__);
-		goto exit1;
-	}
-
 	cpid = sys_clone(ns_conf->clonensflags|SIGCHLD, &parent_tid,
 			 &child_tid, tls);
 
@@ -741,18 +747,9 @@ static int _create_ns(stepd_step_rec_t *step)
 		rc = -1;
 		goto exit1;
 	} else if (cpid == 0) {
-		_create_ns_child(step, src_bind, job_mount, sem1, sem2, sem3);
+		_create_ns_child(step, src_bind, job_mount, sem1, sem2);
 	} else {
-		/*
-		int wstatus;
-		*/
 		char *proc_path = NULL;
-
-		if (sem_wait(sem1) < 0) {
-			error("%s: sem_Wait failed: %m", __func__);
-			rc = -1;
-			goto exit1;
-		}
 
 		/*
 		 * Bind mount /proc/pid/ns/loc to hold namespace active
@@ -768,7 +765,7 @@ static int _create_ns(stepd_step_rec_t *step)
 			if (rc) {
 				error("%s: ns %s mount failed: %m",
 				      __func__, ns_l_enabled[i].proc_name);
-				if (sem_post(sem2) < 0)
+				if (sem_post(sem1) < 0)
 					error("%s: Could not release semaphore: %m",
 					      __func__);
 				xfree(proc_path);
@@ -785,13 +782,13 @@ static int _create_ns(stepd_step_rec_t *step)
 		}
 
 		/* Setup remainder of the container */
-		if (sem_post(sem2) < 0) {
+		if (sem_post(sem1) < 0) {
 			error("%s: sem_post failed: %m", __func__);
 			goto exit1;
 		}
 
 		/* Wait for container to be setup */
-		if (sem_wait(sem3) < 0) {
+		if (sem_wait(sem2) < 0) {
 			error("%s: sem_Wait failed: %m", __func__);
 			rc = -1;
 			goto exit1;
@@ -801,6 +798,11 @@ static int _create_ns(stepd_step_rec_t *step)
 			error("%s: Job %u can't add pid %d to proctrack plugin in the extern_step.",
 			      __func__, step->step_id.job_id, cpid);
 			rc = SLURM_ERROR;
+			goto exit1;
+		}
+
+		if (_chown_private_dirs(src_bind, step->uid) == -1) {
+			rc = -1;
 			goto exit1;
 		}
 
@@ -840,8 +842,6 @@ exit1:
 	munmap(sem1, sizeof(*sem1));
 	sem_destroy(sem2);
 	munmap(sem2, sizeof(*sem2));
-	sem_destroy(sem3);
-	munmap(sem3, sizeof(*sem3));
 
 exit2:
 	if (rc) {
@@ -1162,6 +1162,7 @@ extern int namespace_p_setup_bpf_token(stepd_step_rec_t *step)
 		rc = SLURM_SUCCESS;
 	}
 end:
-	close(fd);
+	if (fd >= 0)
+		close(fd);
 	return rc;
 }

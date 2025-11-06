@@ -246,8 +246,6 @@ static char *	slurm_conf_filename;
 static int reconfig_rc = SLURM_SUCCESS;
 static bool reconfig = false;
 static list_t *reconfig_reqs = NULL;
-static pthread_mutex_t shutdown_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t shutdown_cond = PTHREAD_COND_INITIALIZER;
 static bool under_systemd = false;
 static bool reply_async = false;
 
@@ -580,9 +578,10 @@ static void _retry_init_db_conn(assoc_init_args_t *args)
 		struct timespec ts = timespec_now();
 		ts.tv_sec += 2;
 
-		slurm_mutex_lock(&shutdown_mutex);
-		slurm_cond_timedwait(&shutdown_cond, &shutdown_mutex, &ts);
-		slurm_mutex_unlock(&shutdown_mutex);
+		slurm_mutex_lock(&slurmctld_config.shutdown_lock);
+		slurm_cond_timedwait(&slurmctld_config.shutdown_cond,
+				     &slurmctld_config.shutdown_lock, &ts);
+		slurm_mutex_unlock(&slurmctld_config.shutdown_lock);
 
 		if (slurmctld_config.shutdown_time)
 			fatal("slurmdbd must be up at slurmctld start time");
@@ -1346,12 +1345,15 @@ static void  _init_config(void)
 	slurm_mutex_init(&slurmctld_config.acct_update_lock);
 	slurm_mutex_init(&slurmctld_config.thread_count_lock);
 	slurm_mutex_init(&slurmctld_config.backup_finish_lock);
+	slurm_mutex_init(&slurmctld_config.shutdown_lock);
 	slurm_mutex_lock(&slurmctld_config.acct_update_lock);
 	slurm_mutex_lock(&slurmctld_config.thread_count_lock);
 	slurm_mutex_lock(&slurmctld_config.backup_finish_lock);
+	slurm_mutex_lock(&slurmctld_config.shutdown_lock);
 
 	slurm_cond_init(&slurmctld_config.acct_update_cond, NULL);
 	slurm_cond_init(&slurmctld_config.backup_finish_cond, NULL);
+	slurm_cond_init(&slurmctld_config.shutdown_cond, NULL);
 	slurm_cond_init(&slurmctld_config.thread_count_cond, NULL);
 	slurmctld_config.boot_time      = time(NULL);
 	slurmctld_config.resume_backup  = false;
@@ -1362,6 +1364,7 @@ static void  _init_config(void)
 	slurmctld_config.submissions_disabled = false;
 	track_script_init();
 	slurmctld_config.thread_id_main    = (pthread_t) 0;
+	slurm_mutex_unlock(&slurmctld_config.shutdown_lock);
 	slurm_mutex_unlock(&slurmctld_config.backup_finish_lock);
 	slurm_mutex_unlock(&slurmctld_config.thread_count_lock);
 	slurm_mutex_unlock(&slurmctld_config.acct_update_lock);
@@ -1547,8 +1550,9 @@ extern void queue_job_scheduler(void)
 	slurm_mutex_unlock(&sched_cnt_mutex);
 }
 
-static void *_on_listen_connect(conmgr_fd_t *con, void *arg)
+static void *_on_listen_connect(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	const int *i_ptr = arg;
 	const int i = *i_ptr;
 	int rc = EINVAL;
@@ -1572,8 +1576,9 @@ static void *_on_listen_connect(conmgr_fd_t *con, void *arg)
 	return arg;
 }
 
-static void _on_listen_finish(conmgr_fd_t *con, void *arg)
+static void _on_listen_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	int *i_ptr = arg;
 	const int i = *i_ptr;
 
@@ -1588,16 +1593,21 @@ static void _on_listen_finish(conmgr_fd_t *con, void *arg)
 	xfree(i_ptr);
 }
 
-static void *_on_primary_connection(conmgr_fd_t *con, void *arg)
+static void *_on_primary_connection(conmgr_callback_args_t conmgr_args,
+				    void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
+
 	debug3("%s: [%s] PRIMARY: New RPC connection",
 	       __func__, conmgr_fd_get_name(con));
 
 	return con;
 }
 
-static void _on_primary_finish(conmgr_fd_t *con, void *arg)
+static void _on_primary_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
+
 	debug3("%s: [%s] PRIMARY: RPC connection closed",
 	       __func__, conmgr_fd_get_name(con));
 }
@@ -1613,8 +1623,10 @@ static void _on_primary_finish(conmgr_fd_t *con, void *arg)
  * currently does not appear to be an issue but may be one in the future until
  * all of the RPC handlers are converted to conmgr fully.
  */
-static int _on_primary_msg(conmgr_fd_t *con, slurm_msg_t *msg, void *arg)
+static int _on_primary_msg(conmgr_callback_args_t conmgr_args, slurm_msg_t *msg,
+			   void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	int rc = SLURM_SUCCESS;
 	slurmctld_rpc_t *this_rpc = NULL;
 
@@ -1646,7 +1658,7 @@ static int _on_primary_msg(conmgr_fd_t *con, slurm_msg_t *msg, void *arg)
 		 * The fd will be extracted from conmgr, so the conmgr
 		 * connection ref should be removed from msg first.
 		 */
-		conmgr_fd_free_ref(&msg->conmgr_con);
+		CONMGR_CON_UNLINK(msg->conmgr_con);
 
 		if ((rc = conmgr_queue_extract_con_fd(con, _on_extract,
 						      XSTRINGIFY(_on_extract),
@@ -1659,7 +1671,7 @@ static int _on_primary_msg(conmgr_fd_t *con, slurm_msg_t *msg, void *arg)
 	return rc;
 }
 
-static void *_on_connection(conmgr_fd_t *con, void *arg)
+static void *_on_connection(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	bool standby_mode;
 
@@ -1668,12 +1680,12 @@ static void *_on_connection(conmgr_fd_t *con, void *arg)
 	slurm_mutex_unlock(&listeners.mutex);
 
 	if (!standby_mode)
-		return _on_primary_connection(con, arg);
+		return _on_primary_connection(conmgr_args, arg);
 	else
-		return on_backup_connection(con, arg);
+		return on_backup_connection(conmgr_args, arg);
 }
 
-static void _on_finish(conmgr_fd_t *con, void *arg)
+static void _on_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	bool standby_mode;
 
@@ -1682,18 +1694,20 @@ static void _on_finish(conmgr_fd_t *con, void *arg)
 	slurm_mutex_unlock(&listeners.mutex);
 
 	if (!standby_mode)
-		return _on_primary_finish(con, arg);
+		return _on_primary_finish(conmgr_args, arg);
 	else
-		return on_backup_finish(con, arg);
+		return on_backup_finish(conmgr_args, arg);
 }
 
-static int _on_data(conmgr_fd_t *con, void *arg)
+static int _on_data(conmgr_callback_args_t conmgr_args, void *arg)
 {
-	return http_switch_on_data(con, on_http_connection);
+	return http_switch_on_data(conmgr_args, on_http_connection);
 }
 
-static int _on_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc, void *arg)
+static int _on_msg(conmgr_callback_args_t conmgr_args, slurm_msg_t *msg,
+		   int unpack_rc, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	bool standby_mode;
 
 	if ((unpack_rc == SLURM_PROTOCOL_AUTHENTICATION_ERROR) ||
@@ -1720,9 +1734,9 @@ static int _on_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc, void *arg)
 	slurm_mutex_unlock(&listeners.mutex);
 
 	if (!standby_mode)
-		return _on_primary_msg(con, msg, arg);
+		return _on_primary_msg(conmgr_args, msg, arg);
 	else
-		return on_backup_msg(con, msg, arg);
+		return on_backup_msg(conmgr_args, msg, arg);
 }
 
 extern void listeners_quiesce(void)
@@ -2562,7 +2576,7 @@ static void *_slurmctld_background(void *no_data)
 	while (1) {
 		bool call_schedule = false, full_queue = false;
 
-		slurm_mutex_lock(&shutdown_mutex);
+		slurm_mutex_lock(&slurmctld_config.shutdown_lock);
 		if (!slurmctld_config.shutdown_time) {
 			struct timespec ts = {0, 0};
 
@@ -2570,10 +2584,11 @@ static void *_slurmctld_background(void *no_data)
 			listeners_unquiesce();
 
 			ts.tv_sec = time(NULL) + 1;
-			slurm_cond_timedwait(&shutdown_cond, &shutdown_mutex,
+			slurm_cond_timedwait(&slurmctld_config.shutdown_cond,
+					     &slurmctld_config.shutdown_lock,
 					     &ts);
 		}
-		slurm_mutex_unlock(&shutdown_mutex);
+		slurm_mutex_unlock(&slurmctld_config.shutdown_lock);
 
 		now = time(NULL);
 		START_TIMER;
@@ -3187,7 +3202,7 @@ int slurmctld_shutdown(void)
 {
 	sched_debug("slurmctld terminating");
 	slurmctld_config.shutdown_time = time(NULL);
-	slurm_cond_signal(&shutdown_cond);
+	slurm_cond_signal(&slurmctld_config.shutdown_cond);
 	pthread_kill(pthread_self(), SIGUSR1);
 	return SLURM_SUCCESS;
 }
@@ -3865,30 +3880,8 @@ static void *_assoc_cache_mgr(void *no_data)
 		{ .assoc = READ_LOCK, .qos = WRITE_LOCK, .tres = WRITE_LOCK,
 		  .user = READ_LOCK };
 
-	if (running_cache != RUNNING_CACHE_STATE_RUNNING) {
-		slurm_mutex_lock(&assoc_cache_mutex);
+	if (running_cache != RUNNING_CACHE_STATE_RUNNING)
 		lock_slurmctld(job_write_lock);
-		/*
-		 * It is ok to have the job_write_lock here as long as
-		 * running_cache != RUNNING_CACHE_STATE_NOTRUNNING. This short
-		 * circuits the association manager to not call callbacks. If
-		 * we come out of cache we need the job_write_lock locked until
-		 * the end to prevent a race condition on the job_list (some
-		 * running without new info and some running with the cached
-		 * info).
-		 *
-		 * Make sure not to have the assoc_mgr or the
-		 * slurmdbd_lock locked when refresh_lists is called or you may
-		 * get deadlock.
-		 */
-		assoc_mgr_refresh_lists(acct_db_conn, 0);
-		if (g_tres_count != slurmctld_tres_cnt) {
-			info("TRES in database does not match cache (%u != %u).  Updating...",
-			     g_tres_count, slurmctld_tres_cnt);
-			_init_tres();
-		}
-		slurm_mutex_unlock(&assoc_cache_mutex);
-	}
 
 	while (running_cache == RUNNING_CACHE_STATE_RUNNING) {
 		slurm_mutex_lock(&assoc_cache_mutex);

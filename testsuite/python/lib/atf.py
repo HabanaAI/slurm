@@ -28,6 +28,7 @@ import signal
 
 import json
 import jsondiff
+import yaml
 
 # This module will be (un)imported in require_openapi_generator()
 openapi_client = None
@@ -477,6 +478,7 @@ def repeat_until(
         time.sleep(poll_interval)
 
     if not xfail and not condition_met:
+        log_load_avg()
         if fatal:
             pytest.fail(f"Condition was not met within the {timeout} second timeout")
         else:
@@ -589,6 +591,15 @@ def is_slurmctld_running(quiet=False):
     return False
 
 
+def log_load_avg():
+    """Print system load average"""
+    load1, load5, load15 = os.getloadavg()
+    cpu_count = os.cpu_count()
+    logging.debug(
+        f"Load Average: {(load1*100/cpu_count):.0f}% / {(load5*100/cpu_count):.0f}% / {(load15*100/cpu_count):.0f}%"
+    )
+
+
 def gcore(component, pid=None, sbin=True):
     """Generates a gcore file for all pids running of a given Slurm component.
 
@@ -603,6 +614,9 @@ def gcore(component, pid=None, sbin=True):
     Returns:
         None
     """
+    # Log how load is the system to help troubleshoot issues
+    log_load_avg()
+
     # Ensure that slurm-logs-dir is set.
     if "slurm-logs-dir" not in properties:
         properties["slurm-logs-dir"] = os.path.dirname(
@@ -1367,23 +1381,33 @@ def get_version(component="sbin/slurmctld", slurm_prefix=""):
     return tuple(int(part) if part.isdigit() else 0 for part in version_str.split("."))
 
 
-def require_version(version, component="sbin/slurmctld", slurm_prefix="", reason=None):
+def require_version(
+    min_version,
+    component="sbin/slurmctld",
+    slurm_prefix="",
+    reason=None,
+    max_version=None,
+):
     """Checks if the component is at least the required version, or skips.
 
     Args:
-        version (tuple): The tuple representing the version.
+        min_version (tuple): The tuple representing the minimal version required, version should be >=.
+        max_version (tuple): The tuple representing the maximal version required, version should be <.
         component (string): The bin/ or sbin/ component of Slurm to check.
         slurm_prefix (string): The path where the component is. By default the defined in testsuite.conf.
         reason (string): The reason why the version of the component is required.
-
-    Returns:
-        A tuple representing the version. E.g. (25.05.0).
     """
     component_version = get_version(component, slurm_prefix)
-    if component_version < version:
-        if not reason:
-            reason = f"The version of {component} is {component_version}, required is {version}"
-        pytest.skip(reason)
+    if component_version >= min_version and (
+        max_version is None or component_version < max_version
+    ):
+        return
+
+    if not reason:
+        reason = f"The version of {component} is {component_version}, required is {min_version}"
+        if max_version:
+            reason += f" up to {max_version} (not included)"
+    pytest.skip(reason)
 
 
 def request_slurmctld(request):
@@ -1435,6 +1459,9 @@ def assert_openapi_spec_eq(spec_a, spec_b):
 
     _spec_a["info"]["version"] = None
     _spec_b["info"]["version"] = None
+
+    _spec_a["tags"] = None
+    _spec_b["tags"] = None
 
     # Recursively remove all description fields
     def _strip_descriptions(oas):
@@ -1574,29 +1601,29 @@ def openapi_slurmdb():
     )
 
 
-def backup_config_file(config="slurm"):
+def backup_config_file(config="slurm.conf"):
     """Backs up a configuration file.
 
     This function may only be used in auto-config mode.
 
     Args:
-        config (string): Name of the config file to back up (without the .conf suffix).
+        config (string): Name of the config file to back up.
 
     Returns:
         None
 
     Example:
-        >>> backup_config_file('slurm')
-        >>> backup_config_file('gres')
-        >>> backup_config_file('cgroup')
+        >>> backup_config_file('slurm.conf')
+        >>> backup_config_file('gres.conf')
+        >>> backup_config_file('cgroup.conf')
     """
 
     if not properties["auto-config"]:
-        require_auto_config(f"wants to modify the {config} configuration file")
+        require_auto_config(f"wants to modify the {config} file")
 
     properties["configurations-modified"].add(config)
 
-    config_file = f"{properties['slurm-config-dir']}/{config}.conf"
+    config_file = f"{properties['slurm-config-dir']}/{config}"
     backup_config_file = f"{config_file}.orig-atf"
 
     # If a backup already exists, issue a warning and return (honor existing backup)
@@ -1630,24 +1657,24 @@ def backup_config_file(config="slurm"):
         )
 
 
-def restore_config_file(config="slurm"):
+def restore_config_file(config="slurm.conf"):
     """Restores a configuration file.
 
     This function may only be used in auto-config mode.
 
     Args:
-        config (string): Name of config file to restore (without the .conf suffix).
+        config (string): Name of config file to restore.
 
     Returns:
         None
 
     Example:
-        >>> restore_config_file('slurm')
-        >>> restore_config_file('gres')
-        >>> restore_config_file('cgroup')
+        >>> restore_config_file('slurm.conf')
+        >>> restore_config_file('gres.conf')
+        >>> restore_config_file('cgroup.conf')
     """
 
-    config_file = f"{properties['slurm-config-dir']}/{config}.conf"
+    config_file = f"{properties['slurm-config-dir']}/{config}"
     backup_config_file = f"{config_file}.orig-atf"
 
     properties["configurations-modified"].remove(config)
@@ -1912,7 +1939,7 @@ def set_config_parameter(
     config_file = f"{properties['slurm-config-dir']}/{config}.conf"
 
     # This has the side-effect of adding config to configurations-modified
-    backup_config_file(config)
+    backup_config_file(f"{config}.conf")
 
     # Remove all matching parameters and append the new parameter
     lines = []
@@ -2192,6 +2219,83 @@ def require_whereami():
         f"gcc {source_file} -o {dest_file}", fatal=True, user=properties["slurm-user"]
     )
     properties["whereami"] = dest_file
+
+
+def require_config_file(
+    filename,
+    content,
+):
+    """
+    Ensures that a configuration file exists with the required content.
+
+    In local-config mode, the test is skipped if the required config file
+    doesn't exists or is not equivalent.
+    In auto-config mode, save current config file if exists and creates the
+    required one.
+
+    Note that it cannot be used with some base config files like slurm.conf,
+    use require_config_parameter() for those config files instead.
+
+    Supported extensions for local-config are .conf and .yaml.
+
+    Args:
+        filename (string): The filename of the config path (e.g. "resources.yaml").
+        content (string): The desired content of the config file.
+
+    Returns:
+        None
+        It will fail or skip the test if required config file cannot be set.
+    """
+
+    # Some config files need to be modified, cannot be created from scratch
+    if filename in {
+        "slurm.conf",
+        "slurmdbd.conf",
+        "gres.conf",
+        "cgroup.conf",
+        "testsuite.conf",
+    }:
+        pytest.fail(f"Use require_config_param() for file {filename}")
+
+    file_path = f"{properties['slurm-config-dir']}/{filename}"
+
+    # If not auto-condig:
+    if not properties["auto-config"]:
+        supported_ext = {".conf", ".yaml"}
+        file, ext = os.path.splitext(filename)
+        match ext:
+            case ".yaml":
+                desired_yaml = yaml.safe_load(content)
+                local_yaml = None
+                if os.path.exists(file_path):
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        local_yaml = yaml.safe_load(f)
+                if desired_yaml != local_yaml:
+                    pytest.skip(f"{filename} is not as required by the test")
+                else:
+                    logging.debug(f"Found compatible required {filename}")
+                    return
+            case ".conf":
+                # TODO: Ignore blank or commented lines
+                with open(file_path, "r", encoding="utf-8") as f:
+                    local_content = f.read()
+                if content != local_content:
+                    pytest.skip(f"{filename} is not as required by the test")
+                else:
+                    logging.debug(f"Found compatible required {filename}")
+                    return
+            case _:
+                pytest.fail(f"Supported config files are only {supported_ext}")
+
+        pytest.fail(
+            "Internal error: function should already skip, fail or return in local-config"
+        )
+
+    # In auto-config
+    backup_config_file(filename)
+    run_command(
+        f"cat > {file_path}", input=content, user=properties["slurm-user"], fatal=True
+    )
 
 
 def require_config_parameter(
@@ -2477,7 +2581,10 @@ def start_slurmrestd():
         )
 
     while not port and attempts < 15:
-        port = get_open_port()
+        if "slurmrestd_port" not in properties or attempts > 0:
+            port = get_open_port()
+        else:
+            port = properties["slurmrestd_port"]
         attempts += 1
         args = [
             "slurmrestd",
@@ -2525,6 +2632,7 @@ def start_slurmrestd():
 
     del os.environ["SLURM_JWT"]
 
+    properties["slurmrestd_port"] = port
     properties["slurmrestd_url"] = f"http://localhost:{port}/"
 
     # Setup auth token
@@ -2915,7 +3023,7 @@ def set_node_parameter(node_name, new_parameter_name, new_parameter_value):
         )
 
     # Write the config file back out with the modifications
-    backup_config_file("slurm")
+    backup_config_file("slurm.conf")
     new_config_string = "\n".join(new_config_lines)
     run_command(
         f"echo '{new_config_string}' > {config_file}",
@@ -4023,6 +4131,7 @@ def wait_for_job_state(
                     )
 
             if not xfail:
+                log_load_avg()
                 if fatal:
                     pytest.fail(message)
                 else:
@@ -4226,7 +4335,7 @@ def create_node(node_dict):
     new_config_lines.insert(last_node_line_index + 1, node_line)
 
     # Write the config file back out with the modifications
-    backup_config_file("slurm")
+    backup_config_file("slurm.conf")
     new_config_string = "\n".join(new_config_lines)
     run_command(
         f"echo '{new_config_string}' > {config_file}",
@@ -4999,7 +5108,7 @@ def set_partition_parameter(partition_name, new_parameter_name, new_parameter_va
         )
 
     # Write the config file back out with the modifications
-    backup_config_file("slurm")
+    backup_config_file("slurm.conf")
     new_config_string = "\n".join(new_config_lines)
     run_command(
         f"echo '{new_config_string}' > {config_file}",

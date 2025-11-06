@@ -26,6 +26,7 @@ wckey2_name = f"{wckey_name}-2"
 qos_name = f"test-qos-{random.randrange(0, 99999999999)}"
 qos2_name = f"{qos_name}-2"
 resv_name = f"test-reservation-{random.randrange(0, 99999999999)}"
+req_node_count = 10
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -34,7 +35,7 @@ def setup():
     global local_cluster_name, partition_name
 
     atf.require_accounting(modify=True)
-    atf.require_nodes(10)
+    atf.require_nodes(req_node_count)
     atf.require_config_parameter("AllowNoDefAcct", "Yes", source="slurmdbd")
     atf.require_config_parameter("TrackWCKey", "Yes", source="slurmdbd")
     atf.require_config_parameter("TrackWCKey", "Yes")
@@ -48,6 +49,12 @@ def setup():
 
     # Setup OpenAPI client with OpenAPI-Generator once Slurm(restd) is running
     atf.require_openapi_generator("7.3.0")
+
+    # Uncomment the following two lines to generate a new openapi_spec.json
+    # file, then it could be moved to the testsuite_data_dir if we really
+    # want to change the OpenAPI specs after .0.
+    # with open("openapi_spec_v44.json", "w") as f:
+    #     json.dump(atf.properties["openapi_spec"], f, indent=2)
 
     # Conf reliant variables (put here to avert --auto-config errors)
     local_cluster_name = atf.get_config_parameter("ClusterName")
@@ -221,6 +228,42 @@ def create_qos(create_coords):
     )
 
 
+@pytest.fixture(scope="function")
+def dynamic_node(setup):
+    """
+    Sets the required MaxNodeCount + cons_tres, and returns a non-existing node.
+    """
+    nonexistent_node_name = "nonexistent_node"
+    config = atf.get_config()
+
+    atf.stop_slurm()
+    atf.require_config_parameter("SelectType", "select/cons_tres")
+    atf.require_config_parameter("SelectTypeParameters", "CR_CPU")
+    atf.require_config_parameter("MaxNodeCount", str(req_node_count + 1))
+    atf.start_slurm()
+
+    atf.run_command(
+        f"scontrol delete node {nonexistent_node_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+        xfail=True,
+    )
+
+    yield nonexistent_node_name
+
+    atf.run_command(
+        f"scontrol delete node {nonexistent_node_name}",
+        user=atf.properties["slurm-user"],
+        fatal=False,
+    )
+
+    atf.stop_slurm()
+    atf.require_config_parameter("SelectType", config["SelectType"])
+    atf.require_config_parameter("SelectTypeParameters", config["SelectTypeParameters"])
+    atf.require_config_parameter("MaxNodeCount", None)
+    atf.start_slurm()
+
+
 def test_loaded_versions():
     r = atf.request_slurmrestd("openapi/v3")
     assert r.status_code == 200
@@ -246,9 +289,6 @@ def test_loaded_versions():
     assert "/slurmdb/v0.0.44/jobs/" in spec["paths"].keys()
 
 
-@pytest.mark.skipif(
-    atf.get_version() <= (25, 11, 0), reason="Specs may change until .0 is released"
-)
 @pytest.mark.parametrize("openapi_spec", ["44"], indirect=True)
 def test_specification(openapi_spec):
     atf.assert_openapi_spec_eq(openapi_spec, atf.properties["openapi_spec"])
@@ -1591,6 +1631,76 @@ def test_reservations(slurm, flags, admin_level):
     assert resv_name not in [
         r.name for r in slurm.slurm_v0044_get_reservations().reservations
     ], f"Reservation {resv_name} should be deleted"
+
+
+@pytest.mark.parametrize("legal_state", ["CLOUD", "FUTURE", "EXTERNAL"])
+def test_legal_node_creation(slurm, admin_level, legal_state, dynamic_node):
+    from openapi_client.models.v0044_openapi_create_node_req import (
+        V0044OpenapiCreateNodeReq,
+    )
+
+    request_body = V0044OpenapiCreateNodeReq(
+        node_conf=f"nodename={dynamic_node} State={legal_state}"
+    )
+
+    response = slurm.slurm_v0044_post_new_node(
+        v0044_openapi_create_node_req=request_body
+    )
+
+    # Validate there are no errors or warnings, and the meta data exits
+    assert not response.errors
+    assert not response.warnings
+    assert response.meta
+
+    # Validate the node exists and is in the correct state
+    node_states = atf.get_node_parameter(dynamic_node, "state")
+    assert (
+        legal_state in node_states
+    ), f"Dynamic node should have {legal_state} in its state only has {node_states}"
+    assert (
+        "DYNAMIC_NORM" in node_states
+    ), "Dynamic node should have DYNAMIC_NORM in its state"
+
+
+@pytest.mark.parametrize(
+    "illegal_state", ["DOWN", "DRAIN", "FAIL", "FAILING", "UNKNOWN"]
+)
+def test_illegal_node_creation(slurm, admin_level, illegal_state, dynamic_node):
+    from openapi_client.api_response import ApiResponse
+    from openapi_client.exceptions import ApiException
+    from openapi_client.models.v0044_openapi_create_node_req import (
+        V0044OpenapiCreateNodeReq,
+    )
+
+    request_body = V0044OpenapiCreateNodeReq(
+        node_conf=f"nodename={dynamic_node} State={illegal_state}"
+    )
+
+    try:
+        # This should throw an exception
+        slurm.slurm_v0044_post_new_node_with_http_info(
+            v0044_openapi_create_node_req=request_body
+        )
+        assert (
+            False
+        ), "slurm_v0044_post_new_node_with_http_info should have raised an exception"
+    except ApiException as e:
+        response = slurm.api_client.deserialize(
+            response=ApiResponse(data=e.body), response_type="V0044OpenapiResp"
+        )
+        # Validate there is an error and no warnings
+        assert e.status != 200
+        assert len(response.errors) == 1  # error about wrong state
+        assert not response.warnings
+        assert response.meta
+
+    # Validate the node doesn't exist
+    atf.run_command(
+        f"scontrol show NodeName={dynamic_node}",
+        user="slurm",
+        xfail=True,
+        fatal=True,
+    )
 
 
 # Test until endpoints

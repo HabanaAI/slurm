@@ -1,4 +1,4 @@
-.TH sdiag "1" "Slurm Commands" "Slurm 25.11" "Slurm Commands"
+.TH sdiag "1" "Slurm Commands" "Slurm 26.05" "Slurm Commands"
 
 .SH "NAME"
 sdiag \- Scheduling diagnostic tool for Slurm
@@ -320,6 +320,11 @@ Print description of options and exit.
 \f3\-\-json\fP, \f3\-\-json\fP=\fIlist\fR, \f3\-\-json\fP=<\fIdata_parser\fR>
 Dump information as JSON using the default data_parser plugin or explicit
 data_parser with parameters. Sorting and formatting arguments will be ignored.
+.IP
+
+.TP
+\fB\-\-no-trunc\fR
+Do not truncate long lines to 80 char.
 .IP
 
 .TP

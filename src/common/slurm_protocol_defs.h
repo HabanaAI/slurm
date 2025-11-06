@@ -130,6 +130,8 @@
 	(_X->job_state & JOB_SIGNALING)
 #define IS_JOB_STAGE_OUT(_X)		\
 	(_X->job_state & JOB_STAGE_OUT)
+#define IS_JOB_EXPEDITING(_X)		\
+	(_X->job_state & JOB_EXPEDITING)
 
 /* DB FLAG state */
 #define IS_JOB_IN_DB(_X) \
@@ -1136,6 +1138,27 @@ typedef enum {
 	DYN_NODE_NORM,
 } dynamic_node_type_t;
 
+typedef struct {
+	char *name;
+	char *type;
+	uint64_t count;
+	bitstr_t *index;
+} node_gres_layout_t;
+
+typedef struct {
+	char *node;
+	uint64_t mem_alloc;
+	uint16_t sockets_per_node;
+	uint16_t cores_per_socket;
+	char *core_bitmap;
+	uint32_t channel;
+	list_t *gres;
+} node_resource_layout_t;
+
+typedef struct {
+	list_t *nodes;
+} resource_layout_msg_t;
+
 /*****************************************************************************\
  * Slurm API Message Types
 \*****************************************************************************/
@@ -1548,6 +1571,10 @@ extern void slurm_free_reboot_msg(reboot_msg_t * msg);
 extern void slurm_free_shutdown_msg(shutdown_msg_t * msg);
 
 extern void slurm_free_job_desc_msg(job_desc_msg_t * msg);
+
+extern void slurm_free_node_gres_layout(node_gres_layout_t *msg);
+extern void slurm_free_node_resource_layout(node_resource_layout_t *msg);
+extern void slurm_free_resource_layout_msg(resource_layout_msg_t *msg);
 
 extern void
 slurm_free_node_registration_status_msg(slurm_node_registration_status_msg_t *

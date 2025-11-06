@@ -70,6 +70,8 @@
 #include "src/common/timers.h"
 #include "src/common/xmalloc.h"
 
+#include "src/conmgr/conmgr.h"
+
 #include "src/interfaces/cred.h"
 
 /*****************************************************************************\
@@ -147,6 +149,8 @@ typedef struct slurmctld_config {
 	time_t	shutdown_time;
 	bool    submissions_disabled;
 
+	pthread_cond_t shutdown_cond;
+	pthread_mutex_t shutdown_lock;
 	pthread_cond_t thread_count_cond;
 	pthread_mutex_t thread_count_lock;
 	pthread_t thread_id_acct_update;
@@ -857,11 +861,11 @@ extern void delete_job_desc_files(uint32_t job_id);
 /*
  * job_alloc_info - get details about an existing job allocation
  * IN uid - job issuing the code
- * IN job_id - ID of job for which info is requested
+ * IN step_id - ID of job for which info is requested
  * OUT job_pptr - set to pointer to job record
  * NOTE: See job_alloc_info_ptr() if job pointer is known
  */
-extern int job_alloc_info(uint32_t uid, uint32_t job_id,
+extern int job_alloc_info(uint32_t uid, slurm_step_id_t *step_id,
 			  job_record_t **job_pptr);
 
 /*
@@ -1116,13 +1120,12 @@ extern int job_req_node_filter(job_record_t *job_ptr, bitstr_t *avail_bitmap,
  * job_requeue - Requeue a running or pending batch job
  * IN uid - user id of user issuing the RPC
  * IN job_id - id of the job to be requeued
- * IN msg - slurm_msg to send response back on
  * IN preempt - true if job being preempted
  * IN flags - JobExitRequeue | Hold | JobFailed | etc.
  * RET 0 on success, otherwise ESLURM error code
  */
-extern int job_requeue(uid_t uid, uint32_t job_id, slurm_msg_t *msg,
-		       bool preempt, uint32_t flags);
+extern int job_requeue_external(uid_t uid, slurm_step_id_t *step_id,
+				bool preempt, uint32_t flags);
 
 /*
  * job_requeue2 - Requeue a running or pending batch job
@@ -1134,6 +1137,9 @@ extern int job_requeue(uid_t uid, uint32_t job_id, slurm_msg_t *msg,
  */
 extern int job_requeue2(uid_t uid, requeue_msg_t *req_ptr, slurm_msg_t *msg,
 			bool preempt);
+
+extern int job_requeue_internal(uid_t uid, job_record_t *job_ptr, bool preempt,
+				uint32_t flags);
 
 /*
  * job_set_top - Move the specified job to the top of the queue (at least
@@ -1604,9 +1610,11 @@ extern void restore_node_features(int recover);
 extern void run_backup(void);
 
 /* conmgr RPC connection callbacks */
-extern void *on_backup_connection(conmgr_fd_t *con, void *arg);
-extern void on_backup_finish(conmgr_fd_t *con, void *arg);
-extern int on_backup_msg(conmgr_fd_t *con, slurm_msg_t *msg, void *arg);
+extern void *on_backup_connection(conmgr_callback_args_t conmgr_args,
+				  void *arg);
+extern void on_backup_finish(conmgr_callback_args_t conmgr_args, void *arg);
+extern int on_backup_msg(conmgr_callback_args_t conmgr_args, slurm_msg_t *msg,
+			 void *arg);
 
 /*
  * ping_controllers - ping other controllers in HA configuration.

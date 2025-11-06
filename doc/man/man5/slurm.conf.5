@@ -1,4 +1,4 @@
-.TH "slurm.conf" "5" "Slurm Configuration File" "Slurm 25.11" "Slurm Configuration File"
+.TH "slurm.conf" "5" "Slurm Configuration File" "Slurm 26.05" "Slurm Configuration File"
 
 .SH "NAME"
 slurm.conf \- Slurm configuration file
@@ -2358,6 +2358,12 @@ resources one or more steps the sruns in the script will create.
 .IP
 
 .TP 24
+\fBinteractive_step_set_cpu_freq\fR
+Set the cpu frequency for the interactive step from given \-\-cpu\-freq, or
+slurm.conf CpuFreqDef, options.
+.IP
+
+.TP 24
 \fBcray_net_exclusive\fR
 Allow jobs on a Cray XC cluster exclusive access to network resources.
 This should only be set on clusters providing exclusive access to each
@@ -2566,7 +2572,9 @@ The maximum job array task index value will be one less than MaxArraySize
 to allow for an index value of zero.
 Configure MaxArraySize to 0 in order to disable job array use.
 The value may not exceed 4000001.
-The value of \fBMaxJobCount\fR should be much larger than \fBMaxArraySize\fR.
+The value of \fBMaxJobCount\fR should be much larger than \fBMaxArraySize\fR,
+since each job array task still counts as a separate job (see \fBMaxJobCount\fR
+for further details).
 The default value is 1001.
 See also \fBmax_array_tasks\fR in SchedulerParameters.
 .IP
@@ -2589,7 +2597,7 @@ additional jobs will fail. The default value is 10000 jobs.
 \fBNOTE\fR: Each task of a job array counts as one job even though they will not
 occupy separate job records until modified or initiated.
 Performance can suffer with more than a few hundred thousand jobs.
-Setting per MaxSubmitJobs per user is generally valuable to prevent a single
+Setting MaxSubmitJobs per user is generally valuable to prevent a single
 user from filling the system with jobs.
 This is accomplished using Slurm's database and configuring enforcement of
 resource limits.
@@ -2714,7 +2722,9 @@ necessitate higher values.
 .TP
 \fBMetricsType\fR
 Specify the metrics plugin to be used to dump statistics from the slurmctld
-socket. Gathering of metrics is disabled when PrivateData is set.
+socket. Gathering of metrics is disabled when PrivateData is set. Refer to the
+Metrics Guide for further details: <https://slurm.schedmd.com/metrics.html>
+
 Configurable values at present are:
 .IP
 .RS
@@ -4683,6 +4693,13 @@ the backfill scheduler.
 .IP
 
 .TP
+\fBrequeue_delay=\fR
+Delay before a non\-Expedited Requeue job is eligible to run after being
+requeued. Defaults to the AuthInfo=cred_expire setting, which itself defaults
+to 120 seconds.
+.IP
+
+.TP
 \fBrequeue_on_resume_failure\fR
 In the event that nodes fail to resume by \fBResumeTimeout\fR, all batch jobs
 will be requeued -- even if the jobs requested not to be requeued. This is
@@ -5262,6 +5279,13 @@ if the filename has no path separators and is located adjacent to slurm.conf.
 \fBNOTE\fR: \fBProlog\fR and \fBEpilog\fR scripts will only be pushed if the
 filenames have no path separators and are located adjacent to slurm.conf.
 Glob patterns (See \fBglob\fR (7)) are not supported.
+.IP
+
+.TP
+\fBenable_expedited_requeue\fR
+Allow jobs to request an expedited requeue on certain events. An expedited
+requeue ensures that the job is immediately eligible to run and gets placed at
+the top of the queue.
 .IP
 
 .TP

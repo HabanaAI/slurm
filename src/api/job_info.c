@@ -144,10 +144,9 @@ extern char *slurm_expand_step_stdio_fields(char *path, job_step_info_t *step)
 
 	job_stp.array_job_id = step->array_job_id;
 	job_stp.array_task_id = step->array_task_id;
-	job_stp.first_step_id = step->step_id.step_id;
 	job_stp.first_step_node = hostlist_shift(nodes);
-	job_stp.jobid = step->step_id.job_id;
 	job_stp.jobname = step->job_name;
+	job_stp.step_id = step->step_id;
 	job_stp.user = uid_to_string_cached((uid_t) step->user_id);
 	job_stp.work_dir = step->cwd;
 
@@ -166,10 +165,11 @@ extern char *slurm_expand_job_stdio_fields(char *path, job_info_t *job)
 
 	job_stp.array_job_id = job->array_job_id;
 	job_stp.array_task_id = job->array_task_id;
-	job_stp.first_step_id = SLURM_BATCH_SCRIPT;
 	job_stp.first_step_node = job->batch_host;
-	job_stp.jobid = job->step_id.job_id;
 	job_stp.jobname = job->name;
+	job_stp.restart_cnt = job->restart_cnt;
+	job_stp.step_id = job->step_id;
+	job_stp.step_id.step_id = SLURM_BATCH_SCRIPT;
 	job_stp.user = uid_to_string_cached((uid_t) job->user_id);
 	job_stp.work_dir = job->work_dir;
 
@@ -1322,6 +1322,33 @@ slurm_load_job_prio(priority_factors_response_msg_t **factors_resp,
 
 	if (ptr)
 		slurm_destroy_federation_rec(ptr);
+
+	return rc;
+}
+
+extern int slurm_get_resource_layout(slurm_step_id_t *step_id, void **response)
+{
+	int rc = SLURM_SUCCESS;
+	slurm_msg_t req, resp;
+
+	slurm_msg_t_init(&req);
+	slurm_msg_t_init(&resp);
+
+	req.msg_type = REQUEST_RESOURCE_LAYOUT;
+	req.data = step_id;
+
+	if (slurm_send_recv_controller_msg(&req, &resp, working_cluster_rec) <
+	    0)
+		return SLURM_ERROR;
+
+	if (resp.msg_type == RESPONSE_SLURM_RC) {
+		/* Most likely ESLURM_JOB_NOT_RUNNING */
+		rc = ((return_code_msg_t *) resp.data)->return_code;
+		slurm_free_return_code_msg(resp.data);
+	} else if (resp.msg_type == RESPONSE_RESOURCE_LAYOUT) {
+		/* resource_layout_msg_t */
+		*response = resp.data;
+	}
 
 	return rc;
 }

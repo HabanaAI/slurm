@@ -42,9 +42,9 @@ def setup():
     atf.require_config_parameter("AuthAltTypes", "auth/jwt")
     atf.require_config_parameter("AuthAltTypes", "auth/jwt", source="slurmdbd")
     atf.require_slurmrestd("slurmctld,slurmdbd", "v0.0.41+prefer_refs")
-    atf.require_version((24, 5), "sbin/slurmdbd")
-    atf.require_version((24, 5), "sbin/slurmctld")
-    atf.require_version((24, 5), "sbin/slurmrestd")
+    atf.require_version((24, 5), "sbin/slurmdbd", max_version=(26, 5))
+    atf.require_version((24, 5), "sbin/slurmctld", max_version=(26, 5))
+    atf.require_version((24, 5), "sbin/slurmrestd", max_version=(26, 5))
     atf.require_slurm_running()
 
     # Setup OpenAPI client with OpenAPI-Generator once Slurm(restd) is running

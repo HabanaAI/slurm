@@ -1106,7 +1106,7 @@ typedef enum {
 	SELECT_PACK_NODES = SLURM_BIT(9),
 	/* Prefer least-loaded device for shared GRES */
 	SELECT_LL_SHARED_GRES = SLURM_BIT(10),
-	/* was SELECT_OTHER_CONS_TRES = SLURM_BIT(11), removed v24.05 */
+	/* SLURM_BIT(11), empty */
 	/*
 	 * By default, distribute cores using a block approach inside the
 	 * nodes
@@ -3912,11 +3912,12 @@ extern int slurm_signal_job_step(slurm_step_id_t *step_id, uint32_t signal);
 
 /*
  * slurm_complete_job - note the completion of a job and all of its steps
- * IN job_id - the job's id
+ * IN step_id - the job's id
  * IN job_return_code - the highest exit code of any task of the job
  * RET SLURM_SUCCESS on success, otherwise return SLURM_ERROR with errno set
  */
-extern int slurm_complete_job(uint32_t job_id, uint32_t job_return_code);
+extern int slurm_complete_job(slurm_step_id_t *step_id,
+			      uint32_t job_return_code);
 
 /*
  * slurm_terminate_job_step - terminates a job step by sending a
@@ -4108,6 +4109,8 @@ extern int slurm_reset_statistics(stats_info_request_msg_t *req);
 /*****************************************************************************\
  *	SLURM JOB CONTROL CONFIGURATION READ/PRINT/UPDATE FUNCTIONS
 \*****************************************************************************/
+
+extern int slurm_get_resource_layout(slurm_step_id_t *step_id, void **response);
 
 /*
  * slurm_free_job_info_msg - free the job information response message

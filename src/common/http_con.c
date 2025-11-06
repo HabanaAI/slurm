@@ -33,6 +33,8 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
+#include "slurm/slurm_errno.h"
+
 #include "src/common/http_con.h"
 #include "src/common/http.h"
 #include "src/common/pack.h"
@@ -622,6 +624,9 @@ static int _send_reject(http_con_t *hcon, slurm_err_t error_number)
 {
 	http_con_request_t *request = &hcon->request;
 	bool close_header = false;
+	const char *error = slurm_strerror(error_number);
+	const size_t error_len = strlen(error);
+	const buf_t body = SHADOW_BUF_INITIALIZER(error, error_len);
 
 	xassert(hcon->magic == MAGIC);
 
@@ -641,7 +646,8 @@ static int _send_reject(http_con_t *hcon, slurm_err_t error_number)
 
 	(void) http_con_send_response(hcon,
 				      http_status_from_error(error_number),
-				      NULL, close_header, NULL, NULL);
+				      NULL, close_header, &body,
+				      MIME_TYPE_TEXT);
 
 	/* ensure connection gets closed */
 	conmgr_con_queue_close(hcon->con);
@@ -682,8 +688,9 @@ static int _on_content_complete(void *arg)
 	return rc;
 }
 
-extern int _on_data(conmgr_fd_t *con, void *arg)
+extern int _on_data(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	http_con_t *hcon = arg;
 	static const http_parser_callbacks_t callbacks = {
 		.on_request = _on_request,
@@ -745,8 +752,9 @@ cleanup:
 	return rc;
 }
 
-static void _on_finish(conmgr_fd_t *con, void *arg)
+static void _on_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	http_con_t *hcon = arg;
 	void *hcon_arg = hcon->arg;
 	conmgr_fd_ref_t *hcon_con = NULL;
@@ -779,7 +787,7 @@ static void _on_finish(conmgr_fd_t *con, void *arg)
 	if (hcon_events->on_close)
 		hcon_events->on_close(conmgr_con_get_name(hcon_con), hcon_arg);
 
-	conmgr_fd_free_ref(&hcon_con);
+	CONMGR_CON_UNLINK(hcon_con);
 }
 
 extern int http_con_assign_server(conmgr_fd_ref_t *con, http_con_t *hcon,
@@ -820,8 +828,7 @@ extern int http_con_assign_server(conmgr_fd_ref_t *con, http_con_t *hcon,
 	if ((rc = conmgr_con_get_events(con, &prior_events, &prior_arg)))
 		goto failed;
 
-	if (!(hcon->con = conmgr_con_link(con)))
-		goto failed;
+	CONMGR_CON_LINK(con, hcon->con);
 
 	if ((rc = conmgr_con_set_events(con, &http_events, hcon, __func__)))
 		goto failed;
@@ -830,7 +837,7 @@ extern int http_con_assign_server(conmgr_fd_ref_t *con, http_con_t *hcon,
 
 	return rc;
 failed:
-	conmgr_fd_free_ref(&hcon->con);
+	CONMGR_CON_UNLINK(hcon->con);
 	hcon->magic = ~MAGIC;
 
 	/* Attempt to revert changes */

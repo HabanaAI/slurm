@@ -1,4 +1,4 @@
-.TH sbatch "1" "Slurm Commands" "Slurm 25.11" "Slurm Commands"
+.TH sbatch "1" "Slurm Commands" "Slurm 26.05" "Slurm Commands"
 
 .SH "NAME"
 sbatch \- Submit a batch script to Slurm.
@@ -2282,7 +2282,7 @@ silently ignored. Only root, \fISlurmUser\fR or admins can reboot nodes.
 .IP
 
 .TP
-\fB\-\-requeue\fR
+\fB\-\-requeue\fR[=\fIexpedited\fR]
 Specifies that the batch job should be eligible for requeuing.
 The job may be requeued explicitly by a system administrator, after node
 failure, or upon preemption by a higher priority job.
@@ -2290,6 +2290,11 @@ When a job is requeued, the batch script is initiated from its beginning with
 the same job ID. Also see the \fB\-\-no\-requeue\fR option.
 The \fIJobRequeue\fR configuration parameter controls the default
 behavior on the cluster.
+
+The optional \fBexpedited\fR parameter will request that the job be immediately
+eligible to start again, and be scheduled with the highest possible priority.
+This will only happen if expedited requeues are allowed globally with the
+\fBSlurmctldParameters=enable_expedited_requeue\fR in \fIslurm.conf\fR.
 .IP
 
 .TP
@@ -2747,6 +2752,16 @@ the running job) This will create a separate IO file per node.
 .IP
 
 .TP
+\fB%r\fR
+Restart count of the running job.
+.IP
+
+.TP
+\fB%S\fR
+SLUID of the running job.
+.IP
+
+.TP
 \fB%s\fR
 stepid of the running job.
 .IP
@@ -3166,7 +3181,7 @@ Set to "prefer" if the \fB\-\-mem\-bind\fR option includes the prefer option.
 .TP
 \fBSBATCH_MEM_BIND_TYPE\fR
 Set to the memory binding type specified with the \fB\-\-mem\-bind\fR option.
-Possible values are "none", "rank", "map_map", "mask_mem" and "local".
+Possible values are "none", "rank", "map_mem:", "mask_mem:" and "local".
 .IP
 
 .TP

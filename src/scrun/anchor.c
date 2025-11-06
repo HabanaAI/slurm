@@ -400,7 +400,7 @@ static void _finish_job(conmgr_callback_args_t conmgr_args, void *arg)
 		return;
 	}
 
-	rc = slurm_complete_job(step_id.job_id, rc);
+	rc = slurm_complete_job(&step_id, rc);
 	if ((rc == SLURM_ERROR) && errno)
 		rc = errno;
 
@@ -580,8 +580,9 @@ static void _catch_sigchld(conmgr_callback_args_t conmgr_args, void *arg)
 	} while (pid > 0);
 }
 
-static void *_on_cs_connection(conmgr_fd_t *con, void *arg)
+static void *_on_cs_connection(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	int tty;
 	xassert(!arg);
 
@@ -618,7 +619,7 @@ static void *_on_cs_connection(conmgr_fd_t *con, void *arg)
 	return &state;
 }
 
-static int _on_cs_data(conmgr_fd_t *con, void *arg)
+static int _on_cs_data(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	xassert(!arg);
 
@@ -633,7 +634,7 @@ static int _on_cs_data(conmgr_fd_t *con, void *arg)
 	return EINVAL;
 }
 
-static void _on_cs_finish(conmgr_fd_t *con, void *arg)
+static void _on_cs_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	xassert(arg == &state);
 	check_state();
@@ -699,6 +700,7 @@ static int _send_start_response(conmgr_fd_t *con, slurm_msg_t *req_msg, int rc)
 	st_msg->step_id.step_het_comp = NO_VAL;
 	rc = conmgr_queue_write_msg(con, msg);
 	slurm_free_msg(msg);
+	FREE_NULL_MSG(req_msg);
 
 	conmgr_queue_close_fd(con);
 	return rc;
@@ -1138,8 +1140,10 @@ extern void on_allocation(conmgr_callback_args_t conmgr_args, void *arg)
 		_try_start();
 }
 
-static void *_on_connection(conmgr_fd_t *con, void *arg)
+static void *_on_connection(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
+
 	/* may or may not need to be locked for this one */
 	check_state();
 	xassert(!arg);
@@ -1149,7 +1153,7 @@ static void *_on_connection(conmgr_fd_t *con, void *arg)
 	return &state;
 }
 
-static void _on_connection_finish(conmgr_fd_t *con, void *arg)
+static void _on_connection_finish(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	xassert(arg == &state);
 	check_state();
@@ -1193,9 +1197,10 @@ static int _send_state(conmgr_fd_t *con, slurm_msg_t *req_msg)
 	return rc;
 }
 
-static int _on_connection_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc,
-			      void *arg)
+static int _on_connection_msg(conmgr_callback_args_t conmgr_args,
+			      slurm_msg_t *msg, int unpack_rc, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	int rc;
 	uid_t user_id;
 
@@ -1225,11 +1230,13 @@ static int _on_connection_msg(conmgr_fd_t *con, slurm_msg_t *msg, int unpack_rc,
 		error("%s: [%s] rejecting %s RPC with missing user auth",
 		      __func__, conmgr_fd_get_name(con),
 		      rpc_num2string(msg->msg_type));
+		FREE_NULL_MSG(msg);
 		return SLURM_PROTOCOL_AUTHENTICATION_ERROR;
 	} else if (msg->auth_uid != user_id) {
 		error("%s: [%s] rejecting %s RPC with user:%u != owner:%u",
 		      __func__, conmgr_fd_get_name(con),
 		      rpc_num2string(msg->msg_type), msg->auth_uid, user_id);
+		FREE_NULL_MSG(msg);
 		return SLURM_PROTOCOL_AUTHENTICATION_ERROR;
 	}
 
@@ -1309,7 +1316,7 @@ static void _open_pty(void)
 	state.pts = pts;
 }
 
-static int _on_startup_con_data(conmgr_fd_t *con, void *arg)
+static int _on_startup_con_data(conmgr_callback_args_t conmgr_args, void *arg)
 {
 	xassert(arg == &state);
 	check_state();
@@ -1317,8 +1324,9 @@ static int _on_startup_con_data(conmgr_fd_t *con, void *arg)
 	fatal("%s: unexpected data", __func__);
 }
 
-static void *_on_startup_con(conmgr_fd_t *con, void *arg)
+static void *_on_startup_con(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	bool queue = false;
 
 	xassert(!arg);
@@ -1346,8 +1354,9 @@ static void *_on_startup_con(conmgr_fd_t *con, void *arg)
 	return &state;
 }
 
-static void _on_startup_con_fin(conmgr_fd_t *con, void *arg)
+static void _on_startup_con_fin(conmgr_callback_args_t conmgr_args, void *arg)
 {
+	conmgr_fd_t *con = conmgr_args.con;
 	xassert(arg == &state);
 
 	write_lock_state();
@@ -1508,7 +1517,6 @@ static int _anchor_child(int pipe_fd[2])
 	slurm_mutex_lock(&state.debug_lock);
 	xassert(!state.locked);
 	xassert(state.needs_lock);
-	state.needs_lock = false;
 	debug4("%s: END conmgr_run()", __func__);
 	slurm_mutex_unlock(&state.debug_lock);
 #endif

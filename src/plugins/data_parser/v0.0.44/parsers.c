@@ -63,6 +63,7 @@
 #include "src/common/xstring.h"
 
 #include "src/interfaces/data_parser.h"
+#include "src/interfaces/namespace.h"
 #include "src/interfaces/select.h"
 #include "src/interfaces/topology.h" /* provides topology config structs */
 
@@ -7066,13 +7067,13 @@ static int _foreach_layer(void *x, void *arg)
 	license->nodes = xstrdup(layer->nodes);
 	license->hres_rec.total = layer->count;
 
-	if ((hres_variable_free != NULL) && list_count(layer->base)) {
+	if (((void *) hres_variable_free) && list_count(layer->base)) {
 		license->hres_rec.base = list_create(hres_variable_free);
 		list_for_each(layer->base, _foreach_variable,
 			      license->hres_rec.base);
 	}
 
-	if (hres_variable_free && args->first_layer &&
+	if (((void *) hres_variable_free) && args->first_layer &&
 	    list_count(args->resource->variables)) {
 		license->hres_rec.variables = list_create(hres_variable_free);
 		list_for_each(args->resource->variables, _foreach_variable,
@@ -7155,7 +7156,7 @@ static int _foreach_license(void *x, void *arg)
 		list_append(*resources, resource);
 	}
 
-	if (!resource->variables && (hres_variable_free != NULL) &&
+	if (!resource->variables && ((void *) hres_variable_free) &&
 	    list_count(license->hres_rec.variables)) {
 		resource->variables = list_create(hres_variable_free);
 		list_for_each(license->hres_rec.variables, _foreach_variable,
@@ -7170,7 +7171,8 @@ static int _foreach_license(void *x, void *arg)
 	if (!resource->topology_name)
 		resource->topology_name =
 			xstrdup(license->hres_rec.topology_name);
-	if (hres_variable_free && list_count(license->hres_rec.base)) {
+	if (((void *) hres_variable_free) &&
+	    list_count(license->hres_rec.base)) {
 		layer->base = list_create(hres_variable_free);
 		list_for_each(license->hres_rec.base, _foreach_variable,
 			      layer->base);
@@ -7289,6 +7291,46 @@ static int PARSE_FUNC(SLUID)(const parser_t *const parser, void *obj,
 
 	fatal_abort("should never run");
 }
+
+static int PARSE_FUNC(NAMESPACE_NODE_CONF_COMPLEX)(const parser_t *const parser,
+						   void *obj, data_t *src,
+						   args_t *args,
+						   data_t *parent_path)
+{
+	ns_node_conf_t *ns_node_conf = obj;
+	int rc;
+
+	xassert(ns_node_conf);
+
+	if (data_get_type(src) != DATA_TYPE_DICT)
+		return parse_error(parser, args, parent_path,
+				   ESLURM_DATA_EXPECTED_DICT,
+				   "Rejecting %s when dictionary expected",
+				   data_get_type_string(src));
+
+	/* Keep track of if the node conf is overriding global defaults */
+	ns_node_conf->set_auto_basepath =
+		data_key_get_const(src, "auto_base_path");
+	ns_node_conf->set_clonensscript_wait =
+		data_key_get_const(src, "clone_ns_script_wait");
+	ns_node_conf->set_clonensepilog_wait =
+		data_key_get_const(src, "clone_ns_epilog_wait");
+	ns_node_conf->set_shared = data_key_get_const(src, "shared");
+
+	rc = PARSE(NAMESPACE_CONF_PTR, ns_node_conf->ns_conf, src, parent_path,
+		   args);
+	return rc;
+};
+
+static int DUMP_FUNC(NAMESPACE_NODE_CONF_COMPLEX)(const parser_t *const parser,
+						  void *obj, data_t *dst,
+						  args_t *args)
+{
+	ns_node_conf_t *ns_node_conf = obj;
+	xassert(ns_node_conf);
+
+	return DUMP(NAMESPACE_CONF_PTR, ns_node_conf->ns_conf, dst, args);
+};
 
 /*
  * The following struct arrays are not following the normal Slurm style but are
@@ -8101,7 +8143,7 @@ static const parser_t PARSER_ARRAY(STEP)[] = {
 	add_parse(UINT32, nnodes, "nodes/count", "Number of nodes in the job step"),
 	add_parse(STRING, nodes, "nodes/range", "Node(s) allocated to the job step"),
 	add_parse(UINT32, ntasks, "tasks/count", "Total number of tasks"),
-	add_parse_deprec(STRING, pid_str, 0, "pid", "Deprecated; Process ID", SLURM_24_11_PROTOCOL_VERSION),
+	add_parse_deprec(STRING, pid_str, 0, "pid", "Deprecated; Process ID", SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(UINT32_NO_VAL, req_cpufreq_min, "CPU/requested_frequency/min", "Minimum requested CPU frequency in kHz"),
 	add_parse(UINT32_NO_VAL, req_cpufreq_max, "CPU/requested_frequency/max", "Maximum requested CPU frequency in kHz"),
 	add_parse(CPU_FREQ_FLAGS, req_cpufreq_gov, "CPU/governor", "Requested CPU frequency governor in kHz"),
@@ -8203,7 +8245,7 @@ static const parser_t PARSER_ARRAY(CLUSTER_REC)[] = {
 	add_skip(lock), /* not packed */
 	add_parse(STRING, name, "name", "ClusterName"),
 	add_parse(STRING, nodes, "nodes", "Node names"),
-	add_removed(SELECT_PLUGIN_ID, "select_plugin", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(SELECT_PLUGIN_ID, "select_plugin", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(ASSOC_SHORT_PTR, root_assoc, "associations/root", "Root association information"),
 	add_parse(UINT16, rpc_version, "rpc_version", "RPC version used in the cluster"),
 	add_skip(send_rpc), /* not packed */
@@ -8397,6 +8439,7 @@ static const flag_bit_t PARSER_FLAG_ARRAY(NODE_STATES)[] = {
 	add_flag_equal(NODE_STATE_ERROR, NODE_STATE_BASE, "ERROR"),
 	add_flag_equal(NODE_STATE_MIXED, NODE_STATE_BASE, "MIXED"),
 	add_flag_equal(NODE_STATE_FUTURE, NODE_STATE_BASE, "FUTURE"),
+	add_flag_masked_bit(NODE_STATE_EXTERNAL, NODE_STATE_FLAGS, "EXTERNAL"),
 	add_flag_masked_bit(NODE_STATE_RES, NODE_STATE_FLAGS, "RESERVED"),
 	add_flag_masked_bit(NODE_STATE_UNDRAIN, NODE_STATE_FLAGS, "UNDRAIN"),
 	add_flag_masked_bit(NODE_STATE_CLOUD, NODE_STATE_FLAGS, "CLOUD"),
@@ -8457,9 +8500,9 @@ static const parser_t PARSER_ARRAY(NODE)[] = {
 	add_parse(UINT16, cpus_efctv, "effective_cpus", "Number of effective CPUs (excluding specialized CPUs)"),
 	add_parse(STRING, cpu_spec_list, "specialized_cpus", "Abstract CPU IDs on this node reserved for exclusive use by slurmd and slurmstepd"),
 	add_parse(ACCT_GATHER_ENERGY_PTR, energy, "energy", "Energy usage data"),
-	add_removed(EXT_SENSORS_DATA_PTR, "external_sensors", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(EXT_SENSORS_DATA_PTR, "external_sensors", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(STRING, extra, "extra", "Arbitrary string used for node filtering if extra constraints are enabled"),
-	add_removed(POWER_MGMT_DATA_PTR, "power", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(POWER_MGMT_DATA_PTR, "power", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(CSV_STRING, features, "features", "Available features"),
 	add_parse(CSV_STRING, features_act, "active_features", "Currently active features"),
 	add_parse(STRING, gpu_spec, "gpu_spec", "CPU cores reserved for jobs that also use a GPU"),
@@ -8727,7 +8770,7 @@ static const parser_t PARSER_ARRAY(JOB_INFO)[] = {
 	add_parse_overload(MEM_PER_NODE, pn_min_memory, 1, "memory_per_node", "Minimum memory in megabytes per allocated node"),
 	add_parse(UINT16_NO_VAL, pn_min_cpus, "minimum_cpus_per_node", "Minimum number of CPUs per node"),
 	add_parse(UINT32_NO_VAL, pn_min_tmp_disk, "minimum_tmp_disk_per_node", "Minimum tmp disk space required per node"),
-	add_removed(POWER_FLAGS, "power/flags", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(POWER_FLAGS, "power/flags", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(TIMESTAMP_NO_VAL, preempt_time, "preempt_time", "Time job received preemption signal (UNIX timestamp)"),
 	add_parse(TIMESTAMP_NO_VAL, preemptable_time, "preemptable_time", "Time job becomes eligible for preemption (UNIX timestamp)"),
 	add_parse(TIMESTAMP_NO_VAL, pre_sus_time, "pre_sus_time", "Total run time prior to last suspend in seconds"),
@@ -9185,7 +9228,7 @@ static const parser_t PARSER_ARRAY(RESERVATION_INFO)[] = {
 	add_parse(STRING, partition, "partition", "PartitionName - Partition used to reserve nodes from"),
 	add_parse(UINT32_NO_VAL, purge_comp_time, "purge_completed/time", "If PURGE_COMP flag is set, the number of seconds this reservation will sit idle until it is revoked"),
 	add_parse(TIMESTAMP_NO_VAL, start_time, "start_time", "StartTime (UNIX timestamp)"),
-	add_removed(UINT32_NO_VAL, "watts", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(UINT32_NO_VAL, "watts", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(STRING, tres_str, "tres", "Comma-separated list of required TRES"),
 	add_parse(STRING, users, "users", "Comma-separated list of permitted users"),
 };
@@ -9415,7 +9458,7 @@ static const parser_t PARSER_ARRAY(JOB_DESC_MSG)[] = {
 	add_parse(STRING, partition, "partition", "Partition assigned to the job"),
 	add_cparse(JOB_DESC_MSG_PLANE_SIZE, "distribution_plane_size", "Plane size specification when distribution specifies plane"),
 	add_skip(plane_size),
-	add_removed(POWER_FLAGS, "power_flags", NULL, SLURM_24_05_PROTOCOL_VERSION),
+	add_removed(POWER_FLAGS, "power_flags", NULL, SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(STRING, prefer, "prefer", "Comma-separated list of features that are preferred but not required"),
 	add_parse_overload(HOLD, priority, 1, "hold", "Hold (true) or release (false) job"),
 	add_parse_overload(UINT32_NO_VAL, priority, 1, "priority", "Request specific job priority"),
@@ -9576,7 +9619,7 @@ static const parser_t PARSER_ARRAY(INSTANCE_CONDITION)[] = {
 #define add_parse_deprec(mtype, field, overloads, path, desc, deprec)	\
 	add_parser_deprec(openapi_job_submit_request_t, mtype, false, field, overloads, path, desc, deprec)
 static const parser_t PARSER_ARRAY(JOB_SUBMIT_REQ)[] = {
-	add_parse_deprec(STRING, script, 0, "script", "Deprecated; Populate script field in jobs[0] or job", SLURM_24_05_PROTOCOL_VERSION),
+	add_parse_deprec(STRING, script, 0, "script", "Deprecated; Populate script field in jobs[0] or job", SLURM_MIN_PROTOCOL_VERSION),
 	add_parse(JOB_DESC_MSG_LIST, jobs, "jobs", "HetJob description"),
 	add_parse(JOB_DESC_MSG_PTR, job, "job", "Job description"),
 };
@@ -10496,6 +10539,76 @@ static const parser_t PARSER_ARRAY(H_RESOURCE)[] = {
 #undef add_parse_req
 #undef add_parse
 
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(node_resource_layout_t, mtype, false, field, 0, path, desc)
+#define add_parse_req(mtype, field, path, desc)				\
+	add_parser(node_resource_layout_t, mtype, true, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(NODE_RESOURCE_LAYOUT)[] = {
+	add_parse_req(STRING, node, "node", "Node name"),
+	add_parse(UINT16, sockets_per_node, "sockets_per_node", "Sockets per node"),
+	add_parse(UINT16, cores_per_socket, "cores_per_socket", "Cores per socket"),
+	add_parse(UINT64, mem_alloc, "mem_alloc", "Allocated memory"),
+	add_parse(STRING, core_bitmap, "core_bitmap", "Abstract core bitmap"),
+	add_parse(UINT32_NO_VAL, channel, "channel", "IMEX channel"),
+	add_parse(NODE_GRES_LAYOUT_LIST, gres, "gres", "Allocated GRES"),
+};
+#undef add_parse_req
+#undef add_parse
+
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(node_gres_layout_t, mtype, false, field, 0, path, desc)
+#define add_parse_req(mtype, field, path, desc)				\
+	add_parser(node_gres_layout_t, mtype, true, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(NODE_GRES_LAYOUT)[] = {
+	add_parse_req(STRING, name, "name", "GRES name"),
+	add_parse(STRING, type, "type", "GRES type (optional)"),
+	add_parse(UINT64, count, "count", "Count"),
+	add_parse(BITSTR_PTR, index, "index", "Index"),
+};
+#undef add_parse_req
+#undef add_parse
+
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(ns_full_conf_t, mtype, false, field, 0, path, desc)
+static const parser_t PARSER_ARRAY(NAMESPACE_FULL_CONF)[] = {
+	add_parse(NAMESPACE_CONF_PTR, defaults, "defaults", "Default namespace configuration"),
+	add_parse(NAMESPACE_NODE_CONF_LIST, node_confs, "node_confs", "List of node namespace configurations"),
+};
+#undef add_parse
+
+#define add_parse_req(mtype, field, path, desc)				\
+	add_parser(ns_node_conf_t, mtype, true, field, 0, path, desc)
+#define add_cparse_req(mtype, path, desc)				\
+	add_complex_parser(ns_conf_t, mtype, true, path, desc)
+static const parser_t PARSER_ARRAY(NAMESPACE_NODE_CONF)[] = {
+	add_parse_req(HOSTLIST, nodes, "nodes", "List of node names the options will be applied to"),
+	add_cparse_req(NAMESPACE_NODE_CONF_COMPLEX, "options", "Namespace configuration options. Specified options will override those set by defaults."),
+};
+#undef add_cparse_req
+#undef add_parse_req
+
+#define add_parse(mtype, field, path, desc)				\
+	add_parser(ns_conf_t, mtype, false, field, 0, path, desc)
+#define add_skip(field)					\
+	add_parser_skip(ns_conf_t, field)
+static const parser_t PARSER_ARRAY(NAMESPACE_CONF)[] = {
+	add_parse(BOOL, auto_basepath, "auto_base_path", "This determines if plugin should create the BasePath directory or not. Set it to 'true' if directory is not pre-created before slurm startup. If set to true, the directory is created with permission 0755. Directory is not deleted during slurm shutdown. If set to 'false' or not specified, plugin would expect directory to exist. This option can be used on a global or per-line basis. This parameter is optional."),
+	add_parse(STRING, basepath, "base_path", "Specify the PATH that the tmpfs plugin should use as a base to mount the private directories. This path must be readable and writable by the plugin. The plugin constructs a directory for each job inside this path, which is then used for mounting. The base_path gets mounted as 'private' during slurmd start and remains mounted until shutdown. The first \"%h\" within the name is replaced with the hostname on which the slurmd is running. The first \"%n\" within the name is replaced with the Slurm node name on which the slurmd is running. Set PATH to 'none' to disable the namespace/linux plugin on node subsets when there is a global setting in defaults. NOTE: The base_path must be unique to each node. If base_path is on a shared filesystem, you can use \"%h\" or \"%n\" to create node-unique directories. NOTE: The base_path parameter cannot be set to any of the paths specified by dirs. Using these directories will cause conflicts when trying to mount and unmount the private directories for the job."),
+	add_parse(STRING, clonensscript, "clone_ns_script", "Specify fully qualified pathname of an optional initialization script. This script is run after the namespace construction of a job. This script will be provided the SLURM_NS environment variable containing the path to the namespace that can be used by the nsenter command. This variable will allow the script to join the newly created namespace and do further setup work. This parameter is optional."),
+	add_skip(clonensflags), /* Flags don't exist in freebsd set later */
+	add_parse(CSV_STRING, clonensflags_str, "clone_ns_flags", "This contains a list of string flag values. This parameter defines what additional namespaces should be created for the job. Valid values are \"CLONE_NEWPID\" and \"CLONE_NEWUSER\" to create new PID and USER namespaces respectively. \"CLONE_NEWNS\" will also be accepted, but is always on. NOTE: When CLONE_NEWUSER is specified, bpf token support is also required if using ConstrainDevices in cgroup.conf."),
+	add_parse(STRING, clonensepilog, "clone_ns_epilog", "Specify fully qualified pathname of an optional epilog script. This script runs just before the namespace is torn down. This script will be provided the SLURM_NS environment variable containing the path to the namespace that can be used by the nsenter command. This variable will allow the script to join the soon to be removed namespace and do any cleanup work. This parameter is optional."),
+	add_parse(UINT32, clonensscript_wait, "clone_ns_script_wait", "The number of seconds to wait for the clone_ns_script to complete before considering the script failed. The default value is 10 seconds."),
+	add_parse(UINT32, clonensepilog_wait, "clone_ns_epilog_wait", "The number of seconds to wait for the clone_ns_epilog to complete before considering the script failed. The default value is 10 seconds."),
+	add_parse(STRING, dirs, "dirs", "A list of mount points separated with commas to create private mounts for. This parameter is optional and if not specified it defaults to \"/tmp,/dev/shm\". NOTE: /dev/shm has special handling, and instead of a bind mount is always a fresh tmpfs filesystem. NOTE: When CLONE_NEWPID is specified, a unique /proc filesystem for the container will be mounted automatically."),
+	add_parse(STRING, initscript, "init_script", "Specify fully qualified pathname of an optional initialization script. This script is run before the namespace construction of a job. It can be used to make the job join additional namespaces prior to the construction of /tmp namespace or it can be used for any site-specific setup. This parameter is optional. "),
+	add_parse(BOOL, shared, "shared", "Specifying Shared=true will propagate new mounts between the job specific filesystem namespace and the root filesystem namespace, enable using autofs on the node. This parameter is optional. "),
+	add_parse(STRING, usernsscript, "user_ns_script", "Specifies the location of a script that will perform the user namespace setup. This script runs first when setting up the namespace. The environment variable \"SLURM_NS_PID\" is provided to allow constructing the path to the various map files that this script could write to. If not specified, every user and group will be mapped."),
+	/* Keep non-pointer fields synced with NAMESPACE_NODE_CONF_COMPLEX */
+};
+#undef add_skip
+#undef add_parse
+
 #define add_openapi_response_meta(rtype)				\
 	add_parser(rtype, OPENAPI_META_PTR, false, meta, 0, XSTRINGIFY(OPENAPI_RESP_STRUCT_META_FIELD_NAME), "Slurm meta values")
 #define add_openapi_response_errors(rtype)				\
@@ -10551,6 +10664,8 @@ add_openapi_response_single(OPENAPI_RESERVATION_MOD_RESP, RESERVATION_DESC_MSG_L
 add_openapi_response_single(OPENAPI_HOSTLIST_REQ_RESP, HOSTLIST_STRING_TO_STRING, "hostlist", "Hostlist expression string");
 add_openapi_response_single(OPENAPI_HOSTNAMES_REQ_RESP, HOSTLIST_STRING, "hostnames", "Array of host names");
 add_openapi_response_single(OPENAPI_JOB_MODIFY_RESP, STRING_LIST, "results", "Job modify results");
+add_openapi_response_single(OPENAPI_CREATE_NODE_REQ, STRING, "node_conf", "Node configuration line");
+add_openapi_response_single(OPENAPI_RESOURCE_LAYOUT_RESP, NODE_RESOURCE_LAYOUT_LIST, "nodes", "Node resource layouts");
 
 #define add_parse(mtype, field, path, desc)				\
 	add_parser(openapi_job_post_response_t, mtype, false, field, 0, path, desc)
@@ -11166,12 +11281,13 @@ static const parser_t parsers[] = {
 	addpcp(TOPOLOGY_FLAT, BOOL, bool, NEED_NONE, "topology/flat plugin"),
 	addpca(TOPOLOGY_TREE_CONFIG_ARRAY, SWITCH_CONFIG, topology_tree_config_t, NEED_NONE, "Array of switch configurations"),
 	addpca(TOPOLOGY_BLOCK_CONFIG_ARRAY, BLOCK_CONFIG, topology_block_config_t, NEED_NONE, "Array of block configurations"),
+	addpcp(NAMESPACE_NODE_CONF_COMPLEX, NAMESPACE_CONF_PTR, ns_node_conf_t, NEED_NONE, "Namespace node specific configuration"),
 
 	/* Removed parsers */
-	addr(SELECT_PLUGIN_ID, STRING, SLURM_24_05_PROTOCOL_VERSION),
-	addr(EXT_SENSORS_DATA, OBJECT, SLURM_24_05_PROTOCOL_VERSION),
-	addr(POWER_FLAGS, ARRAY, SLURM_24_05_PROTOCOL_VERSION),
-	addr(POWER_MGMT_DATA, OBJECT, SLURM_24_05_PROTOCOL_VERSION),
+	addr(SELECT_PLUGIN_ID, STRING, SLURM_MIN_PROTOCOL_VERSION),
+	addr(EXT_SENSORS_DATA, OBJECT, SLURM_MIN_PROTOCOL_VERSION),
+	addr(POWER_FLAGS, ARRAY, SLURM_MIN_PROTOCOL_VERSION),
+	addr(POWER_MGMT_DATA, OBJECT, SLURM_MIN_PROTOCOL_VERSION),
 
 	/* NULL terminated model parsers */
 	addnt(CONTROLLER_PING_ARRAY, CONTROLLER_PING),
@@ -11325,6 +11441,11 @@ static const parser_t parsers[] = {
 	addpap(H_RESOURCE, hierarchical_resource_t, NULL, FREE_FUNC(H_RESOURCE)),
 	addpap(H_LAYER, hierarchy_layer_t, NULL, FREE_FUNC(H_LAYER)),
 	addpap(H_VARIABLE, hres_variable_t, NULL, hres_variable_free),
+	addpap(NODE_RESOURCE_LAYOUT, node_resource_layout_t, NULL, (parser_free_func_t) slurm_free_node_resource_layout),
+	addpap(NODE_GRES_LAYOUT, node_gres_layout_t, NULL, (parser_free_func_t) slurm_free_node_gres_layout),
+	addpap(NAMESPACE_FULL_CONF, ns_full_conf_t, NULL, (parser_free_func_t) slurm_free_ns_full_conf),
+	addpap(NAMESPACE_NODE_CONF, ns_node_conf_t, NULL, (parser_free_func_t) slurm_free_ns_node_conf),
+	addpap(NAMESPACE_CONF, ns_conf_t, NULL, (parser_free_func_t) slurm_free_ns_conf),
 
 	/* OpenAPI responses */
 	addoar(OPENAPI_RESP),
@@ -11371,6 +11492,8 @@ static const parser_t parsers[] = {
 	addoar(OPENAPI_HOSTNAMES_REQ_RESP),
 	addoar(OPENAPI_HOSTLIST_REQ_RESP),
 	addoar(OPENAPI_JOB_MODIFY_RESP),
+	addoar(OPENAPI_CREATE_NODE_REQ),
+	addoar(OPENAPI_RESOURCE_LAYOUT_RESP),
 
 	/* Flag bit arrays */
 	addfa(ASSOC_FLAGS, slurmdb_assoc_flags_t),
@@ -11456,6 +11579,9 @@ static const parser_t parsers[] = {
 	addpl(H_RESOURCE_LIST, H_RESOURCE_PTR, NEED_NONE),
 	addpl(H_LAYER_LIST, H_LAYER_PTR, NEED_NONE),
 	addpl(H_VARIABLE_LIST, H_VARIABLE_PTR, NEED_NONE),
+	addpl(NODE_RESOURCE_LAYOUT_LIST, NODE_RESOURCE_LAYOUT_PTR, NEED_NONE),
+	addpl(NODE_GRES_LAYOUT_LIST, NODE_GRES_LAYOUT_PTR, NEED_NONE),
+	addpl(NAMESPACE_NODE_CONF_LIST, NAMESPACE_NODE_CONF_PTR, NEED_NONE),
 };
 #undef addpl
 #undef addps

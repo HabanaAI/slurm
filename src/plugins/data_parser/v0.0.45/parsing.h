@@ -62,7 +62,7 @@
 extern int dump(void *src, ssize_t src_bytes,
 		const parser_t *const field_parser,
 		const parser_t *const parser, data_t *dst, args_t *args);
-#define DUMP(type, src, dst, args)                                             \
+#define DUMP(type, src, dst, args)                                            \
 	dump(&src, sizeof(src), NULL, find_parser_by_type(DATA_PARSER_##type), \
 	     dst, args)
 

@@ -110,7 +110,6 @@
 #define MAX_RPC_PACK_CNT	100
 #define RPC_PACK_MAX_AGE	1	/* Rebuild data over 1 seconds old */
 #define DUMP_RPC_COUNT 		25
-#define HOSTLIST_MAX_SIZE 	80
 #define MAIL_PROG_TIMEOUT 120 /* Timeout in seconds */
 #define AGENT_SHUTDOWN_WAIT 3
 
@@ -1581,6 +1580,19 @@ extern void agent_fini(void)
 	struct timespec ts = {0, 0};
 	int rc = 0;
 
+	/*
+	 * Wait until we know that slurmctld_config.shutdown_time set. This way,
+	 * each helper thread that is checking slurmctld_config.shutdown_time to
+	 * know when to shutdown can immediately end its slurm_cond_timedwait()
+	 * loop rather than waiting for the next loop.
+	 */
+	slurm_mutex_lock(&slurmctld_config.shutdown_lock);
+	while (!slurmctld_config.shutdown_time) {
+		slurm_cond_wait(&slurmctld_config.shutdown_cond,
+				&slurmctld_config.shutdown_lock);
+	}
+	slurm_mutex_unlock(&slurmctld_config.shutdown_lock);
+
 	agent_trigger(999, true, true);
 
 	slurm_mutex_lock(&update_nodes_mutex);
@@ -1660,6 +1672,13 @@ extern void agent_pack_pending_rpc_stats(buf_t *buffer)
 		memset(rpc_stat_types,  0, sizeof(uint32_t) * MAX_RPC_PACK_CNT);
 
 		rpc_count = 0;
+
+		/* Free any hostlist strings */
+		if (rpc_host_list) {
+			for (i = 0; i < DUMP_RPC_COUNT; i++)
+				xfree(rpc_host_list[i]);
+		}
+
 		/* the other variables need not be cleared */
 	} else {		/* Allocate buffers for data */
 		stat_type_count = 0;
@@ -1668,9 +1687,6 @@ extern void agent_pack_pending_rpc_stats(buf_t *buffer)
 
 		rpc_count = 0;
 		rpc_host_list = xcalloc(DUMP_RPC_COUNT, sizeof(char *));
-		for (i = 0; i < DUMP_RPC_COUNT; i++) {
-			rpc_host_list[i] = xmalloc(HOSTLIST_MAX_SIZE);
-		}
 		rpc_type_list = xcalloc(DUMP_RPC_COUNT, sizeof(uint32_t));
 	}
 
@@ -1681,11 +1697,11 @@ extern void agent_pack_pending_rpc_stats(buf_t *buffer)
 		while ((queued_req_ptr = list_next(list_iter))) {
 			agent_arg_ptr = queued_req_ptr->agent_arg_ptr;
 			if (rpc_count < DUMP_RPC_COUNT) {
+				hostlist_t *hl = agent_arg_ptr->hostlist;
 				rpc_type_list[rpc_count] =
 						agent_arg_ptr->msg_type;
-				hostlist_ranged_string(agent_arg_ptr->hostlist,
-						HOSTLIST_MAX_SIZE,
-						rpc_host_list[rpc_count]);
+				rpc_host_list[rpc_count] =
+					hostlist_ranged_string_xmalloc(hl);
 				rpc_count++;
 			}
 			for (i = 0; i < MAX_RPC_PACK_CNT; i++) {
@@ -2300,7 +2316,7 @@ static int _batch_launch_defer(queued_request_t *queued_req_ptr)
 	}
 
 	launch_msg_ptr = (batch_job_launch_msg_t *)agent_arg_ptr->msg_args;
-	job_ptr = find_job_record(launch_msg_ptr->step_id.job_id);
+	job_ptr = find_job(&launch_msg_ptr->step_id);
 	if ((job_ptr == NULL) ||
 	    (!IS_JOB_RUNNING(job_ptr) && !IS_JOB_SUSPENDED(job_ptr))) {
 		info("agent(batch_launch): removed pending request for cancelled %pI",
@@ -2395,11 +2411,10 @@ static int _signal_defer(queued_request_t *queued_req_ptr)
 
 	agent_arg_ptr = queued_req_ptr->agent_arg_ptr;
 	signal_msg_ptr = (signal_tasks_msg_t *)agent_arg_ptr->msg_args;
-	job_ptr = find_job_record(signal_msg_ptr->step_id.job_id);
 
-	if (job_ptr == NULL) {
-		info("agent(signal_task): removed pending request for cancelled JobId=%u",
-		     signal_msg_ptr->step_id.job_id);
+	if (!(job_ptr = find_job(&signal_msg_ptr->step_id))) {
+		info("agent(signal_task): removed pending request for cancelled %pI",
+		     &signal_msg_ptr->step_id);
 		return -1;	/* job cancelled while waiting */
 	}
 

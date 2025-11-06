@@ -47,9 +47,14 @@
 #include "src/common/job_resources.h"
 #include "src/common/log.h"
 #include "src/common/pack.h"
+#include "src/common/slurm_protocol_pack.h"
 #include "src/common/xassert.h"
 #include "src/common/xmalloc.h"
 #include "src/common/xstring.h"
+
+#include "src/interfaces/gres.h"
+#include "src/interfaces/switch.h"
+
 #include "src/slurmctld/slurmctld.h"
 
 
@@ -492,7 +497,7 @@ extern void pack_job_resources(job_resources_t *job_resrcs_ptr, buf_t *buffer,
 	int i;
 	uint32_t sock_recs = 0;
 
-	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		if (job_resrcs_ptr == NULL) {
 			uint32_t empty = NO_VAL;
 			pack32(empty, buffer);
@@ -502,85 +507,6 @@ extern void pack_job_resources(job_resources_t *job_resrcs_ptr, buf_t *buffer,
 		pack32(job_resrcs_ptr->nhosts, buffer);
 		pack32(job_resrcs_ptr->ncpus, buffer);
 		pack32(job_resrcs_ptr->next_step_node_inx, buffer);
-		pack32(job_resrcs_ptr->node_req, buffer);
-		packstr(job_resrcs_ptr->nodes, buffer);
-		pack8(job_resrcs_ptr->whole_node, buffer);
-		pack16(job_resrcs_ptr->threads_per_core, buffer);
-		pack16(job_resrcs_ptr->cr_type, buffer);
-
-		if (job_resrcs_ptr->cpu_array_reps)
-			pack32_array(job_resrcs_ptr->cpu_array_reps,
-				     job_resrcs_ptr->cpu_array_cnt, buffer);
-		else
-			pack32_array(job_resrcs_ptr->cpu_array_reps, 0, buffer);
-
-		if (job_resrcs_ptr->cpu_array_value)
-			pack16_array(job_resrcs_ptr->cpu_array_value,
-				     job_resrcs_ptr->cpu_array_cnt, buffer);
-		else
-			pack16_array(job_resrcs_ptr->cpu_array_value,
-				     0, buffer);
-
-		if (job_resrcs_ptr->cpus)
-			pack16_array(job_resrcs_ptr->cpus,
-				     job_resrcs_ptr->nhosts, buffer);
-		else
-			pack16_array(job_resrcs_ptr->cpus, 0, buffer);
-
-		if (job_resrcs_ptr->cpus_used)
-			pack16_array(job_resrcs_ptr->cpus_used,
-				     job_resrcs_ptr->nhosts, buffer);
-		else
-			pack16_array(job_resrcs_ptr->cpus_used, 0, buffer);
-
-		if (job_resrcs_ptr->memory_allocated)
-			pack64_array(job_resrcs_ptr->memory_allocated,
-				     job_resrcs_ptr->nhosts, buffer);
-		else
-			pack64_array(job_resrcs_ptr->memory_allocated,
-				     0, buffer);
-
-		if (job_resrcs_ptr->memory_used)
-			pack64_array(job_resrcs_ptr->memory_used,
-				     job_resrcs_ptr->nhosts, buffer);
-		else
-			pack64_array(job_resrcs_ptr->memory_used, 0, buffer);
-
-		xassert(job_resrcs_ptr->cores_per_socket);
-		xassert(job_resrcs_ptr->sock_core_rep_count);
-		xassert(job_resrcs_ptr->sockets_per_node);
-
-		for (i=0; i < job_resrcs_ptr->nhosts; i++) {
-			sock_recs += job_resrcs_ptr->
-				     sock_core_rep_count[i];
-			if (sock_recs >= job_resrcs_ptr->nhosts)
-				break;
-		}
-		i++;
-		pack16_array(job_resrcs_ptr->sockets_per_node,
-			     (uint32_t) i, buffer);
-		pack16_array(job_resrcs_ptr->cores_per_socket,
-			     (uint32_t) i, buffer);
-		pack32_array(job_resrcs_ptr->sock_core_rep_count,
-			     (uint32_t) i, buffer);
-
-		xassert(job_resrcs_ptr->core_bitmap);
-		xassert(job_resrcs_ptr->core_bitmap_used);
-		pack_bit_str_hex(job_resrcs_ptr->core_bitmap, buffer);
-		pack_bit_str_hex(job_resrcs_ptr->core_bitmap_used,
-				 buffer);
-
-		pack_bit_str_hex(job_resrcs_ptr->node_bitmap, buffer);
-
-	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-		if (job_resrcs_ptr == NULL) {
-			uint32_t empty = NO_VAL;
-			pack32(empty, buffer);
-			return;
-		}
-
-		pack32(job_resrcs_ptr->nhosts, buffer);
-		pack32(job_resrcs_ptr->ncpus, buffer);
 		pack32(job_resrcs_ptr->node_req, buffer);
 		packstr(job_resrcs_ptr->nodes, buffer);
 		pack8(job_resrcs_ptr->whole_node, buffer);
@@ -665,7 +591,7 @@ extern int unpack_job_resources(job_resources_t **job_resrcs_pptr,
 	job_resources_t *job_resrcs;
 
 	xassert(job_resrcs_pptr);
-	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_unpack32(&empty, buffer);
 		if (empty == NO_VAL) {
 			*job_resrcs_pptr = NULL;
@@ -678,72 +604,6 @@ extern int unpack_job_resources(job_resources_t **job_resrcs_pptr,
 		safe_unpack32(&job_resrcs->next_step_node_inx, buffer);
 		safe_unpack32(&job_resrcs->node_req, buffer);
 		safe_unpackstr_xmalloc(&job_resrcs->nodes, &tmp32, buffer);
-		safe_unpack8(&job_resrcs->whole_node, buffer);
-		safe_unpack16(&job_resrcs->threads_per_core, buffer);
-		safe_unpack16(&job_resrcs->cr_type, buffer);
-
-		safe_unpack32_array(&job_resrcs->cpu_array_reps,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->cpu_array_reps);
-		job_resrcs->cpu_array_cnt = tmp32;
-
-		safe_unpack16_array(&job_resrcs->cpu_array_value,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->cpu_array_value);
-
-		if (tmp32 != job_resrcs->cpu_array_cnt)
-			goto unpack_error;
-
-		safe_unpack16_array(&job_resrcs->cpus, &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->cpus);
-		if (tmp32 != job_resrcs->nhosts)
-			goto unpack_error;
-		safe_unpack16_array(&job_resrcs->cpus_used, &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->cpus_used);
-
-		safe_unpack64_array(&job_resrcs->memory_allocated,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->memory_allocated);
-		safe_unpack64_array(&job_resrcs->memory_used, &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->memory_used);
-
-		safe_unpack16_array(&job_resrcs->sockets_per_node,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->sockets_per_node);
-		safe_unpack16_array(&job_resrcs->cores_per_socket,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->cores_per_socket);
-		safe_unpack32_array(&job_resrcs->sock_core_rep_count,
-				    &tmp32, buffer);
-		if (tmp32 == 0)
-			xfree(job_resrcs->sock_core_rep_count);
-
-		unpack_bit_str_hex(&job_resrcs->core_bitmap, buffer);
-		unpack_bit_str_hex(&job_resrcs->core_bitmap_used,
-				   buffer);
-
-		unpack_bit_str_hex(&job_resrcs->node_bitmap, buffer);
-
-	} else if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
-		safe_unpack32(&empty, buffer);
-		if (empty == NO_VAL) {
-			*job_resrcs_pptr = NULL;
-			return SLURM_SUCCESS;
-		}
-
-		job_resrcs = xmalloc(sizeof(struct job_resources));
-		job_resrcs->nhosts = empty;
-		safe_unpack32(&job_resrcs->ncpus, buffer);
-		safe_unpack32(&job_resrcs->node_req, buffer);
-		safe_unpackstr(&job_resrcs->nodes, buffer);
 		safe_unpack8(&job_resrcs->whole_node, buffer);
 		safe_unpack16(&job_resrcs->threads_per_core, buffer);
 		safe_unpack16(&job_resrcs->cr_type, buffer);
@@ -1698,4 +1558,119 @@ extern uint16_t job_resources_get_node_cpu_cnt(job_resources_t *job_resrcs_ptr,
 	}
 
 	return cpu_count;
+}
+
+static void _pack_node_gres_layout(void *in, uint16_t protocol_version,
+				   buf_t *buffer)
+{
+	gres_state_t *gres = in;
+	gres_job_state_t *gres_js = gres->gres_data;
+	bool pack_index = false;
+
+	if (gres_js->gres_bit_alloc && gres_js->gres_bit_alloc[0])
+		pack_index = true;
+
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		packstr(gres->gres_name, buffer);
+		packstr(gres_js->type_name, buffer);
+		pack64(gres_js->gres_cnt_node_alloc[0], buffer);
+		packbool(pack_index, buffer);
+		if (pack_index)
+			pack_bit_str_hex(gres_js->gres_bit_alloc[0], buffer);
+	}
+}
+
+static void _pack_node_layout(void *in, uint16_t protocol_version,
+			      buf_t *buffer)
+{
+	node_resource_layout_t *this_node = in;
+
+	if (protocol_version >= SLURM_25_11_PROTOCOL_VERSION) {
+		packstr(this_node->node, buffer);
+		pack64(this_node->mem_alloc, buffer);
+		pack16(this_node->sockets_per_node, buffer);
+		pack16(this_node->cores_per_socket, buffer);
+		pack32(this_node->channel, buffer);
+		packstr(this_node->core_bitmap, buffer);
+		slurm_pack_list(this_node->gres, _pack_node_gres_layout, buffer,
+				protocol_version);
+	}
+}
+
+extern void pack_resource_layout(job_record_t *job_ptr, buf_t *buffer,
+				 uint16_t protocol_version)
+{
+	job_resources_t *job_res = job_ptr->job_resrcs;
+	hostlist_t *hl = NULL;
+	int array_size = 0;
+	int sock_inx = 0, sock_reps = 0;
+	int bit_inx = 0, bit_reps = 0;
+	list_t *node_layouts = NULL;
+
+	if (!job_res)
+		return;
+
+	node_layouts = list_create((ListDelF) slurm_free_node_resource_layout);
+
+	array_size = bit_size(job_res->core_bitmap);
+
+	hl = hostlist_create(job_res->nodes);
+
+	for (int node_inx = 0; node_inx < job_res->nhosts; node_inx++) {
+		bitstr_t *core_bitmap = NULL;
+		char *node_tmp = NULL;
+		node_resource_layout_t *this_node = xmalloc(sizeof(*this_node));
+
+		node_tmp = hostlist_shift(hl);
+		this_node->node = xstrdup(node_tmp);
+		free(node_tmp);
+
+		if (job_res->memory_allocated)
+			this_node->mem_alloc =
+				job_res->memory_allocated[node_inx];
+
+		if (sock_reps >= job_res->sock_core_rep_count[sock_inx]) {
+			sock_inx++;
+			sock_reps = 0;
+		}
+		sock_reps++;
+
+		this_node->sockets_per_node =
+			job_res->sockets_per_node[sock_inx];
+		this_node->cores_per_socket =
+			job_res->cores_per_socket[sock_inx];
+
+		bit_reps = this_node->sockets_per_node *
+			   this_node->cores_per_socket;
+
+		core_bitmap = bit_alloc(bit_reps);
+		for (int i = 0; i < bit_reps; i++) {
+			if (bit_inx >= array_size) {
+				error("%s: array size wrong", __func__);
+				break;
+			}
+
+			if (bit_test(job_res->core_bitmap, bit_inx))
+				bit_set(core_bitmap, i);
+
+			bit_inx++;
+		}
+		this_node->core_bitmap = bit_fmt_hexmask(core_bitmap);
+		FREE_NULL_BITMAP(core_bitmap);
+
+		this_node->channel =
+			switch_g_job_channel(job_ptr, this_node->node);
+		this_node->gres =
+			gres_job_state_extract(job_ptr->gres_list_alloc,
+					       node_inx);
+
+		list_append(node_layouts, this_node);
+	}
+
+	FREE_NULL_HOSTLIST(hl);
+
+	slurm_pack_list(node_layouts, _pack_node_layout, buffer,
+			protocol_version);
+
+	FREE_NULL_LIST(node_layouts);
 }

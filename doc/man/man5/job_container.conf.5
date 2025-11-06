@@ -1,38 +1,35 @@
-.TH "namespace.conf" "5" "Slurm Configuration File" "Slurm 25.11" "Slurm Configuration File"
+.TH "job_container.conf" "5" "Slurm Configuration File" "Slurm 26.05" "Slurm Configuration File"
 
 .SH "NAME"
-namespace.conf \- Slurm configuration file for namespace plugins
+job_container.conf \- Slurm configuration file for namespace plugins
 
 .SH "DESCRIPTION"
 
-\fBnamespace.conf\fP is an ASCII file which defines parameters used by
-Slurm's namespace plugins. Based on these parameters, the plugin will create the
-appropriate job-specifc namespace(s).
+\fBjob_container.conf\fP is an ASCII file which defines parameters used by
+Slurm's namespace/tmpfs plugin. Based on these parameters, the plugin will
+create the appropriate job-specifc namespace(s).
 
-The namespace/tmpfs plugin only creates a filesystem namespace and will
-construct a private (or optionally shared) filesystem namespace and mount a list
-of directories (defaults to /tmp and /dev/shm) inside it, giving the job a
-private view of these directories. These paths are mounted inside the location
-specified by 'BasePath' in the \fBnamespace.conf\fR file.
-
-The namespace/linux plugin operates very similarly to the namespace/tmpfs
-plugin, however optionally can create new User and PID namespaces for the job.
+The namespace/tmpfs plugin creates a filesystem namespace and will construct a
+private (or optionally shared) filesystem namespace and mount a list of
+directories (defaults to /tmp and /dev/shm) inside it, giving the job a private
+view of these directories. These paths are mounted inside the location specified
+by 'BasePath' in the \fBjob_container.conf\fR file.
 
 When the job completes, the namespace is unmounted and all files therein are
 automatically removed.
 
-To make use of these plugins, 'PrologFlags=Contain' must also be present in
+To make use of this plugin, 'PrologFlags=Contain' must also be present in
 your \fBslurm.conf\fR file, as shown:
 
 .nf
-NamespaceType=namespace/linux
+NamespaceType=namespace/tmpfs
 PrologFlags=Contain
 .fi
 
 The file will always be located in the same directory as the \fBslurm.conf\fR.
 
 .LP
-If using the \fBnamespace.conf\fR file to define a namespace available to
+If using the \fBjob_container.conf\fR file to define a namespace available to
 nodes the first parameter on the line should be \fBNodeName\fR. If configuring a
 namespace without specifying nodes, the first parameter on the line
 should be \fBBasePath\fR.
@@ -44,8 +41,8 @@ as a comment through the end of that line.
 Changes to the configuration file take effect upon restart of Slurm daemons.
 
 .LP
-The following namespace.conf parameters are defined to control the behavior
-of the namespace plugins.
+The following job_container.conf parameters are defined to control the behavior
+of the namespace/tmpfs plugin.
 
 .TP
 \fBAutoBasePath\fR
@@ -109,34 +106,11 @@ considering the script failed. The default value is 10 seconds.
 .IP
 
 .TP
-\fBCloneNSFlags\fR
-This option is only valid for the namespace/linux plugin. This parameter
-defines what additional namespaces should be created for the job. Valid values
-are "CLONE_NEWPID" and "CLONE_NEWUSER" to create new PID and USER namespaces
-respectively. "CLONE_NEWNS" will also be accepted, but is always on.
-\fBNOTE\fR: When CLONE_NEWUSER is specified, bpf token support is also required
-if using ConstrainDevices in \fBcgroup.conf\fR.
-.IP
-
-.TP
-\fBDirs\fR
-A list of mount points separated with commas to create private mounts for.
-This parameter is optional and if not specified it defaults to "/tmp,/dev/shm".
-
-\fBNOTE\fR: /dev/shm has special handling, and instead of a bind mount is always
-a fresh tmpfs filesystem.
-
-\fBNOTE\fR: When CLONE_NEWPID is specified, a unique /proc filesystem for the
-container will be mounted automatically.
-.IP
-
-.TP
 \fBEntireStepInNS\fR
-This parameter is only valid for namespace/tmpfs, and is the only behavior for
-namespace/linux .Specifying EntireStepInNS=true will pivot all slurmstepd
-processes (excluding the external step, which is tasked with creating the
-namespace) into the constructed namespace. This will cause issues if certain
-paths such as SlurmdSpoolDir are inaccessible. This parameter is optional.
+Specifying EntireStepInNS=true will pivot all slurmstepd processes (excluding
+the external step, which is tasked with creating the namespace) into the
+constructed namespace. This will cause issues if certain paths such as
+SlurmdSpoolDir are inaccessible. This parameter is optional.
 .IP
 
 .TP
@@ -150,7 +124,7 @@ optional.
 
 .TP
 \fBNodeName\fR
-A NodeName specification can be used to permit one namespace.conf
+A NodeName specification can be used to permit one job_container.conf
 file to be used for all compute nodes in a cluster by specifying the node(s)
 that each line should apply to.
 The NodeName specification can use a Slurm hostlist specification as shown in
@@ -164,27 +138,17 @@ filesystem namespace and the root filesystem namespace, enable using autofs on
 the node. This parameter is optional.
 .IP
 
-.TP
-\fBUserNSScript\fR
-This parameter is only valid for the namespace/linux plugin. Specifies the
-location of a script that will perform the user namespace setup.  This script
-runs first when setting up the namespace.  The environment variable
-"SLURM_NS_PID" is provided to allow constructing the path to the various map
-files that this script could write to.  If not specified, every user and group
-will be mapped.
-.IP
-
 .SH "NOTES"
 .LP
-If any parameters in namespace.conf are changed while slurm is running, then
+If any parameters in job_container.conf are changed while slurm is running, then
 slurmd on the respective nodes will need to be
 restarted for changes to take effect (scontrol reconfigure is not sufficient).
 Additionally this can be disruptive to
 jobs already running on the node. So care must be taken to make sure no jobs
-are running if any changes to namespace.conf are deployed.
+are running if any changes to job_container.conf are deployed.
 
 Restarting slurmd is safe and non\-disruptive to running jobs, as long as
-namespace.conf is not changed between restarts in which case above point
+job_container.conf is not changed between restarts in which case above point
 applies.
 
 .SH "EXAMPLE"
@@ -199,7 +163,7 @@ PrologFlags=Contain
 .fi
 
 .TP
-\fB/etc/slurm/namespace.conf\fR:
+\fB/etc/slurm/job_container.conf\fR:
 The first sample file will define 1 basepath for all nodes and it will be
 automatically created.
 .nf

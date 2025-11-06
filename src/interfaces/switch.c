@@ -89,6 +89,7 @@ typedef struct slurm_switch_ops {
 					    char *nodelist );
 	int (*job_start)(job_record_t *job_ptr, bool test_only);
 	void         (*job_complete)      ( job_record_t *job_ptr );
+	uint32_t (*job_channel)(job_record_t *job_ptr, char *node_name);
 	int          (*fs_init)           ( stepd_step_rec_t *step );
 	void	     (*extern_step_fini)  ( uint32_t job_id);
 } slurm_switch_ops_t;
@@ -117,6 +118,7 @@ static const char *syms[] = {
 	"switch_p_job_step_complete",
 	"switch_p_job_start",
 	"switch_p_job_complete",
+	"switch_p_job_channel",
 	"switch_p_fs_init",
 	"switch_p_extern_step_fini",
 };
@@ -390,37 +392,34 @@ extern void switch_g_stepinfo_pack(dynamic_plugin_data_t *stepinfo,
 
 	xassert(switch_context_cnt >= 0);
 
-	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		length_position = get_buf_offset(buffer);
 		pack32(0, buffer);
 		start = get_buf_offset(buffer);
-	}
 
-	if (!switch_context_cnt) {
-		return;
-	}
+		if (!switch_context_cnt) {
+			return;
+		}
 
-	if (stepinfo) {
-		data = stepinfo->data;
-		plugin_id = stepinfo->plugin_id;
-	} else
-		plugin_id = switch_context_default;
+		if (stepinfo) {
+			data = stepinfo->data;
+			plugin_id = stepinfo->plugin_id;
+		} else
+			plugin_id = switch_context_default;
 
-	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		pack32(*(ops[plugin_id].plugin_id), buffer);
-	} else {
-		error("%s: protocol_version %hu not supported",
-		      __func__, protocol_version);
-		return;
-	}
 
-	(*(ops[plugin_id].stepinfo_pack))(data, buffer, protocol_version);
+		(*(ops[plugin_id].stepinfo_pack))(
+			data, buffer, protocol_version);
 
-	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
 		end = get_buf_offset(buffer);
 		set_buf_offset(buffer, length_position);
 		pack32(end - start, buffer);
 		set_buf_offset(buffer, end);
+	} else {
+		error("%s: protocol_version %hu not supported",
+		      __func__, protocol_version);
+		return;
 	}
 }
 
@@ -436,7 +435,7 @@ extern int switch_g_stepinfo_unpack(dynamic_plugin_data_t **stepinfo,
 	if (protocol_version < SLURM_MIN_PROTOCOL_VERSION)
 		goto unpack_error;
 
-	if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+	if (protocol_version >= SLURM_MIN_PROTOCOL_VERSION) {
 		safe_unpack32(&length, buffer);
 		switch_stepinfo_end = get_buf_offset(buffer) + length;
 		if (!(running_in_slurmstepd() || running_in_slurmctld()) ||
@@ -445,23 +444,19 @@ extern int switch_g_stepinfo_unpack(dynamic_plugin_data_t **stepinfo,
 
 		if (remaining_buf(buffer) < length)
 			return SLURM_ERROR;
-	} else if (!switch_context_cnt) {
-		return SLURM_SUCCESS;
-	}
 
-	stepinfo_ptr = xmalloc(sizeof(dynamic_plugin_data_t));
-	*stepinfo = stepinfo_ptr;
+		stepinfo_ptr = xmalloc(sizeof(dynamic_plugin_data_t));
+		*stepinfo = stepinfo_ptr;
 
-	safe_unpack32(&plugin_id, buffer);
-	for (i = 0; i < switch_context_cnt; i++) {
-		if (*(ops[i].plugin_id) == plugin_id) {
-			stepinfo_ptr->plugin_id = i;
-			break;
+		safe_unpack32(&plugin_id, buffer);
+		for (i = 0; i < switch_context_cnt; i++) {
+			if (*(ops[i].plugin_id) == plugin_id) {
+				stepinfo_ptr->plugin_id = i;
+				break;
+			}
 		}
-	}
 
-	if (i >= switch_context_cnt) {
-		if (protocol_version >= SLURM_24_11_PROTOCOL_VERSION) {
+		if (i >= switch_context_cnt) {
 			/*
 			 * We were sent a plugin that we don't know how to
 			 * handle so skip it if possible.
@@ -469,14 +464,12 @@ extern int switch_g_stepinfo_unpack(dynamic_plugin_data_t **stepinfo,
 			debug("we don't have switch plugin type %u", plugin_id);
 			goto skip_buf;
 		}
-		error("we don't have switch plugin type %u", plugin_id);
-		goto unpack_error;
-	}
 
-	if ((*(ops[stepinfo_ptr->plugin_id].stepinfo_unpack))
-	     ((switch_stepinfo_t **) &stepinfo_ptr->data, buffer,
-	      protocol_version))
-		goto unpack_error;
+		if ((*(ops[stepinfo_ptr->plugin_id].stepinfo_unpack))
+		    ((switch_stepinfo_t **) &stepinfo_ptr->data, buffer,
+		     protocol_version))
+			goto unpack_error;
+	}
 
 	/*
 	 * Free nodeinfo_ptr if it is different from local cluster as it is not
@@ -605,6 +598,16 @@ extern void switch_g_job_complete(job_record_t *job_ptr)
 		return;
 
 	(*(ops[switch_context_default].job_complete))(job_ptr);
+}
+
+extern uint32_t switch_g_job_channel(job_record_t *job_ptr, char *node_name)
+{
+	xassert(switch_context_cnt >= 0);
+
+	if (!switch_context_cnt)
+		return NO_VAL;
+
+	return (*(ops[switch_context_default].job_channel))(job_ptr, node_name);
 }
 
 extern int switch_g_fs_init(stepd_step_rec_t *step)

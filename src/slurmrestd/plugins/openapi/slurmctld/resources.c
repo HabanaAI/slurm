@@ -1,5 +1,5 @@
 /*****************************************************************************\
- *  api.h - Slurm data parsing handlers
+ *  jobs.c - Slurm REST API jobs http operations handlers
  *****************************************************************************
  *  Copyright (C) SchedMD LLC.
  *
@@ -33,50 +33,68 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef DATA_PARSER_API
-#define DATA_PARSER_API
+#include "src/common/list.h"
+#include "src/common/log.h"
+#include "src/common/read_config.h"
+#include "src/common/xmalloc.h"
 
-#include "src/interfaces/data_parser.h"
+#include "src/slurmrestd/operations.h"
 
-/*
- * These macros are defined by the Makefile.am:
- * DATA_VERSION
- * PLUGIN_ID
- */
+#include "api.h"
 
-#define MAGIC_ARGS 0x2ea1bebb
-#define is_fast_mode(args) (args->flags & FLAG_FAST)
-#define is_complex_mode(args) (args->flags & FLAG_COMPLEX_VALUES)
-#define is_prefer_refs_mode(args) (args->flags & FLAG_PREFER_REFS)
+static void _handle_get(ctxt_t *ctxt, slurm_selected_step_t *job_id)
+{
+	int rc = SLURM_SUCCESS;
+	resource_layout_msg_t *resp = NULL;
+	list_t *nodes = NULL;
 
-typedef enum {
-	FLAG_NONE = 0,
-	/* only dump the OpenAPI Specification instead of the requested data */
-	FLAG_SPEC_ONLY = SLURM_BIT(0),
-	/* attempt to run as fast as possible, skipping more expensive checks */
-	FLAG_FAST = SLURM_BIT(1),
-	/* use null/false/Infinity/NaN for *_NO_VALs */
-	FLAG_COMPLEX_VALUES = SLURM_BIT(2),
-	/* Prefer $ref over expanding schema inline in OpenAPI specification */
-	FLAG_PREFER_REFS = SLURM_BIT(3),
-} data_parser_flags_t;
+	if ((rc = slurm_get_resource_layout(&job_id->step_id,
+					    (void **) &resp))) {
+		char *id = NULL;
 
-typedef struct {
-	int magic; /* MAGIC_ARGS */
-	data_parser_on_error_t on_parse_error;
-	data_parser_on_error_t on_dump_error;
-	data_parser_on_error_t on_query_error;
-	void *error_arg;
-	data_parser_on_warn_t on_parse_warn;
-	data_parser_on_warn_t on_dump_warn;
-	data_parser_on_warn_t on_query_warn;
-	void *warn_arg;
-	void *db_conn;
-	bool close_db_conn;
-	list_t *tres_list;
-	list_t *qos_list;
-	list_t *assoc_list;
-	data_parser_flags_t flags;
-} args_t;
+		fmt_job_id_string(job_id, &id);
+		resp_error(ctxt, rc, __func__, "Unable to query JobId=%s", id);
 
-#endif
+		xfree(id);
+	}
+
+	if (resp)
+		nodes = resp->nodes;
+
+	DUMP_OPENAPI_RESP_SINGLE(OPENAPI_RESOURCE_LAYOUT_RESP, nodes, ctxt);
+
+	slurm_free_resource_layout_msg(resp);
+}
+
+extern int op_handler_resources(openapi_ctxt_t *ctxt)
+{
+	openapi_job_info_param_t params = { { 0 } };
+	slurm_selected_step_t *job_id;
+
+	if (DATA_PARSE(ctxt->parser, OPENAPI_JOB_INFO_PARAM, params,
+		       ctxt->parameters, ctxt->parent_path)) {
+		return resp_error(
+			ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+			"Rejecting request. Failure parsing parameters");
+	}
+
+	job_id = &params.job_id;
+
+	if ((job_id->step_id.job_id == NO_VAL) ||
+	    (job_id->step_id.job_id <= 0) ||
+	    (job_id->step_id.job_id >= MAX_JOB_ID)) {
+		return resp_error(ctxt, ESLURM_INVALID_JOB_ID, __func__,
+				  "Invalid JobID=%u rejected",
+				  job_id->step_id.job_id);
+	}
+
+	if (ctxt->method == HTTP_REQUEST_GET) {
+		_handle_get(ctxt, job_id);
+	} else {
+		return resp_error(ctxt, ESLURM_REST_INVALID_QUERY, __func__,
+				  "Unsupported HTTP method requested: %s",
+				  get_http_method_string(ctxt->method));
+	}
+
+	return SLURM_SUCCESS;
+}

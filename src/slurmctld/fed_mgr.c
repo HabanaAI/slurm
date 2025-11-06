@@ -1853,13 +1853,16 @@ _handle_fed_job_remove_active_sib_bit(fed_job_update_info_t *job_update_info)
 
 static void _handle_fed_job_requeue(fed_job_update_info_t *job_update_info)
 {
-	int rc;
+	int rc = ESLURM_INVALID_JOB_ID;
+	job_record_t *job_ptr = NULL;
 	slurmctld_lock_t job_write_lock = {
 		NO_LOCK, WRITE_LOCK, WRITE_LOCK, NO_LOCK, READ_LOCK };
 
 	lock_slurmctld(job_write_lock);
-	if ((rc = job_requeue(job_update_info->uid, job_update_info->job_id,
-			      NULL, false, job_update_info->flags)))
+	job_ptr = find_job_record(job_update_info->job_id);
+	if (!job_ptr ||
+	    (rc = job_requeue_internal(job_update_info->uid, job_ptr, false,
+				       job_update_info->flags)))
 		error("failed to requeue fed JobId=%u - rc:%d",
 		      job_update_info->job_id, rc);
 	unlock_slurmctld(job_write_lock);
@@ -2397,8 +2400,7 @@ static void _handle_dep_update_origin_msgs(void)
 
 	lock_slurmctld(job_write_lock);
 	while ((dep_update_msg = list_pop(origin_dep_update_list))) {
-		if (!(job_ptr = find_job_record(dep_update_msg->step_id
-							.job_id))) {
+		if (!(job_ptr = find_job(&dep_update_msg->step_id))) {
 			/*
 			 * Maybe the job was cancelled and purged before
 			 * the dependency update got here or was able
@@ -3274,6 +3276,7 @@ static int _unpack_remote_dep_job(job_record_t **job_pptr, buf_t *buffer,
 	xassert(job_pptr);
 
 	job_ptr = xmalloc(sizeof *job_ptr);
+	job_ptr->step_id = SLURM_STEP_ID_INITIALIZER;
 	job_ptr->magic = JOB_MAGIC;
 	job_ptr->details = xmalloc(sizeof *(job_ptr->details));
 	job_ptr->details->magic = DETAILS_MAGIC;
@@ -3314,6 +3317,7 @@ static int _unpack_remote_dep_job(job_record_t **job_pptr, buf_t *buffer,
 	}
 
 	job_ptr->job_id = step_id.job_id;
+	job_ptr->step_id.job_id = step_id.job_id;
 
 	return SLURM_SUCCESS;
 
@@ -3767,7 +3771,7 @@ static int _submit_sibling_jobs(job_desc_msg_t *job_desc, slurm_msg_t *msg,
 	sib_msg.fed_siblings = job_desc->fed_siblings_viable;
 	sib_msg.group_id = job_desc->group_id;
 	sib_msg.resp_host    = job_desc->resp_host;
-	sib_msg.step_id.job_id = job_desc->step_id.job_id;
+	sib_msg.step_id = job_desc->step_id;
 	sib_msg.submit_host  = job_desc->alloc_node;
 	sib_msg.user_id = job_desc->user_id;
 	sib_msg.submit_proto_ver = start_protocol_version;
@@ -4330,7 +4334,8 @@ extern int fed_mgr_job_allocate(slurm_msg_t *msg, job_desc_msg_t *job_desc,
 
 	/* get job_id now. Can't submit job to get job_id as job_allocate will
 	 * change the job_desc. */
-	job_desc->step_id.job_id = get_next_job_id(false);
+	if (!(job_desc->step_id.job_id = get_next_job_id(false)))
+		return SLURM_ERROR;
 
 	/* Set viable siblings */
 	job_desc->fed_siblings_viable =
@@ -4398,6 +4403,9 @@ extern int fed_mgr_job_allocate(slurm_msg_t *msg, job_desc_msg_t *job_desc,
 	 * viable siblings and potentially active local job */
 	job_ptr->fed_details->siblings_active = job_desc->fed_siblings_active;
 	update_job_fed_details(job_ptr);
+
+	/* Copy job_ptr->step_id to pass jobid and sluid to sibling clusters */
+	job_desc->step_id = job_ptr->step_id;
 
 	if (!job_held && _submit_sibling_jobs(
 				job_desc, msg, alloc_only,
@@ -5848,9 +5856,9 @@ static int _q_sib_job_submission(slurm_msg_t *msg, bool interactive_job)
 	fed_job_update_info_t *job_update_info = NULL;
 	sib_msg_t *sib_msg            = msg->data;
 	job_desc_msg_t *job_desc      = sib_msg->data;
-	job_desc->step_id.job_id = sib_msg->step_id.job_id;
+	job_desc->step_id = sib_msg->step_id;
 	job_desc->fed_siblings_viable = sib_msg->fed_siblings;
-	job_desc->alloc_node          = sib_msg->submit_host;
+	job_desc->alloc_node = xstrdup(sib_msg->submit_host);
 	job_desc->user_id = sib_msg->user_id;
 	job_desc->group_id = sib_msg->group_id;
 
