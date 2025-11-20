@@ -2503,9 +2503,8 @@ extern void slurm_free_kvs_comm_set(kvs_comm_set_t *msg)
 	}
 }
 
-extern void slurm_free_will_run_response_msg(void *data)
+extern void slurm_free_will_run_response_msg(will_run_response_msg_t *msg)
 {
-	will_run_response_msg_t *msg = data;
 	if (msg) {
 		xfree(msg->cluster_name);
 		xfree(msg->job_submit_user_msg);
@@ -3592,7 +3591,8 @@ extern char *node_state_string(uint32_t inx)
 		}
 	}
 	if (fail_flag) {
-		if (comp_flag || (base == NODE_STATE_ALLOCATED)) {
+		if (comp_flag || (base == NODE_STATE_ALLOCATED) ||
+		    (base == NODE_STATE_MIXED)) {
 			if (no_resp_flag)
 				return "FAILING*";
 			return "FAILING";
@@ -3848,7 +3848,8 @@ extern char *node_state_string_compact(uint32_t inx)
 		}
 	}
 	if (fail_flag) {
-		if (comp_flag || (inx == NODE_STATE_ALLOCATED)) {
+		if (comp_flag || (inx == NODE_STATE_ALLOCATED) ||
+		    (inx == NODE_STATE_MIXED)) {
 			if (no_resp_flag)
 				return "FAILG*";
 			return "FAILG";
@@ -4615,9 +4616,8 @@ extern void slurm_free_step_complete_msg(step_complete_msg_t *msg)
 	}
 }
 
-extern void slurm_free_job_step_stat(void *object)
+extern void slurm_free_job_step_stat(job_step_stat_t *msg)
 {
-	job_step_stat_t *msg = (job_step_stat_t *)object;
 	if (msg) {
 		jobacctinfo_destroy(msg->jobacct);
 		slurm_free_job_step_pids(msg->step_pids);

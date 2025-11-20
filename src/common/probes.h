@@ -1,11 +1,7 @@
 /*****************************************************************************\
- *  port_mgr.h - manage the reservation of I/O ports on the nodes.
- *	Design for use with OpenMPI.
+ *  probes.h - Daemon liveness and readiness probes
  *****************************************************************************
- *  Copyright (C) 2009 Lawrence Livermore National Security.
- *  Produced at Lawrence Livermore National Laboratory (cf, DISCLAIMER).
- *  Written by Morris Jette <jette1@llnl.gov>
- *  CODE-OCEC-09-009. All rights reserved.
+ *  Copyright (C) SchedMD LLC.
  *
  *  This file is part of Slurm, a resource management program.
  *  For details, see <https://slurm.schedmd.com/>.
@@ -37,48 +33,68 @@
  *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA.
 \*****************************************************************************/
 
-#ifndef _HAVE_PORT_MGR_H
-#define _HAVE_PORT_MGR_H
+#ifndef SLURM_PROBES_H
+#define SLURM_PROBES_H
 
-/* Configure reserved ports.
- * Call with mpi_params==NULL to free memory */
-extern int reserve_port_config(char *mpi_params, list_t *job_list);
+#include "src/common/pack.h"
 
-/*
- * Configure reserved ports passed on job's resv_ports and resv_port_cnt
- * Call with job_ptr->resv_ports == NULL to free memory.
- * This should only be called by the slurmstepd when acting as step manager.
- */
-extern int reserve_port_stepmgr_init(job_record_t *job_ptr);
+typedef enum {
+	PROBE_RC_INVALID = 0,
+	PROBE_RC_UNKNOWN, /* service state is unknown */
+	PROBE_RC_DOWN, /* service is down or failed */
+	PROBE_RC_ONLINE, /* service is online */
+	PROBE_RC_BUSY, /* service is too busy for requests */
+	PROBE_RC_READY, /* service is ready for requests */
+	PROBE_RC_INVALID_MAX,
+} probe_status_t;
 
-/* Reserve ports for a job step
- * RET SLURM_SUCCESS or an error code */
-extern int resv_port_step_alloc(step_record_t *step_ptr);
-
-/*
- * Reserve ports for a job
- * Used when the step manager is enabled
- * RET SLURM_SUCCESS or an error code
- */
-extern int resv_port_job_alloc(job_record_t *job_ptr);
+/* Opaque struct to handle probe verbose logging */
+typedef struct probe_log_s probe_log_t;
 
 /*
- * Verify that the requested resv_port_cnt is valid.
+ * Callback to query service status
+ * IN log -
+ *	!Null: pass to probe_log() for logging verbose status
+ *	Null: logging not requested
+ * RET status of service
  */
-extern int resv_port_check_job_request_cnt(job_record_t *job_ptr);
-
-/* Returns the total reserved ports configured */
-extern int resv_port_get_resv_port_cnt(void);
-
-/* Release reserved ports for a job step
- * RET SLURM_SUCCESS or an error code */
-extern void resv_port_step_free(step_record_t *step_ptr);
+typedef probe_status_t (*probe_query_t)(probe_log_t *log);
 
 /*
- * Release reserved ports for a job
- * Used when the step manager is enabled
- * RET SLURM_SUCCESS or an error code
+ * Register probe query function
+ * IN name - name of service to log
+ * IN query - callback function to query to poll status
  */
-extern void resv_port_job_free(job_record_t *job_ptr);
+extern void probe_register(const char *name, probe_query_t query);
 
-#endif	/* !_HAVE_PORT_MGR_H */
+/*
+ * Log verbose status for service
+ * IN log - log pointer from probe_query_t log arg
+ * NOTE: Call probe_log() macro instead
+ */
+extern void probe_logger(probe_log_t *log, const char *caller, const char *fmt,
+			 ...) __attribute__((format(printf, 3, 4)));
+
+#define probe_log(log, fmt, ...) \
+	do { \
+		if (log) \
+			probe_logger(log, __func__, fmt, ##__VA_ARGS__); \
+	} while (0)
+
+extern void probe_init(void);
+extern void probe_fini(void);
+
+/*
+ * Run probes
+ * IN name - name of probe to run or NULL for all probes
+ * IN verbose - True to enable verbose logging
+ * IN/OUT output - (ignored if verbose=false)
+ *	!NULL: buffer to populate with verbose logs
+ *	NULL: log to info()
+ * caller - __func__ from caller
+ * RET (lowest) status of all probes run
+ */
+extern probe_status_t probe_run(bool verbose, const char *name, buf_t *output,
+				const char *caller);
+
+#endif

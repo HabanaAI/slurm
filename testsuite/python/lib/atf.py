@@ -891,6 +891,7 @@ def stop_slurmctld(quiet=False, also_slurmds=False):
     if not repeat_until(
         lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmctld"),
         lambda pids: len(pids) == 0,
+        timeout=default_polling_timeout * 2,
     ):
         failures.append("Slurmctld is still running")
         logging.warning("Getting the core files of the still running slurmctld")
@@ -922,6 +923,7 @@ def stop_slurmctld(quiet=False, also_slurmds=False):
         if not repeat_until(
             lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmd"),
             lambda pids: len(pids) == 0,
+            timeout=default_polling_timeout * 2,
         ):
             failures.append("Some slurmds are still running")
             logging.warning("Getting the core files of the still running slurmds")
@@ -968,7 +970,7 @@ def stop_slurmdbd(quiet=False):
     if not repeat_until(
         lambda: pids_from_exe(f"{properties['slurm-sbin-dir']}/slurmdbd"),
         lambda pids: len(pids) == 0,
-        timeout=60,
+        timeout=default_polling_timeout * 2,
     ):
         failures.append("Slurmdbd is still running")
         logging.warning("Getting the core files of the still running slurmdbd")
@@ -4794,7 +4796,7 @@ def restore_accounting_database():
     # restored by a previous call to restore_accounting_database
     if not os.path.isfile(sql_dump_file):
         logging.debug(
-            f"Slurm accounting database backup ({sql_dump_file}) is s not present. It has probably already been restored."
+            f"Slurm accounting database backup ({sql_dump_file}) is not present. It has probably already been restored."
         )
         return
 
